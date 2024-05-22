@@ -3,3 +3,4 @@
 ### Установка
 
 - composer require uzairports/uzair-id
+- php artisan migrate

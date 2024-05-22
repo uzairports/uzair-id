@@ -22,7 +22,7 @@
     "extra": {
         "laravel": {
             "providers": [
-                "Uzairports\\Uzairid\\Providers\\UzairportsProvider"
+                "Uzairports\\Uzairid\\Providers\\UzairServiceProvider"
             ]
         }
     }
