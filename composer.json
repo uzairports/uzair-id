@@ -1,0 +1,29 @@
+{
+    "name": "uzairports/uzair-id",
+    "description": "description",
+    "minimum-stability": "stable",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "uzairports",
+            "email": "it@uzairports.com",
+            "homepage": "https://github.com/uzairports"
+        }
+    ],
+    "require": {
+        "php": "^8.2",
+        "laravel/socialite": "^5.14"
+    },
+    "autoload": {
+        "psr-4": {
+            "Uzairports\\Uzairid\\": "src"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Uzairports\\Uzairid\\Providers\\UzairportsProvider"
+            ]
+        }
+    }
+}
