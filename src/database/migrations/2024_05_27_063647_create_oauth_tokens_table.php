@@ -13,6 +13,10 @@ return new class extends Migration
     {
         Schema::create('oauth_tokens', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('user_id')->constrained()->cascadeOnDelete()->cascadeOnUpdate();
+            $table->text('access_token');
+            $table->text('refresh_token');
+            $table->integer('expires_in');
             $table->timestamps();
         });
     }

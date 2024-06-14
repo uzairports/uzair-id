@@ -28,6 +28,11 @@ class UzairServiceProvider extends ServiceProvider
                 $app['config']['services.uzairports']
             );
         });
-        $this->loadMigrationsFrom(__DIR__.'/../database/migrations');
+        $this->publishesMigrations([
+            __DIR__.'/../database/migrations' => database_path('migrations'),
+        ]);
+        $this->publishes([
+            __DIR__.'/../Models' => app_path('Models'),
+        ]);
     }
 }

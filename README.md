@@ -6,6 +6,9 @@
 composer require uzairports/uzair-id
 ```
 ```sh
+php artisan vendor:publish --provider=Uzairports\Uzairid\Providers\UzairServiceProvider
+```
+```sh
 php artisan migrate
 ```
 
@@ -26,9 +29,9 @@ php artisan migrate
 Добавить маршруты
 
 ```php
-Route::get('/auth/redirect', [App\Http\Controllers\OAuthController::class, 'redirect'])->name('uzair.redirect');
-Route::get('/auth/callback', [App\Http\Controllers\OAuthController::class, 'callback'])->name('uzair.callback');
-Route::post('/auth/logout', [App\Http\Controllers\OAuthController::class, 'logout'])->name('uzair.logout');
+Route::get('/auth/redirect', [App\Http\Controllers\OAuthController::class, 'redirect'])->name('login');
+Route::get('/auth/callback', [App\Http\Controllers\OAuthController::class, 'callback'])->name('callback');
+Route::post('/auth/logout', [App\Http\Controllers\OAuthController::class, 'logout'])->name('logout');
 ```
 В OAuthController.php
 
@@ -52,7 +55,12 @@ class OAuthController extends Controller
 
     public function callback()
     {
-        $uzairUser = Socialite::driver('uzairports')->user();
+        try{
+            $uzairUser = Socialite::driver('uzairports')->user();
+        } catch(\Exception $e){
+            session()->flash('message', "Can't sign in a user.");
+            return redirect('/');
+        }
 
         $user = User::query()
             ->firstOrCreate(
@@ -64,12 +72,23 @@ class OAuthController extends Controller
             );
 
         auth()->login($user);
+        
+        auth()->user()->token()->delete();
+        auth()->user()->token()->create([
+            'access_token' => $uzairUser->token,
+            'refresh_token' => $uzairUser->refreshToken,
+            'expires_in' => $uzairUser->expiresIn,
+        ]);
 
-        return to_route('dashboard');
+        return redirect('/dashboard');
     }
 
     public function logout(Request $request)
     {
+        Http::withToken(auth()->user()->token->access_token)->post('https://my.uzairports.com/api/v1/oauth/logout');
+
+        auth()->user()->token()->delete();
+        
         Auth::logout();
 
         $request->session()->invalidate();
@@ -81,4 +100,12 @@ class OAuthController extends Controller
             : redirect('/');
     }
 }
+```
+В User.php добавить
+
+```php
+    public function token()
+    {
+        return $this->hasOne(OauthToken::class);
+    }
 ```
