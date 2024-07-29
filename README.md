@@ -44,6 +44,7 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Http;
 use Laravel\Socialite\Facades\Socialite;
 
 class OAuthController extends Controller
@@ -55,12 +56,7 @@ class OAuthController extends Controller
 
     public function callback()
     {
-        try{
-            $uzairUser = Socialite::driver('uzairports')->user();
-        } catch(\Exception $e){
-            session()->flash('message', "Can't sign in a user.");
-            return redirect('/');
-        }
+        $uzairUser = Socialite::driver('uzairports')->user();
 
         $user = User::query()
             ->firstOrCreate(
@@ -72,7 +68,7 @@ class OAuthController extends Controller
             );
 
         auth()->login($user);
-        
+
         auth()->user()->token()->delete();
         auth()->user()->token()->create([
             'access_token' => $uzairUser->token,
@@ -80,15 +76,18 @@ class OAuthController extends Controller
             'expires_in' => $uzairUser->expiresIn,
         ]);
 
-        return redirect('/dashboard');
+
+        return to_route('dashboard');
     }
 
     public function logout(Request $request)
     {
-        Http::withToken(auth()->user()->token->access_token)->post('https://my.uzairports.com/api/v1/oauth/logout');
+        if (auth()->user()->token)
+        {
+            Http::withToken(auth()->user()->token->access_token)->post('https://my.uzairports.com/api/v1/oauth/logout');
+            auth()->user()->token()->delete();
+        }
 
-        auth()->user()->token()->delete();
-        
         Auth::logout();
 
         $request->session()->invalidate();
