@@ -56,7 +56,11 @@ class OAuthController extends Controller
 
     public function callback()
     {
-        $uzairUser = Socialite::driver('uzairports')->user();
+        try{
+            $uzairUser = Socialite::driver('uzairports')->user();
+        } catch(\Exception $e){
+            return redirect('/');
+        }
 
         $user = User::query()
             ->firstOrCreate(
@@ -77,14 +81,18 @@ class OAuthController extends Controller
         ]);
 
 
-        return to_route('dashboard');
+        return redirect('/dashboard');
     }
 
     public function logout(Request $request)
     {
         if (auth()->user()->token)
         {
-            Http::withToken(auth()->user()->token->access_token)->post('https://my.uzairports.com/api/v1/oauth/logout');
+            Http::withHeaders([
+                "Accept" => "application/json",
+                "Authorization" => "Bearer " . auth()->user()->token->access_token,
+            ])->post('https://my.uzairports.com/api/v1/oauth/logout');
+
             auth()->user()->token()->delete();
         }
 
