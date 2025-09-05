@@ -1,20 +1,24 @@
-## Пакет Uzbekistan airports
+## UzAirports ID для Laravel
+
+OAuth 2.0 интеграция с системой единой аутентификации [Uzbekistan Airports](https://my.uzairports.com).  
+Позволяет авторизовать пользователей через UzAirports ID, автоматически создавать аккаунты, управлять токенами и выполнять безопасный logout.
 
 ### Установка
 
-```sh
+```bash
 composer require uzairports/uzair-id
 ```
-```sh
+Опубликуйте конфигурацию и миграции:
+```bash
 php artisan vendor:publish --provider=Uzairports\Uzairid\Providers\UzairServiceProvider
 ```
-```sh
+```bash
 php artisan migrate
 ```
 
 ### Конфигурация
 
-Добавить config/services.php
+Добавьте настройки в config/services.php:
 
 ```php
 'uzairports' => [
@@ -23,17 +27,26 @@ php artisan migrate
     'redirect' => env('UZAIR_CALLBACK_URL'),
 ],
 ```
+И в .env:
+```env
+UZAIR_CLIENT_ID=your-client-id
+UZAIR_CLIENT_SECRET=your-client-secret
+UZAIR_CALLBACK_URL=https://your-app.com/auth/callback
+```
+> Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
 
 ### Аутентификация
 
-Добавить маршруты
+#### Маршруты
+Добавьте в routes/web.php:
 
 ```php
 Route::get('/auth/redirect', [App\Http\Controllers\OAuthController::class, 'redirect'])->name('login');
 Route::get('/auth/callback', [App\Http\Controllers\OAuthController::class, 'callback'])->name('callback');
 Route::post('/auth/logout', [App\Http\Controllers\OAuthController::class, 'logout'])->name('logout');
 ```
-В OAuthController.php
+#### Контроллер
+Создайте OAuthController.php:
 
 ```php
 <?php
@@ -108,7 +121,8 @@ class OAuthController extends Controller
     }
 }
 ```
-В User.php добавить
+#### Модель пользователя
+Добавьте в User.php:
 
 ```php
     public function token()
@@ -116,3 +130,10 @@ class OAuthController extends Controller
         return $this->hasOne(OauthToken::class);
     }
 ```
+## Лицензия
+
+Этот пакет распространяется под лицензией MIT.
+
+Copyright (c) 2025 JSC "Uzbekistan Airports"
+
+См. файл [LICENSE](./LICENSE.md) для подробностей.

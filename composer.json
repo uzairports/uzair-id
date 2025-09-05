@@ -1,18 +1,18 @@
 {
     "name": "uzairports/uzair-id",
-    "description": "description",
+    "description": "OAuth 2.0 Integration with Uzbekistan Airports Single Sign-On System for Laravel",
     "minimum-stability": "stable",
     "license": "MIT",
     "authors": [
         {
-            "name": "uzairports",
+            "name": "JSC Uzbekistan Airports",
             "email": "it@uzairports.com",
             "homepage": "https://github.com/uzairports"
         }
     ],
     "require": {
         "php": "^8.2",
-        "laravel/socialite": "^5.14"
+        "laravel/socialite": "^5.23"
     },
     "autoload": {
         "psr-4": {
