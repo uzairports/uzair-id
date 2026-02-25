@@ -99,20 +99,18 @@ class OAuthController extends Controller
 
     public function logout(Request $request)
     {
-        if (auth()->user()->token)
-        {
-            Http::withHeaders([
-                "Accept" => "application/json",
-                "Authorization" => "Bearer " . auth()->user()->token->access_token,
-            ])->post('https://my.uzairports.com/api/v1/oauth/logout');
-
-            auth()->user()->token()->delete();
+        if (auth()->check()) {
+            $user = auth()->user();
+            
+            if ($user->token) {
+                Socialite::driver('uzairports')->logout($user->token->access_token);
+                $user->token()->delete();
+            }
+            
+            Auth::logout();
         }
 
-        Auth::logout();
-
         $request->session()->invalidate();
-
         $request->session()->regenerateToken();
 
         return $request->wantsJson()

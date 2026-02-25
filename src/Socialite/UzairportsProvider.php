@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Socialite;
 
+use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\RequestOptions;
 use Laravel\Socialite\Two\AbstractProvider;
 use Laravel\Socialite\Two\ProviderInterface;
@@ -13,16 +14,19 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     protected string $host = 'https://my.uzairports.com';
     protected $scopes = [];
 
-    protected function getAuthUrl($state)
+    protected function getAuthUrl($state): string
     {
         return $this->buildAuthUrlFromBase($this->host . '/oauth/authorize', $state);
     }
 
-    protected function getTokenUrl()
+    protected function getTokenUrl(): string
     {
         return $this->host . '/oauth/token';
     }
 
+    /**
+     * @throws GuzzleException
+     */
     protected function getUserByToken($token)
     {
         $response = $this->getHttpClient()->get(
@@ -33,7 +37,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
     }
 
-    protected function mapUserToObject(array $user)
+    protected function mapUserToObject(array $user): User
     {
         return (new User)->setRaw($user)->map([
             'id' => $user['id'],
@@ -43,7 +47,17 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         ]);
     }
 
-    protected function getRequestOptions($token)
+    /**
+     * @throws GuzzleException
+     */
+    public function logout($token)
+    {
+        return $this->getHttpClient()->post(
+            $this->host . '/api/v1/oauth/logout', $this->getRequestOptions($token)
+        );
+    }
+
+    protected function getRequestOptions($token): array
     {
         return [
             RequestOptions::HEADERS => [
