@@ -67,7 +67,7 @@ class OAuthController extends Controller
         return Socialite::driver('uzairports')->redirect();
     }
 
-    public function callback()
+    public function callback(Request $request)
     {
         try{
             $uzairUser = Socialite::driver('uzairports')->user();
@@ -86,13 +86,17 @@ class OAuthController extends Controller
 
         auth()->login($user);
 
-        auth()->user()->token()->delete();
-        auth()->user()->token()->create([
-            'access_token' => $uzairUser->token,
-            'refresh_token' => $uzairUser->refreshToken,
-            'expires_in' => $uzairUser->expiresIn,
-        ]);
+        $request->session()->regenerate();
 
+        $user->token()->updateOrCreate(
+            ['user_id' => $user->id],
+            [
+                'access_token' => $uzairUser->token,
+                'refresh_token' => $uzairUser->refreshToken,
+                'expires_in' => $uzairUser->expiresIn,
+                'expires_at' => now()->addSeconds((int) $uzairUser->expiresIn),
+            ]
+        );
 
         return redirect('/dashboard');
     }
@@ -128,6 +132,30 @@ class OAuthController extends Controller
         return $this->hasOne(OauthToken::class);
     }
 ```
+
+### Обновление токена
+
+Access token живёт ограниченное время. Пакет хранит момент истечения в колонке `expires_at`
+и умеет обменивать `refresh_token` на новый access token через middleware `uzair.token`:
+
+```php
+Route::get('/dashboard', [HomeController::class, 'index'])
+    ->middleware(['auth', 'uzair.token']);
+```
+
+Middleware обновляет токен, если тот истекает в ближайшие `services.uzairports.refresh_leeway`
+секунд (по умолчанию 60, настраивается через `UZAIR_REFRESH_LEEWAY`). Если SSO отказывается
+обменивать refresh token, токен удаляется, сессия сбрасывается и пользователь отправляется
+на маршрут `login` для повторной аутентификации.
+
+Токен можно обновить и вручную:
+
+```php
+use Uzairports\Uzairid\Actions\RefreshAccessToken;
+
+$refreshed = app(RefreshAccessToken::class)($user->token);
+```
+
 ## Лицензия
 
 Этот пакет распространяется под лицензией MIT.

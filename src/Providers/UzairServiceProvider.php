@@ -2,8 +2,10 @@
 
 namespace Uzairports\Uzairid\Providers;
 
+use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Socialite\Contracts\Factory;
+use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class UzairServiceProvider extends ServiceProvider
@@ -29,6 +31,8 @@ class UzairServiceProvider extends ServiceProvider
                 $app['config']['services.uzairports']
             );
         });
+
+        $this->app->make(Router::class)->aliasMiddleware('uzair.token', EnsureAccessTokenIsFresh::class);
 
         $this->publishesMigrations([
             __DIR__.'/../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_remove_password_column_from_users_table.php'),
