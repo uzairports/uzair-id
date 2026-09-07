@@ -8,6 +8,11 @@ return new class extends Migration
 {
     /**
      * Run the migrations.
+     *
+     * `expires_at` is what the refresh middleware reads: `expires_in` alone only
+     * says how long the token was valid for, not until when. A null expiry is
+     * treated as expired, so a token stored without one is renewed on the
+     * owner's next request.
      */
     public function up(): void
     {
@@ -17,6 +22,7 @@ return new class extends Migration
             $table->text('access_token');
             $table->text('refresh_token');
             $table->integer('expires_in');
+            $table->timestamp('expires_at')->nullable();
             $table->timestamps();
         });
     }

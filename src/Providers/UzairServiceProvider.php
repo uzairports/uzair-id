@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Providers;
 
+use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Routing\Router;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Socialite\Contracts\Factory;
@@ -20,6 +21,8 @@ class UzairServiceProvider extends ServiceProvider
 
     /**
      * Bootstrap services.
+     *
+     * @throws BindingResolutionException
      */
     public function boot(): void
     {
@@ -34,8 +37,12 @@ class UzairServiceProvider extends ServiceProvider
 
         $this->app->make(Router::class)->aliasMiddleware('uzair.token', EnsureAccessTokenIsFresh::class);
 
+        // The publisher stamps each file with a timestamp one second apart, in the
+        // order listed here, so this order is the order the migrations run in.
         $this->publishesMigrations([
             __DIR__.'/../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_remove_password_column_from_users_table.php'),
+            __DIR__.'/../database/migrations/add_uzair_id_to_users_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_add_uzair_id_to_users_table.php'),
+            __DIR__.'/../database/migrations/relax_email_column_on_users_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_relax_email_column_on_users_table.php'),
             __DIR__.'/../database/migrations/create_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_create_oauth_tokens_table.php'),
         ]);
     }

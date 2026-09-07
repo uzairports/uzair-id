@@ -6,6 +6,7 @@ use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Throwable;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class RefreshAccessToken
 {
@@ -22,7 +23,10 @@ class RefreshAccessToken
         }
 
         try {
-            $refreshed = Socialite::driver('uzairports')->refreshToken($token->refresh_token);
+            /** @var UzairportsProvider $provider */
+            $provider = Socialite::driver('uzairports');
+
+            $refreshed = $provider->refreshToken($token->refresh_token);
         } catch (Throwable $e) {
             Log::warning('Failed to refresh UzAirports access token: '.$e->getMessage(), [
                 'user_id' => $token->user_id,

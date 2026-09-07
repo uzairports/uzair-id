@@ -16,6 +16,11 @@ php artisan vendor:publish --provider=Uzairports\Uzairid\Providers\UzairServiceP
 php artisan migrate
 ```
 
+Публикуются четыре миграции: они приводят таблицу `users` к виду, пригодному для SSO
+(добавляют `uzair_id`, убирают `password` и ограничения с `email`), и создают таблицу
+`oauth_tokens`. Все изменения `users` идемпотентны — если колонка уже есть или ограничение
+уже снято, шаг пропускается, поэтому миграции безопасно публиковать в существующее приложение.
+
 ### Конфигурация
 
 Добавьте настройки в config/services.php:
@@ -34,6 +39,22 @@ UZAIR_CLIENT_SECRET=your-client-secret
 UZAIR_CALLBACK_URL=https://your-app.com/auth/callback
 ```
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
+
+### Идентификация пользователя
+
+Пользователя опознаёт только `id`, выданный UzAirports ID, — он хранится в `users.uzair_id`.
+Имя и почту владелец аккаунта может поменять в любой момент на стороне SSO, почта может
+повторяться у разных аккаунтов и может вовсе отсутствовать, поэтому искать пользователя
+по `email` нельзя: смена почты создаст дубль, а совпадение почты отдаст чужой аккаунт.
+Именно поэтому миграции снимают с `email` уникальность и `NOT NULL`.
+
+Сопоставление выполняет `ResolveUserFromSocialite`: он находит аккаунт по `uzair_id`,
+обновляет имя и почту данными от SSO и создаёт запись, если её ещё нет. Аккаунты, заведённые
+до установки пакета, один раз привязываются по совпадению почты — но только те, у которых
+`uzair_id` ещё пуст, чтобы чужую учётку нельзя было забрать сменой почты в SSO.
+
+Модель пользователя берётся из `auth.providers.users.model`, поля пишутся через `forceFill()`,
+так что перечислять их в `$fillable` не требуется.
 
 ### Аутентификация
 
@@ -57,8 +78,8 @@ use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Http;
 use Laravel\Socialite\Facades\Socialite;
+use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 
 class OAuthController extends Controller
 {
@@ -67,29 +88,25 @@ class OAuthController extends Controller
         return Socialite::driver('uzairports')->redirect();
     }
 
-    public function callback(Request $request)
+    public function callback(Request $request, ResolveUserFromSocialite $resolveUser)
     {
-        try{
+        try {
             $uzairUser = Socialite::driver('uzairports')->user();
-        } catch(\Exception $e){
+
+            /** @var User $user */
+            $user = $resolveUser($uzairUser);
+        } catch (\Throwable $e) {
             return redirect('/');
         }
-
-        $user = User::query()
-            ->firstOrCreate(
-              ['email' => $uzairUser->getEmail()],
-              [
-                  'email' => $uzairUser->getEmail(),
-                  'name' => $uzairUser->getName(),
-              ]
-            );
 
         auth()->login($user);
 
         $request->session()->regenerate();
 
         $user->token()->updateOrCreate(
-            ['user_id' => $user->id],
+            [
+                'user_id' => $user->id
+            ],
             [
                 'access_token' => $uzairUser->token,
                 'refresh_token' => $uzairUser->refreshToken,

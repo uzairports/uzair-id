@@ -4,7 +4,15 @@ namespace Uzairports\Uzairid\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Carbon;
 
+/**
+ * @property int $user_id
+ * @property string $access_token
+ * @property string $refresh_token
+ * @property int $expires_in
+ * @property Carbon|null $expires_at
+ */
 class OauthToken extends Model
 {
     protected $fillable = [
