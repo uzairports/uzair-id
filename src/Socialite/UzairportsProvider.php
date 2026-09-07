@@ -10,18 +10,23 @@ use Laravel\Socialite\Two\User;
 
 class UzairportsProvider extends AbstractProvider implements ProviderInterface
 {
-
     protected string $host = 'https://my.uzairports.com';
+
     protected $scopes = [];
+
+    public function getHost(): string
+    {
+        return $this->host;
+    }
 
     protected function getAuthUrl($state): string
     {
-        return $this->buildAuthUrlFromBase($this->host . '/oauth/authorize', $state);
+        return $this->buildAuthUrlFromBase($this->getHost().'/oauth/authorize', $state);
     }
 
     protected function getTokenUrl(): string
     {
-        return $this->host . '/oauth/token';
+        return $this->getHost().'/oauth/token';
     }
 
     /**
@@ -30,17 +35,16 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     protected function getUserByToken($token)
     {
         $response = $this->getHttpClient()->get(
-            $this->host . '/api/user', $this->getRequestOptions($token)
+            $this->getHost().'/api/user', $this->getRequestOptions($token)
         );
 
-        return json_decode($response->getBody(), true);
-
+        return json_decode((string) $response->getBody(), true) ?? [];
     }
 
     protected function mapUserToObject(array $user): User
     {
         return (new User)->setRaw($user)->map([
-            'id' => $user['id'],
+            'id' => $user['id'] ?? null,
             'name' => $user['name'] ?? '',
             'email' => $user['email'] ?? '',
             'avatar' => $user['avatar'] ?? '',
@@ -53,7 +57,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     public function logout($token)
     {
         return $this->getHttpClient()->post(
-            $this->host . '/api/v1/oauth/logout', $this->getRequestOptions($token)
+            $this->getHost().'/api/v1/oauth/logout', $this->getRequestOptions($token)
         );
     }
 
