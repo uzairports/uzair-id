@@ -11,8 +11,8 @@
         }
     ],
     "require": {
-        "php": "^8.2",
-        "laravel/socialite": "^5.24"
+        "php": "^8.3",
+        "laravel/socialite": "^5.31"
     },
     "autoload": {
         "psr-4": {
