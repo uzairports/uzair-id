@@ -5,6 +5,7 @@ namespace Uzairports\Uzairid\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use RuntimeException;
 
 /**
  * @property int $user_id
@@ -38,9 +39,18 @@ class OauthToken extends Model
         ];
     }
 
+    /**
+     * @return BelongsTo<Model, $this>
+     */
     public function user(): BelongsTo
     {
-        return $this->belongsTo(config('auth.providers.users.model'));
+        $model = config('auth.providers.users.model');
+
+        if (! is_string($model) || ! is_subclass_of($model, Model::class)) {
+            throw new RuntimeException('The configured [auth.providers.users.model] is not an Eloquent model.');
+        }
+
+        return $this->belongsTo($model);
     }
 
     /**

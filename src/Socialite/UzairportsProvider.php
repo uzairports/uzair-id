@@ -7,11 +7,13 @@ use GuzzleHttp\RequestOptions;
 use Laravel\Socialite\Two\AbstractProvider;
 use Laravel\Socialite\Two\ProviderInterface;
 use Laravel\Socialite\Two\User;
+use Psr\Http\Message\ResponseInterface;
 
 class UzairportsProvider extends AbstractProvider implements ProviderInterface
 {
     protected string $host = 'https://my.uzairports.com';
 
+    /** @var array<array-key, string> */
     protected $scopes = [];
 
     public function getHost(): string
@@ -41,6 +43,9 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         return json_decode((string) $response->getBody(), true) ?? [];
     }
 
+    /**
+     * @param  array<array-key, mixed>  $user
+     */
     protected function mapUserToObject(array $user): User
     {
         return (new User)->setRaw($user)->map([
@@ -54,14 +59,17 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * @throws GuzzleException
      */
-    public function logout($token)
+    public function logout(string $token): ResponseInterface
     {
         return $this->getHttpClient()->post(
             $this->getHost().'/api/v1/oauth/logout', $this->getRequestOptions($token)
         );
     }
 
-    protected function getRequestOptions($token): array
+    /**
+     * @return array<string, array<string, string>>
+     */
+    protected function getRequestOptions(string $token): array
     {
         return [
             RequestOptions::HEADERS => [
