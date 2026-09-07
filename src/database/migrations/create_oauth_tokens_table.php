@@ -17,7 +17,6 @@ return new class extends Migration
             $table->text('access_token');
             $table->text('refresh_token');
             $table->integer('expires_in');
-            $table->timestamp('expires_at')->nullable();
             $table->timestamps();
         });
     }
