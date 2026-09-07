@@ -10,8 +10,7 @@ use RuntimeException;
 /**
  * @property int $user_id
  * @property string $access_token
- * @property string $refresh_token
- * @property int $expires_in
+ * @property string|null $refresh_token
  * @property Carbon|null $expires_at
  */
 class OauthToken extends Model
@@ -19,7 +18,6 @@ class OauthToken extends Model
     protected $fillable = [
         'access_token',
         'refresh_token',
-        'expires_in',
         'expires_at',
     ];
 
@@ -34,7 +32,6 @@ class OauthToken extends Model
     protected function casts(): array
     {
         return [
-            'expires_in' => 'integer',
             'expires_at' => 'datetime',
         ];
     }

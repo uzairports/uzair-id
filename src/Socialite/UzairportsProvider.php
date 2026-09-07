@@ -11,14 +11,22 @@ use Psr\Http\Message\ResponseInterface;
 
 class UzairportsProvider extends AbstractProvider implements ProviderInterface
 {
-    protected string $host = 'https://my.uzairports.com';
+    private const string DEFAULT_HOST = 'https://my.uzairports.com';
 
     /** @var array<array-key, string> */
     protected $scopes = [];
 
+    /**
+     * The base address every OAuth and API call is built on.
+     *
+     * It is read from the configuration on each call so that the host can be
+     * pointed at a staging instance without rebuilding the driver.
+     */
     public function getHost(): string
     {
-        return $this->host;
+        $host = config('uzairports.host');
+
+        return rtrim(is_string($host) && $host !== '' ? $host : self::DEFAULT_HOST, '/');
     }
 
     protected function getAuthUrl($state): string

@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Http\Middleware;
 
 use Closure;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\Response;
@@ -16,10 +17,14 @@ class EnsureAccessTokenIsFresh
     /**
      * Refresh the UzAirports access token before it expires.
      *
-     * When the refresh token is no longer accepted the session is dropped so
-     * the user is sent back through the SSO flow instead of carrying a dead token.
+     * When the refresh token is no longer accepted the session is dropped and an
+     * authentication failure is raised, so the request is answered the way the
+     * application answers any other unauthenticated one: a redirect back through
+     * the SSO flow for a browser, a 401 for an API client.
      *
      * @param  Closure(Request): Response  $next
+     *
+     * @throws AuthenticationException when the session can no longer be renewed
      */
     public function handle(Request $request, Closure $next): Response
     {
@@ -33,11 +38,13 @@ class EnsureAccessTokenIsFresh
             ->where('user_id', $user->getAuthIdentifier())
             ->first();
 
-        if ($token === null || ! $token->expiresWithin($this->leewayInSeconds())) {
+        $leeway = $this->leewayInSeconds();
+
+        if ($token === null || ! $token->expiresWithin($leeway)) {
             return $next($request);
         }
 
-        if (($this->refreshAccessToken)($token)) {
+        if (($this->refreshAccessToken)($token, $leeway)) {
             return $next($request);
         }
 
@@ -47,7 +54,11 @@ class EnsureAccessTokenIsFresh
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return redirect()->route('login');
+        throw new AuthenticationException(
+            'The UzAirports session has expired.',
+            [],
+            $this->loginUrl(),
+        );
     }
 
     /**
@@ -55,6 +66,16 @@ class EnsureAccessTokenIsFresh
      */
     private function leewayInSeconds(): int
     {
-        return (int) config('services.uzairports.refresh_leeway', 60);
+        return (int) config('uzairports.refresh_leeway', 60);
+    }
+
+    /**
+     * Where a browser is sent to authenticate again.
+     */
+    private function loginUrl(): string
+    {
+        $route = config('uzairports.login_route', 'login');
+
+        return route(is_string($route) && $route !== '' ? $route : 'login');
     }
 }

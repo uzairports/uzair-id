@@ -23,21 +23,30 @@ php artisan migrate
 
 ### Конфигурация
 
-Добавьте настройки в config/services.php:
+Пакет приносит свой `config/uzairports.php` и работает на значениях по умолчанию — достаточно
+заполнить `.env`:
 
-```php
-'uzairports' => [
-    'client_id' => env('UZAIR_CLIENT_ID'),
-    'client_secret' => env('UZAIR_CLIENT_SECRET'),
-    'redirect' => env('UZAIR_CALLBACK_URL'),
-],
-```
-И в .env:
 ```env
 UZAIR_CLIENT_ID=your-client-id
 UZAIR_CLIENT_SECRET=your-client-secret
 UZAIR_CALLBACK_URL=https://your-app.com/auth/callback
 ```
+
+Если нужно изменить сам файл, опубликуйте его:
+
+```bash
+php artisan vendor:publish --tag=uzairid-config
+```
+
+| Ключ | Переменная | По умолчанию | Назначение |
+| --- | --- | --- | --- |
+| `client_id` | `UZAIR_CLIENT_ID` | — | Идентификатор OAuth-клиента |
+| `client_secret` | `UZAIR_CLIENT_SECRET` | — | Секрет OAuth-клиента |
+| `redirect` | `UZAIR_CALLBACK_URL` | — | Адрес callback-маршрута |
+| `host` | `UZAIR_HOST` | `https://my.uzairports.com` | Адрес UzAirports ID; меняется для стенда |
+| `refresh_leeway` | `UZAIR_REFRESH_LEEWAY` | `60` | За сколько секунд до истечения обновлять токен |
+| `login_route` | `UZAIR_LOGIN_ROUTE` | `login` | Имя маршрута повторной аутентификации |
+
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
 
 ### Идентификация пользователя
@@ -66,6 +75,10 @@ Route::get('/auth/redirect', [App\Http\Controllers\OAuthController::class, 'redi
 Route::get('/auth/callback', [App\Http\Controllers\OAuthController::class, 'callback'])->name('callback');
 Route::post('/auth/logout', [App\Http\Controllers\OAuthController::class, 'logout'])->name('logout');
 ```
+
+Имя маршрута аутентификации должно совпадать с `uzairports.login_route` — на него пакет
+возвращает пользователя, когда сессию больше нельзя продлить.
+
 #### Контроллер
 Создайте OAuthController.php:
 
@@ -77,8 +90,11 @@ namespace App\Http\Controllers;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
 use Laravel\Socialite\Facades\Socialite;
+use Laravel\Socialite\Two\User as SocialiteUser;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 
 class OAuthController extends Controller
@@ -93,8 +109,23 @@ class OAuthController extends Controller
         try {
             $uzairUser = Socialite::driver('uzairports')->user();
 
-            /** @var User $user */
-            $user = $resolveUser($uzairUser);
+            $user = DB::transaction(function () use ($uzairUser, $resolveUser): User {
+                /** @var User $user */
+                $user = $resolveUser($uzairUser);
+
+                $user->token()->updateOrCreate(
+                    [
+                        'user_id' => $user->id,
+                    ],
+                    [
+                        'access_token' => $uzairUser->token,
+                        'refresh_token' => $uzairUser->refreshToken,
+                        'expires_at' => $this->expiresAt($uzairUser),
+                    ]
+                );
+
+                return $user;
+            });
         } catch (\Throwable $e) {
             return redirect('/');
         }
@@ -103,31 +134,24 @@ class OAuthController extends Controller
 
         $request->session()->regenerate();
 
-        $user->token()->updateOrCreate(
-            [
-                'user_id' => $user->id
-            ],
-            [
-                'access_token' => $uzairUser->token,
-                'refresh_token' => $uzairUser->refreshToken,
-                'expires_in' => $uzairUser->expiresIn,
-                'expires_at' => now()->addSeconds((int) $uzairUser->expiresIn),
-            ]
-        );
-
-        return redirect('/dashboard');
+        return redirect()->intended('/dashboard');
     }
 
     public function logout(Request $request)
     {
         if (auth()->check()) {
             $user = auth()->user();
-            
+
             if ($user->token) {
-                Socialite::driver('uzairports')->logout($user->token->access_token);
+                try {
+                    Socialite::driver('uzairports')->logout($user->token->access_token);
+                } catch (\Throwable $e) {
+                    // Недоступность SSO не должна мешать выйти локально.
+                }
+
                 $user->token()->delete();
             }
-            
+
             Auth::logout();
         }
 
@@ -138,8 +162,20 @@ class OAuthController extends Controller
             ? new JsonResponse([], 204)
             : redirect('/');
     }
+
+    private function expiresAt(SocialiteUser $uzairUser): ?Carbon
+    {
+        return $uzairUser->expiresIn === null
+            ? null
+            : now()->addSeconds((int) $uzairUser->expiresIn);
+    }
 }
 ```
+
+Пользователь и его токен пишутся в одной транзакции **до** `auth()->login()`: сессия рядом с
+недописанным токеном оставила бы пользователя авторизованным, но без возможности обратиться
+к SSO. Провайдер не обязан возвращать `refresh_token` и время жизни — колонки допускают
+`null`, а неизвестный срок хранится как `null` и трактуется как истёкший.
 #### Модель пользователя
 Добавьте в User.php:
 
@@ -156,14 +192,22 @@ Access token живёт ограниченное время. Пакет хран
 и умеет обменивать `refresh_token` на новый access token через middleware `uzair.token`:
 
 ```php
-Route::get('/dashboard', [HomeController::class, 'index'])
+Route::get('/dashboard', [DashboardController::class, 'index'])
     ->middleware(['auth', 'uzair.token']);
 ```
 
-Middleware обновляет токен, если тот истекает в ближайшие `services.uzairports.refresh_leeway`
+Middleware обновляет токен, если тот истекает в ближайшие `uzairports.refresh_leeway`
 секунд (по умолчанию 60, настраивается через `UZAIR_REFRESH_LEEWAY`). Если SSO отказывается
-обменивать refresh token, токен удаляется, сессия сбрасывается и пользователь отправляется
-на маршрут `login` для повторной аутентификации.
+обменивать refresh token, токен удаляется, сессия сбрасывается и поднимается
+`AuthenticationException` — браузер уезжает на маршрут из `uzairports.login_route` с
+сохранением исходного адреса, а запрос с `Accept: application/json` получает `401`.
+
+UzAirports ID ротирует refresh token, поэтому потратить его можно только один раз: два
+параллельных запроса, обменивающих один и тот же токен, оставили бы проигравшего с уже
+аннулированным. Обмен идёт под блокировкой (`Cache::lock`), и тот, кто её дождался, читает
+токен, сохранённый победителем, вместо повторного обмена. Блокировку держит кеш, поэтому в
+продакшене он должен быть общим для всех процессов приложения (`database`, `redis`,
+`memcached`, `file`): `array` живёт внутри одного процесса и запросы между собой не разведёт.
 
 Токен можно обновить и вручную:
 
