@@ -79,7 +79,9 @@ class RefreshAccessToken
 
             $refreshed = $provider->refreshToken($token->refresh_token);
         } catch (Throwable $e) {
-            Log::warning('Failed to refresh UzAirports access token: '.$e->getMessage(), [
+            $safeMessage = preg_replace('/(client_secret|token|refresh_token)=[^\s&]+/i', '$1=***', $e->getMessage()) ?: $e::class;
+
+            Log::warning('Failed to refresh UzAirports access token: '.$safeMessage, [
                 'user_id' => $token->user_id,
             ]);
 
@@ -98,12 +100,18 @@ class RefreshAccessToken
             return false;
         }
 
+        $expiresIn = $refreshed->expiresIn;
+        if ($expiresIn <= 0) {
+            $fallbackTtl = config('uzairports.default_token_ttl', 3600);
+            $expiresIn = is_numeric($fallbackTtl) && (int) $fallbackTtl > 0 ? (int) $fallbackTtl : 0;
+        }
+
         $token->forceFill([
             'access_token' => $refreshed->token,
             'refresh_token' => $refreshed->refreshToken ?: $token->refresh_token,
-            'expires_at' => $refreshed->expiresIn === null
+            'expires_at' => $expiresIn <= 0
                 ? null
-                : now()->addSeconds((int) $refreshed->expiresIn),
+                : now()->addSeconds($expiresIn),
         ])->save();
 
         UzairTokenRefreshed::dispatch($token);

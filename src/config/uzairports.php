@@ -90,6 +90,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Default Token TTL
+    |--------------------------------------------------------------------------
+    |
+    | When the identity provider does not return an `expires_in` parameter in
+    | the token refresh response, this value (in seconds) is used as fallback
+    | TTL so that the token is not continuously treated as expired on every
+    | subsequent request.
+    |
+    */
+
+    'default_token_ttl' => (int) env('UZAIR_DEFAULT_TOKEN_TTL', 3600),
+
+    /*
+    |--------------------------------------------------------------------------
     | Login Route
     |--------------------------------------------------------------------------
     |
@@ -190,6 +204,8 @@ return [
     'timeout' => (int) env('UZAIR_TIMEOUT', 10),
 
     'connect_timeout' => (int) env('UZAIR_CONNECT_TIMEOUT', 5),
+
+    'revocation_timeout' => (int) env('UZAIR_REVOCATION_TIMEOUT', 3),
 
     /*
     |--------------------------------------------------------------------------

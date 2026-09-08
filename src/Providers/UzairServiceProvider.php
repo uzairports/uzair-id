@@ -157,7 +157,9 @@ class UzairServiceProvider extends ServiceProvider
      */
     private function browserKey(Request $request): string
     {
-        return $request->hasSession()
+        $sessionCookie = config('session.cookie');
+
+        return $request->hasSession() && is_string($sessionCookie) && $request->cookies->has($sessionCookie)
             ? 'session:'.$request->session()->getId()
             : 'ip:'.$request->ip();
     }

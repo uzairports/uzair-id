@@ -85,11 +85,10 @@ class UzairAuthController
                 $request->session()->regenerateToken();
             }
 
-            // An exception can carry no message at all — `InvalidStateException`
-            // used to leave the line reading "callback failed": and nothing
-            // else — so the class stands in when there is nothing to say.
-            Log::error('UzAirports OAuth callback failed: '.($e->getMessage() ?: $e::class), [
-                'exception' => $e,
+            $safeMessage = preg_replace('/(client_secret|token|refresh_token)=[^\s&]+/i', '$1=***', $e->getMessage()) ?: $e::class;
+
+            Log::error('UzAirports OAuth callback failed: '.$safeMessage, [
+                'exception_class' => $e::class,
             ]);
 
             return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
@@ -184,7 +183,15 @@ class UzairAuthController
         $user = Auth::user();
 
         if ($user !== null) {
-            $endSessions($this->accountKey($user));
+            $key = $this->accountKey($user);
+
+            try {
+                $endSessions($key);
+            } catch (Throwable $e) {
+                Log::warning('Error while revoking remote sessions on logoutAll: '.$e->getMessage(), [
+                    'user_id' => $key,
+                ]);
+            }
 
             Auth::logout();
 

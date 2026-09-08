@@ -56,6 +56,10 @@ class EndSessions
     {
         $this->revoke($token);
 
+        if ($token->session_id !== null) {
+            $this->deleteStoredSessionById($token->session_id);
+        }
+
         $token->delete();
     }
 
@@ -109,9 +113,32 @@ class EndSessions
 
     private function reportFailedRevocation(OauthToken $token, Throwable $e): void
     {
-        Log::warning('Failed to revoke an UzAirports token while ending a session: '.($e->getMessage() ?: $e::class), [
+        $safeMessage = preg_replace('/(client_secret|token|refresh_token)=[^\s&]+/i', '$1=***', $e->getMessage()) ?: $e::class;
+
+        Log::warning('Failed to revoke an UzAirports token while ending a session: '.$safeMessage, [
             'user_id' => $token->user_id,
         ]);
+    }
+
+    private function deleteStoredSessionById(string $sessionId): void
+    {
+        if (config('session.driver') !== 'database') {
+            return;
+        }
+
+        $connection = config('session.connection');
+        $table = config('session.table', 'sessions');
+
+        try {
+            DB::connection(is_string($connection) ? $connection : null)
+                ->table(is_string($table) ? $table : 'sessions')
+                ->where('id', $sessionId)
+                ->delete();
+        } catch (Throwable $e) {
+            Log::warning('Failed to delete the stored session of an UzAirports user: '.$e->getMessage(), [
+                'session_id' => $sessionId,
+            ]);
+        }
     }
 
     /**

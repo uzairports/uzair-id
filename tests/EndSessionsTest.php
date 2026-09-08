@@ -197,6 +197,27 @@ class EndSessionsTest extends TestCase
         $this->assertSame(0, OauthToken::query()->count());
     }
 
+    public function test_ending_single_token_drops_its_stored_session(): void
+    {
+        config(['session.driver' => 'database']);
+
+        $user = TestUser::create(['uzair_id' => '7009']);
+        $this->login($user, 'device-one-session', 'token_one');
+        $this->login($user, 'device-two-session', 'token_two');
+
+        $tokenOne = $user->tokens()->where('session_id', 'device-one-session')->firstOrFail();
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logout')->with('token_one')->once();
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)->end($tokenOne);
+
+        $this->assertSame(1, OauthToken::query()->count());
+        $this->assertSame(['device-two-session'], $this->storedSessionIds());
+    }
+
     private function login(TestUser $user, string $sessionId, string $accessToken): void
     {
         $user->tokens()->create([

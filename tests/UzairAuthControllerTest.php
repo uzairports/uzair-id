@@ -523,7 +523,8 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
-     * @param array<string, mixed> $attributes
+     * @param  array<string, mixed>  $attributes
+     *
      * @throws Throwable
      */
     private function fakeIdentity(array $attributes, int $times = 1, ?string $logout = null): void

@@ -194,6 +194,23 @@ class RefreshAccessTokenTest extends TestCase
         $this->assertTrue((new RefreshAccessToken)($token));
     }
 
+    public function test_refreshed_token_without_expiry_adopts_default_token_ttl(): void
+    {
+        config()->set('uzairports.default_token_ttl', 7200);
+
+        $token = $this->expiredToken('3011');
+
+        $this->providerReturns('old_refresh', new Token('new_access', 'new_refresh', 0, []));
+
+        $this->assertTrue((new RefreshAccessToken)($token));
+
+        $stored = $token->fresh();
+        $this->assertNotNull($stored);
+        $this->assertSame('new_access', $stored->access_token);
+        $this->assertNotNull($stored->expires_at);
+        $this->assertEqualsWithDelta(7200, now()->diffInSeconds($stored->expires_at), 5);
+    }
+
     private function expiredToken(string $uzairId, ?string $refreshToken = 'old_refresh'): OauthToken
     {
         $user = TestUser::create(['uzair_id' => $uzairId]);

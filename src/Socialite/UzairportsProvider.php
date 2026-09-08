@@ -108,7 +108,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     public function logout(string $token): ResponseInterface
     {
         return $this->getHttpClient()->post(
-            $this->getHost().'/api/v1/oauth/logout', $this->getRequestOptions($token)
+            $this->getHost().'/api/v1/oauth/logout', $this->getRequestOptions($token, $this->revocationTimeout())
         );
     }
 
@@ -124,7 +124,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      * into the account for whoever holds a copy of it.
      *
      * The endpoint is not guessed: without `uzairports.revoke_endpoint` there
-     * is nothing to call and the method says so by returning null, so a
+     * is nothing to call, and the method says so by returning null, so a
      * deployment whose provider offers no such endpoint pays no failed request
      * on every logout.
      *
@@ -138,9 +138,11 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
             return null;
         }
 
+        $revocationTimeout = $this->revocationTimeout();
+
         return $this->getHttpClient()->post($this->absoluteUrl($endpoint), [
-            RequestOptions::TIMEOUT => $this->timeout(),
-            RequestOptions::CONNECT_TIMEOUT => $this->connectTimeout(),
+            RequestOptions::TIMEOUT => $revocationTimeout,
+            RequestOptions::CONNECT_TIMEOUT => min($this->connectTimeout(), $revocationTimeout),
             RequestOptions::HEADERS => ['Accept' => 'application/json'],
             RequestOptions::FORM_PARAMS => [
                 'token' => $refreshToken,
@@ -166,11 +168,13 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * @return array<string, mixed>
      */
-    protected function getRequestOptions(string $token): array
+    protected function getRequestOptions(string $token, ?int $timeout = null): array
     {
+        $effectiveTimeout = $timeout ?? $this->timeout();
+
         return [
-            RequestOptions::TIMEOUT => $this->timeout(),
-            RequestOptions::CONNECT_TIMEOUT => $this->connectTimeout(),
+            RequestOptions::TIMEOUT => $effectiveTimeout,
+            RequestOptions::CONNECT_TIMEOUT => min($this->connectTimeout(), $effectiveTimeout),
             RequestOptions::HEADERS => [
                 'Accept' => 'application/json',
                 'Authorization' => 'Bearer '.$token,
@@ -186,5 +190,10 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     private function connectTimeout(): int
     {
         return (int) ($this->config['connect_timeout'] ?? config('uzairports.connect_timeout', 5));
+    }
+
+    private function revocationTimeout(): int
+    {
+        return (int) ($this->config['revocation_timeout'] ?? config('uzairports.revocation_timeout', 3));
     }
 }
