@@ -93,11 +93,22 @@ class OauthToken extends Model
      * Pruning runs through Laravel's `model:prune` command, which the host
      * application has to schedule for the rows to actually go.
      *
+     * A row carrying no `updated_at` is swept on sight. `timestamps()` leaves
+     * the column nullable, so a row written around Eloquent — a seeder, a data
+     * migration, an import — can arrive without one, and null answers no
+     * comparison: matched by `<` alone such a row is not merely kept, it is
+     * kept for good, because nothing but `keepAlive()` on a request it may
+     * never see would ever give it a date to be measured by.
+     *
      * @return Builder<OauthToken>
      */
     public function prunable(): Builder
     {
-        return $this->newQuery()->where('updated_at', '<', now()->subMinutes(self::sessionLifetime() * 2));
+        return $this->newQuery()->where(
+            fn (Builder $query) => $query
+                ->where('updated_at', '<', now()->subMinutes(self::sessionLifetime() * 2))
+                ->orWhereNull('updated_at')
+        );
     }
 
     /**

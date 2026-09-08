@@ -125,6 +125,29 @@ class OauthTokenTest extends TestCase
     }
 
     /**
+     * `timestamps()` leaves the column nullable, so a row written around
+     * Eloquent — a seeder, a data migration, an import — can arrive with no
+     * write date. Null answers no comparison, so `updated_at < ?` on its own
+     * kept such a row for good: nothing else would ever date it.
+     */
+    public function test_a_login_with_no_write_date_is_pruned(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1013']);
+
+        DB::table('oauth_tokens')->insert([
+            'user_id' => $user->getKey(),
+            'session_id' => 'imported-session',
+            'access_token' => 'written_around_eloquent',
+            'created_at' => null,
+            'updated_at' => null,
+        ]);
+
+        $this->assertSame(1, (new OauthToken)->prunable()->count());
+    }
+
+    /**
      * A closed browser never signs out, so the grant it was issued outlives
      * the row unless the sweep hands it back.
      */
