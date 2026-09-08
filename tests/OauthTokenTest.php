@@ -163,4 +163,15 @@ class OauthTokenTest extends TestCase
         $token->user_agent = null;
         $this->assertSame('Unknown device', $token->deviceLabel());
     }
+
+    public function test_uzbek_localization_is_supported(): void
+    {
+        app()->setLocale('uz');
+
+        $this->assertSame('Noma’lum qurilma', __('uzairid::messages.unknown_device'));
+        $this->assertSame('Kirish amalga oshmadi. Qaytadan urinib ko‘ring.', __('uzairid::messages.authentication_failed'));
+        $this->assertSame('UzAirports ID sessiyasi muddati tugadi.', __('uzairid::messages.session_expired'));
+        $this->assertSame('Ushbu qurilmadagi seans yakunlandi.', __('uzairid::messages.session_ended'));
+        $this->assertSame('Kirish yakunlanmadi: sessiya saqlanib qolmadi. Bitta sahifada qaytadan kiring.', __('uzairid::messages.handshake_lost'));
+    }
 }

@@ -45,14 +45,11 @@ class UzairAuthController
     /**
      * Complete the SSO handshake and open a session for the identity behind it.
      *
-     * The session is regenerated first, before anything is written against it:
-     * a login has to leave the user on a session id that was never used while
-     * they were a guest, and the token row is named by the session it belongs
-     * to, so that id has to be settled before the row is written.
-     *
-     * The account and its token are then written in one transaction before the
-     * user is authenticated: a session opened next to a half-written token would
-     * keep the user signed in with no way to call the identity provider.
+     * The account, authentication, and token are written in one atomic transaction:
+     * `Auth::login()` migrates the session to prevent fixation, settling the final
+     * session ID before the token row is persisted. If storing the token fails,
+     * the transaction rolls back the account changes, the session is invalidated,
+     * and the user is left unauthenticated.
      */
     public function callback(
         Request $request,
@@ -76,14 +73,18 @@ class UzairAuthController
 
             $previousSessionId = $this->sessionId($request);
 
-            $request->session()->regenerate();
-
             ['user' => $user, 'token' => $token] = $this->storeIdentity($request, $uzairUser, $resolveUser);
         } catch (InvalidStateException) {
             $this->reportLostHandshake($request);
 
             return $this->handshakeFailed(__('uzairid::messages.handshake_lost'));
         } catch (Throwable $e) {
+            Auth::logout();
+            if ($request->hasSession()) {
+                $request->session()->invalidate();
+                $request->session()->regenerateToken();
+            }
+
             // An exception can carry no message at all — `InvalidStateException`
             // used to leave the line reading "callback failed": and nothing
             // else — so the class stands in when there is nothing to say.
@@ -92,14 +93,6 @@ class UzairAuthController
             ]);
 
             return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
-        }
-
-        Auth::login($user);
-
-        $currentSessionId = $this->sessionId($request);
-
-        if ($currentSessionId !== null && $token->session_id !== $currentSessionId) {
-            $token->forceFill(['session_id' => $currentSessionId])->save();
         }
 
         $this->endPreviousLogin($endSessions, $token, $previousSessionId);
@@ -239,8 +232,8 @@ class UzairAuthController
     /**
      * End the login this same browser was holding before it signed in again.
      *
-     * Regenerating the session gives the browser a new id, and the row is named
-     * by the id — so without this, running the flow twice in one browser would
+     * Regenerating the session gives the browser a new id. The id names the row
+     * — so without this, running the flow twice in one browser would
      * leave the first row behind, pointing at a session nobody can reach and
      * holding a grant nobody gave up.
      */
@@ -275,13 +268,14 @@ class UzairAuthController
     /**
      * Write the account and its token, retrying once if another callback won the race.
      *
-     * Two callbacks for an identity with no local account yet both see nothing
+     * Two callbacks for an identity with no local account, yet both see nothing
      * to update and both insert; the unique index on `users.uzair_id` refuses
      * the loser. Its transaction has already been rolled back by then, so the
      * work is simply done again — the second attempt finds the row the winner
      * wrote and updates it.
      *
      * @return array{user: Authenticatable&Model, token: OauthToken}
+     *
      * @throws Throwable
      */
     private function storeIdentity(Request $request, SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): array
@@ -298,18 +292,20 @@ class UzairAuthController
      *
      * @throws RuntimeException
      * @throws Throwable
-     * when the configured auth model cannot be signed in
+     *                   when the configured auth model cannot be signed in
      */
     private function writeIdentity(Request $request, SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): array
     {
-        $sessionId = $this->sessionId($request);
-
-        return DB::transaction(function () use ($request, $sessionId, $uzairUser, $resolveUser): array {
+        return DB::transaction(function () use ($request, $uzairUser, $resolveUser): array {
             $user = $resolveUser($uzairUser);
 
             if (! $user instanceof Authenticatable) {
                 throw new RuntimeException('The configured [auth.providers.users.model] cannot be authenticated.');
             }
+
+            Auth::login($user);
+
+            $sessionId = $this->sessionId($request);
 
             $token = OauthToken::query()->firstOrNew([
                 'user_id' => $user->getKey(),
@@ -333,8 +329,8 @@ class UzairAuthController
     /**
      * Resolve the moment the issued access token stops being accepted.
      *
-     * The identity provider does not have to say how long the token lives. An
-     * unknown expiry is stored as null, which the refresh middleware treats as
+     * The identity provider does not have to say how long the token lives.
+     * Unknown expiry is stored as null, which the refresh middleware treats as
      * expired, so the token is renewed on the next request rather than used
      * until it is refused.
      */

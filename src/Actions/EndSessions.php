@@ -35,7 +35,9 @@ class EndSessions
     {
         $tokens = OauthToken::query()
             ->where('user_id', $userId)
-            ->when($exceptSessionId !== null, fn ($query) => $query->where('session_id', '!=', $exceptSessionId))
+            ->when($exceptSessionId !== null, fn ($query) => $query->where(
+                fn ($q) => $q->whereNull('session_id')->orWhere('session_id', '!=', $exceptSessionId)
+            ))
             ->get();
 
         foreach ($tokens as $token) {

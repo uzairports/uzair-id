@@ -90,6 +90,7 @@ class UzairportsProviderTest extends TestCase
     /**
      * A provider that offers no revocation endpoint must not be guessed at: a
      * logout would then pay a failed request every time.
+     *
      * @throws GuzzleException
      */
     public function test_no_refresh_token_is_revoked_without_a_configured_endpoint(): void

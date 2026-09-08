@@ -1,0 +1,15 @@
+<?php
+
+return [
+
+    'authentication_failed' => 'Kirish amalga oshmadi. Qaytadan urinib ko‘ring.',
+
+    'handshake_lost' => 'Kirish yakunlanmadi: sessiya saqlanib qolmadi. Bitta sahifada qaytadan kiring.',
+
+    'session_expired' => 'UzAirports ID sessiyasi muddati tugadi.',
+
+    'session_ended' => 'Ushbu qurilmadagi seans yakunlandi.',
+
+    'unknown_device' => 'Noma’lum qurilma',
+
+];

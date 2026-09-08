@@ -61,6 +61,29 @@ class EndSessionsTest extends TestCase
         $this->assertSame(['desktop-session'], $this->storedSessionIds());
     }
 
+    public function test_login_with_null_session_is_ended_when_another_is_spared(): void
+    {
+        config(['session.driver' => 'database']);
+
+        $user = TestUser::create(['uzair_id' => '70021']);
+        $user->tokens()->create([
+            'access_token' => 'cli_token',
+            'session_id' => null,
+        ]);
+        $this->login($user, 'desktop-session', 'desktop_token');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logout')->with('cli_token')->once();
+        $provider->shouldNotReceive('logout')->with('desktop_token');
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $ended = (new EndSessions)($user->getKey(), 'desktop-session');
+
+        $this->assertSame(1, $ended);
+        $this->assertSame(['desktop-session'], OauthToken::query()->pluck('session_id')->all());
+    }
+
     public function test_other_accounts_are_left_alone(): void
     {
         config(['session.driver' => 'database']);
