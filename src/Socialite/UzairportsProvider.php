@@ -16,6 +16,15 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /** @var array<array-key, string> */
     protected $scopes = [];
 
+    protected ?string $host = null;
+
+    public function setHost(?string $host): static
+    {
+        $this->host = $host;
+
+        return $this;
+    }
+
     /**
      * The base address every OAuth and API call is built on.
      *
@@ -24,6 +33,10 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     public function getHost(): string
     {
+        if (is_string($this->host) && $this->host !== '') {
+            return rtrim($this->host, '/');
+        }
+
         $host = config('uzairports.host');
 
         return rtrim(is_string($host) && $host !== '' ? $host : self::DEFAULT_HOST, '/');
@@ -31,7 +44,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
     protected function getAuthUrl($state): string
     {
-        return $this->buildAuthUrlFromBase($this->getHost().'/oauth/authorize', $state);
+        return $this->buildAuthUrlFromBase($this->getHost().'/oauth/authorize', (string) $state);
     }
 
     protected function getTokenUrl(): string
@@ -40,12 +53,14 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     }
 
     /**
+     * @return array<array-key, mixed>
+     *
      * @throws GuzzleException
      */
-    protected function getUserByToken($token)
+    protected function getUserByToken($token): array
     {
         $response = $this->getHttpClient()->get(
-            $this->getHost().'/api/user', $this->getRequestOptions($token)
+            $this->getHost().'/api/user', $this->getRequestOptions((string) $token)
         );
 
         return json_decode((string) $response->getBody(), true) ?? [];
@@ -75,11 +90,13 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     }
 
     /**
-     * @return array<string, array<string, string>>
+     * @return array<string, mixed>
      */
     protected function getRequestOptions(string $token): array
     {
         return [
+            RequestOptions::TIMEOUT => (int) ($this->config['timeout'] ?? config('uzairports.timeout', 10)),
+            RequestOptions::CONNECT_TIMEOUT => (int) ($this->config['connect_timeout'] ?? config('uzairports.connect_timeout', 5)),
             RequestOptions::HEADERS => [
                 'Accept' => 'application/json',
                 'Authorization' => 'Bearer '.$token,

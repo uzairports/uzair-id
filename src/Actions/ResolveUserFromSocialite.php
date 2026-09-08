@@ -37,9 +37,14 @@ class ResolveUserFromSocialite
             ?? $this->findUnlinkedUserByEmail($email)
             ?? $this->newUser();
 
+        $name = $uzairUser->getName();
+        if (blank($name)) {
+            $name = $user->getAttribute('name') ?: 'User';
+        }
+
         $user->forceFill([
             'uzair_id' => $uzairId,
-            'name' => $uzairUser->getName(),
+            'name' => $name,
             'email' => $email,
         ])->save();
 
@@ -54,7 +59,7 @@ class ResolveUserFromSocialite
      */
     private function findUnlinkedUserByEmail(?string $email): ?Model
     {
-        if ($email === null) {
+        if ($email === null || ! config('uzairports.link_by_email', true)) {
             return null;
         }
 

@@ -10,7 +10,8 @@ composer require uzairports/uzair-id
 ```
 Опубликуйте конфигурацию и миграции:
 ```bash
-php artisan vendor:publish --provider=Uzairports\Uzairid\Providers\UzairServiceProvider
+php artisan vendor:publish --tag=uzairid-config
+php artisan vendor:publish --tag=uzairid-migrations
 ```
 ```bash
 php artisan migrate
@@ -46,6 +47,10 @@ php artisan vendor:publish --tag=uzairid-config
 | `host` | `UZAIR_HOST` | `https://my.uzairports.com` | Адрес UzAirports ID; меняется для стенда |
 | `refresh_leeway` | `UZAIR_REFRESH_LEEWAY` | `60` | За сколько секунд до истечения обновлять токен |
 | `login_route` | `UZAIR_LOGIN_ROUTE` | `login` | Имя маршрута повторной аутентификации |
+| `redirect_to` | `UZAIR_REDIRECT_TO` | `dashboard` | Маршрут или URL перенаправления после входа |
+| `link_by_email` | `UZAIR_LINK_BY_EMAIL` | `true` | Связывать ли старые локальные аккаунты по email |
+| `timeout` | `UZAIR_TIMEOUT` | `10` | Таймаут HTTP-запросов к SSO (сек) |
+| `connect_timeout` | `UZAIR_CONNECT_TIMEOUT` | `5` | Таймаут соединения с SSO (сек) |
 
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
 
@@ -59,7 +64,7 @@ php artisan vendor:publish --tag=uzairid-config
 
 Сопоставление выполняет `ResolveUserFromSocialite`: он находит аккаунт по `uzair_id`,
 обновляет имя и почту данными от SSO и создаёт запись, если её ещё нет. Аккаунты, заведённые
-до установки пакета, один раз привязываются по совпадению почты — но только те, у которых
+до установки пакета, один раз привязываются по совпадению почты (если включено `link_by_email`) — но только те, у которых
 `uzair_id` ещё пуст, чтобы чужую учётку нельзя было забрать сменой почты в SSO.
 
 Модель пользователя берётся из `auth.providers.users.model`, поля пишутся через `forceFill()`,
@@ -72,8 +77,8 @@ php artisan vendor:publish --tag=uzairid-config
 
 ```php
 Route::get('/auth/redirect', [App\Http\Controllers\OAuthController::class, 'redirect'])->name('login');
-Route::get('/auth/callback', [App\Http\Controllers\OAuthController::class, 'callback'])->name('callback');
-Route::post('/auth/logout', [App\Http\Controllers\OAuthController::class, 'logout'])->name('logout');
+Route::get('/auth/callback', [App\Http\Controllers\OAuthController::class, 'callback'])->name('uzair.callback');
+Route::post('/auth/logout', [App\Http\Controllers\OAuthController::class, 'logout'])->name('uzair.logout');
 ```
 
 Имя маршрута аутентификации должно совпадать с `uzairports.login_route` — на него пакет
@@ -130,18 +135,23 @@ class OAuthController extends Controller
             return redirect('/');
         }
 
-        auth()->login($user);
+        Auth::login($user);
 
         $request->session()->regenerate();
 
-        return redirect()->intended('/dashboard');
+        \Uzairports\Uzairid\Events\UzairAuthenticated::dispatch($user, $uzairUser, $user->token);
+
+        $redirectTo = config('uzairports.redirect_to', 'dashboard');
+        $target = \Illuminate\Support\Facades\Route::has($redirectTo) ? route($redirectTo) : url($redirectTo);
+
+        return redirect()->intended($target);
     }
 
     public function logout(Request $request)
     {
-        if (auth()->check()) {
-            $user = auth()->user();
+        $user = Auth::user();
 
+        if ($user !== null) {
             if ($user->token) {
                 try {
                     Socialite::driver('uzairports')->logout($user->token->access_token);
@@ -153,10 +163,13 @@ class OAuthController extends Controller
             }
 
             Auth::logout();
+            \Uzairports\Uzairid\Events\UzairLoggedOut::dispatch($user);
         }
 
-        $request->session()->invalidate();
-        $request->session()->regenerateToken();
+        if ($request->hasSession()) {
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+        }
 
         return $request->wantsJson()
             ? new JsonResponse([], 204)
@@ -172,19 +185,35 @@ class OAuthController extends Controller
 }
 ```
 
-Пользователь и его токен пишутся в одной транзакции **до** `auth()->login()`: сессия рядом с
+Пользователь и его токен пишутся в одной транзакции **до** `Auth::login()`: сессия рядом с
 недописанным токеном оставила бы пользователя авторизованным, но без возможности обратиться
-к SSO. Провайдер не обязан возвращать `refresh_token` и время жизни — колонки допускают
-`null`, а неизвестный срок хранится как `null` и трактуется как истёкший.
+к SSO. Токены хранятся в зашифрованном виде (`encrypted`).
+
 #### Модель пользователя
-Добавьте в User.php:
+Подключите трейт `HasUzairToken` в модели `User.php`:
 
 ```php
-    public function token()
-    {
-        return $this->hasOne(OauthToken::class);
-    }
+namespace App\Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Uzairports\Uzairid\Concerns\HasUzairToken;
+
+class User extends Authenticatable
+{
+    use HasUzairToken;
+}
 ```
+
+Трейт предоставляет отношение `$user->token`, а также удобные методы `$user->getUzairAccessToken()` и `$user->isUzairUser()`.
+
+### События (Events)
+
+Пакет инициирует следующие события, на которые можно подписаться для аудита и синхронизации:
+
+- `Uzairports\Uzairid\Events\UzairAuthenticated ($user, $socialiteUser, $token)` — успешный вход через SSO.
+- `Uzairports\Uzairid\Events\UzairLoggedOut ($user)` — выход пользователя.
+- `Uzairports\Uzairid\Events\UzairTokenRefreshed ($token)` — успешное фоновое обновление токена.
+- `Uzairports\Uzairid\Events\UzairTokenRefreshFailed ($token, $exception)` — отказ в продлении токена.
 
 ### Обновление токена
 

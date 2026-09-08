@@ -12,7 +12,7 @@ use Uzairports\Uzairid\Models\OauthToken;
 
 class EnsureAccessTokenIsFresh
 {
-    public function __construct(private readonly RefreshAccessToken $refreshAccessToken) {}
+    public function __construct(private RefreshAccessToken $refreshAccessToken) {}
 
     /**
      * Refresh the UzAirports access token before it expires.
@@ -51,8 +51,11 @@ class EnsureAccessTokenIsFresh
         $token->delete();
 
         Auth::logout();
-        $request->session()->invalidate();
-        $request->session()->regenerateToken();
+
+        if ($request->hasSession()) {
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+        }
 
         throw new AuthenticationException(
             'The UzAirports session has expired.',

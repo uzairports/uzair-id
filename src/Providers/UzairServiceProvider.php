@@ -32,10 +32,19 @@ class UzairServiceProvider extends ServiceProvider
         $socialite = $this->app->make(Factory::class);
 
         $socialite->extend('uzairports', function ($app) use ($socialite) {
-            return $socialite->buildProvider(
+            $config = $app['config']['uzairports'] ?? [];
+
+            /** @var UzairportsProvider $provider */
+            $provider = $socialite->buildProvider(
                 UzairportsProvider::class,
-                $app['config']['uzairports']
+                $config
             );
+
+            if (! empty($config['host']) && is_string($config['host'])) {
+                $provider->setHost($config['host']);
+            }
+
+            return $provider;
         });
 
         $this->app->make(Router::class)->aliasMiddleware('uzair.token', EnsureAccessTokenIsFresh::class);
@@ -44,14 +53,14 @@ class UzairServiceProvider extends ServiceProvider
             $this->configPath() => config_path('uzairports.php'),
         ], 'uzairid-config');
 
-        // The publisher stamps each file with a timestamp one second apart, in the
-        // order listed here, so this order is the order the migrations run in.
+        $time = time();
+
         $this->publishesMigrations([
-            __DIR__.'/../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_remove_password_column_from_users_table.php'),
-            __DIR__.'/../database/migrations/add_uzair_id_to_users_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_add_uzair_id_to_users_table.php'),
-            __DIR__.'/../database/migrations/relax_email_column_on_users_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_relax_email_column_on_users_table.php'),
-            __DIR__.'/../database/migrations/create_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', time()).'_create_oauth_tokens_table.php'),
-        ]);
+            __DIR__.'/../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_remove_password_column_from_users_table.php'),
+            __DIR__.'/../database/migrations/add_uzair_id_to_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_uzair_id_to_users_table.php'),
+            __DIR__.'/../database/migrations/relax_email_column_on_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_relax_email_column_on_users_table.php'),
+            __DIR__.'/../database/migrations/create_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_create_oauth_tokens_table.php'),
+        ], 'uzairid-migrations');
     }
 
     private function configPath(): string

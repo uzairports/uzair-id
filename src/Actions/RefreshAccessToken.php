@@ -7,6 +7,8 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Throwable;
+use Uzairports\Uzairid\Events\UzairTokenRefreshed;
+use Uzairports\Uzairid\Events\UzairTokenRefreshFailed;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
@@ -59,6 +61,8 @@ class RefreshAccessToken
         }
 
         if (blank($token->refresh_token)) {
+            UzairTokenRefreshFailed::dispatch($token);
+
             return false;
         }
 
@@ -72,6 +76,18 @@ class RefreshAccessToken
                 'user_id' => $token->user_id,
             ]);
 
+            UzairTokenRefreshFailed::dispatch($token, $e);
+
+            return false;
+        }
+
+        if (blank($refreshed->token)) {
+            Log::warning('UzAirports refresh token exchange returned empty access token', [
+                'user_id' => $token->user_id,
+            ]);
+
+            UzairTokenRefreshFailed::dispatch($token);
+
             return false;
         }
 
@@ -82,6 +98,8 @@ class RefreshAccessToken
                 ? null
                 : now()->addSeconds((int) $refreshed->expiresIn),
         ])->save();
+
+        UzairTokenRefreshed::dispatch($token);
 
         return true;
     }

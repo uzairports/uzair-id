@@ -56,4 +56,42 @@ return [
 
     'login_route' => env('UZAIR_LOGIN_ROUTE', 'login'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Default Redirect Destination
+    |--------------------------------------------------------------------------
+    |
+    | The route or path users are redirected to after a successful login if no
+    | previous intended URL was recorded in the session.
+    |
+    */
+
+    'redirect_to' => env('UZAIR_REDIRECT_TO', 'dashboard'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Account Linking by Email
+    |--------------------------------------------------------------------------
+    |
+    | Whether existing local accounts without an UzAirports ID should be
+    | claimed by email on first SSO login.
+    |
+    */
+
+    'link_by_email' => (bool) env('UZAIR_LINK_BY_EMAIL', true),
+
+    /*
+    |--------------------------------------------------------------------------
+    | HTTP Client Timeouts
+    |--------------------------------------------------------------------------
+    |
+    | Request timeout and connection timeout in seconds for calls to the
+    | identity provider.
+    |
+    */
+
+    'timeout' => (int) env('UZAIR_TIMEOUT', 10),
+
+    'connect_timeout' => (int) env('UZAIR_CONNECT_TIMEOUT', 5),
+
 ];
