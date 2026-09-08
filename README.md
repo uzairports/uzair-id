@@ -17,10 +17,21 @@ php artisan vendor:publish --tag=uzairid-migrations
 php artisan migrate
 ```
 
-Публикуются четыре миграции: они приводят таблицу `users` к виду, пригодному для SSO
-(добавляют `uzair_id`, убирают `password` и ограничения с `email`), и создают таблицу
-`oauth_tokens`. Все изменения `users` идемпотентны — если колонка уже есть или ограничение
-уже снято, шаг пропускается, поэтому миграции безопасно публиковать в существующее приложение.
+Публикуются шесть миграций: они приводят таблицу `users` к виду, пригодному для SSO
+(добавляют `uzair_id`, убирают `password` и ограничения с `email`), создают таблицу
+`oauth_tokens` и доводят её до вида «одна строка — один вход». Все изменения существующих
+таблиц идемпотентны — если колонка уже есть или ограничение уже снято, шаг пропускается,
+поэтому миграции безопасно публиковать в существующее приложение.
+
+> Обновляетесь с версии, где у пользователя был один токен? Строки без `session_id` при
+> миграции удаляются: они держат токен для браузера, на который больше нельзя указать.
+> Пользователи войдут заново.
+
+Тексты сообщений (en, ru) при необходимости публикуются отдельно:
+
+```bash
+php artisan vendor:publish --tag=uzairid-lang
+```
 
 ### Конфигурация
 
@@ -45,14 +56,28 @@ php artisan vendor:publish --tag=uzairid-config
 | `client_secret` | `UZAIR_CLIENT_SECRET` | — | Секрет OAuth-клиента |
 | `redirect` | `UZAIR_CALLBACK_URL` | — | Адрес callback-маршрута |
 | `host` | `UZAIR_HOST` | `https://my.uzairports.com` | Адрес UzAirports ID; меняется для стенда |
+| `pkce` | `UZAIR_PKCE` | `true` | Привязывать ли код авторизации к одноразовому verifier |
+| `scopes` | `UZAIR_SCOPES` | — | Запрашиваемые scope через пробел |
 | `refresh_leeway` | `UZAIR_REFRESH_LEEWAY` | `60` | За сколько секунд до истечения обновлять токен |
 | `login_route` | `UZAIR_LOGIN_ROUTE` | `login` | Имя маршрута повторной аутентификации |
 | `redirect_to` | `UZAIR_REDIRECT_TO` | `dashboard` | Маршрут или URL перенаправления после входа |
-| `link_by_email` | `UZAIR_LINK_BY_EMAIL` | `true` | Связывать ли старые локальные аккаунты по email |
+| `redirect_on_error` | `UZAIR_REDIRECT_ON_ERROR` | `/` | Куда вернуть пользователя, если вход не удался |
+| `redirect_after_logout` | `UZAIR_REDIRECT_AFTER_LOGOUT` | `/` | Куда вернуть пользователя после выхода |
+| `single_session` | `UZAIR_SINGLE_SESSION` | `false` | Завершать ли остальные входы аккаунта при новом входе |
+| `link_by_email` | `UZAIR_LINK_BY_EMAIL` | `false` | Связывать ли старые локальные аккаунты по email |
+| `routes.prefix` | `UZAIR_ROUTE_PREFIX` | `auth` | Префикс маршрутов пакета |
+| `routes.throttle` | `UZAIR_ROUTE_THROTTLE` | `60,1` | Лимит запросов на SSO-эндпоинты (`попыток,минут`), на браузер |
 | `timeout` | `UZAIR_TIMEOUT` | `10` | Таймаут HTTP-запросов к SSO (сек) |
 | `connect_timeout` | `UZAIR_CONNECT_TIMEOUT` | `5` | Таймаут соединения с SSO (сек) |
 
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
+
+#### PKCE
+
+По умолчанию пакет отправляет `code_challenge`/`code_challenge_method=S256`: код авторизации
+привязывается к одноразовому verifier в сессии, поэтому перехваченный код никто, кроме
+запросившего его браузера, обменять не сможет. Если ваш экземпляр UzAirports ID отвергает
+`code_challenge`, отключите PKCE через `UZAIR_PKCE=false`.
 
 ### Идентификация пользователя
 
@@ -63,9 +88,15 @@ php artisan vendor:publish --tag=uzairid-config
 Именно поэтому миграции снимают с `email` уникальность и `NOT NULL`.
 
 Сопоставление выполняет `ResolveUserFromSocialite`: он находит аккаунт по `uzair_id`,
-обновляет имя и почту данными от SSO и создаёт запись, если её ещё нет. Аккаунты, заведённые
-до установки пакета, один раз привязываются по совпадению почты (если включено `link_by_email`) — но только те, у которых
-`uzair_id` ещё пуст, чтобы чужую учётку нельзя было забрать сменой почты в SSO.
+обновляет имя и почту данными от SSO и создаёт запись, если её ещё нет.
+
+Аккаунты, заведённые до установки пакета, можно один раз привязать по совпадению почты —
+для этого есть `link_by_email`. **По умолчанию привязка выключена:** SSO не гарантирует, что
+сообщённый им адрес когда-либо подтверждался, а непроверенного адреса достаточно, чтобы
+забрать чужую учётку. Включайте её только на время миграции. Даже включённая, она
+срабатывает лишь тогда, когда `uzair_id` у аккаунта ещё пуст **и** такой аккаунт ровно один:
+уникальность с `email` снята, поэтому один и тот же адрес могут нести несколько записей, и
+выбирать из них наугад пакет не станет.
 
 Модель пользователя берётся из `auth.providers.users.model`, поля пишутся через `forceFill()`,
 так что перечислять их в `$fillable` не требуется.
@@ -73,121 +104,76 @@ php artisan vendor:publish --tag=uzairid-config
 ### Аутентификация
 
 #### Маршруты
-Добавьте в routes/web.php:
+
+Пакет приносит и маршруты, и контроллер. Добавьте в `routes/web.php`:
 
 ```php
-Route::get('/auth/redirect', [App\Http\Controllers\OAuthController::class, 'redirect'])->name('login');
-Route::get('/auth/callback', [App\Http\Controllers\OAuthController::class, 'callback'])->name('uzair.callback');
-Route::post('/auth/logout', [App\Http\Controllers\OAuthController::class, 'logout'])->name('uzair.logout');
+use Uzairports\Uzairid\Uzair;
+
+Uzair::routes();
 ```
 
-Имя маршрута аутентификации должно совпадать с `uzairports.login_route` — на него пакет
-возвращает пользователя, когда сессию больше нельзя продлить.
+Регистрируются три маршрута под префиксом `uzairports.routes.prefix` (по умолчанию `auth`):
+
+| Метод | URI | Имя |
+| --- | --- | --- |
+| `GET` | `/auth/redirect` | значение `uzairports.login_route` (по умолчанию `login`) |
+| `GET` | `/auth/callback` | `uzair.callback` |
+| `POST` | `/auth/logout` | `uzair.logout` |
+| `POST` | `/auth/logout-all` | `uzair.logoutAll` |
+
+Вызов должен стоять в `routes/web.php`: OAuth-флоу нужны сессия и CSRF из middleware-группы
+`web`.
+
+Эндпоинты неаутентифицированы, а каждый callback стоит похода к SSO, поэтому они
+регистрируются за именованным лимитером `uzairid`. **Бюджет считается на браузер, а не на
+адрес:** офис за одним NAT — это один адрес для сервера, и лимит, достаточно низкий чтобы
+быть полезным, выбил бы всех, стоило паре коллег войти одновременно. За адресом при этом
+остаётся потолок в десять бюджетов — для клиента, который игнорирует cookie и иначе приходил
+бы каждый раз с новой сессией.
+
+По умолчанию 60 запросов в минуту на браузер. Один вход стоит двух запросов — redirect и
+callback, — поэтому бюджет намеренно щедрый: он останавливает скрипт, а не человека.
+
+Имя маршрута аутентификации совпадает с `uzairports.login_route` — на него пакет возвращает
+пользователя, когда сессию больше нельзя продлить.
+
+Параметры можно переопределить, в том числе подменив контроллер своим наследником:
+
+```php
+Uzair::routes([
+    'prefix' => 'sso',
+    'throttle' => 'my-limiter',  // имя своего лимитера, либо пара «попыток,минут»,
+                                 // либо null — зарегистрировать без лимита
+    'controller' => \App\Http\Controllers\OAuthController::class,
+]);
+
+Снять лимит целиком, не трогая маршруты:
+
+```env
+UZAIR_ROUTE_THROTTLE=
+```
+```
 
 #### Контроллер
-Создайте OAuthController.php:
 
-```php
-<?php
+`Uzairports\Uzairid\Http\Controllers\UzairAuthController` выполняет весь обмен:
 
-namespace App\Http\Controllers;
+- сессия перевыпускается **до** записи — вход должен оставить пользователя на id, которого
+  не существовало, пока он был гостем, а строка входа именуется этим id;
+- пользователь и его токен пишутся **в одной транзакции до** `Auth::login()` — сессия рядом
+  с недописанным токеном оставила бы пользователя авторизованным, но без возможности
+  обратиться к SSO;
+- если два callback одновременно заводят один и тот же новый аккаунт, проигравший упирается
+  в уникальный индекс `users.uzair_id`, его транзакция откатывается, и работа повторяется —
+  вторая попытка находит запись, которую записал победитель;
+- повторный вход в том же браузере не оставляет за собой строку: перевыпуск сессии меняет id,
+  и вход, который этот браузер держал до того, завершается;
+- `logout` завершает только текущее устройство, `logoutAll` — все.
 
-use App\Models\User;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\DB;
-use Laravel\Socialite\Facades\Socialite;
-use Laravel\Socialite\Two\User as SocialiteUser;
-use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
+Токены хранятся в зашифрованном виде (`encrypted`).
 
-class OAuthController extends Controller
-{
-    public function redirect()
-    {
-        return Socialite::driver('uzairports')->redirect();
-    }
-
-    public function callback(Request $request, ResolveUserFromSocialite $resolveUser)
-    {
-        try {
-            $uzairUser = Socialite::driver('uzairports')->user();
-
-            $user = DB::transaction(function () use ($uzairUser, $resolveUser): User {
-                /** @var User $user */
-                $user = $resolveUser($uzairUser);
-
-                $user->token()->updateOrCreate(
-                    [
-                        'user_id' => $user->id,
-                    ],
-                    [
-                        'access_token' => $uzairUser->token,
-                        'refresh_token' => $uzairUser->refreshToken,
-                        'expires_at' => $this->expiresAt($uzairUser),
-                    ]
-                );
-
-                return $user;
-            });
-        } catch (\Throwable $e) {
-            return redirect('/');
-        }
-
-        Auth::login($user);
-
-        $request->session()->regenerate();
-
-        \Uzairports\Uzairid\Events\UzairAuthenticated::dispatch($user, $uzairUser, $user->token);
-
-        $redirectTo = config('uzairports.redirect_to', 'dashboard');
-        $target = \Illuminate\Support\Facades\Route::has($redirectTo) ? route($redirectTo) : url($redirectTo);
-
-        return redirect()->intended($target);
-    }
-
-    public function logout(Request $request)
-    {
-        $user = Auth::user();
-
-        if ($user !== null) {
-            if ($user->token) {
-                try {
-                    Socialite::driver('uzairports')->logout($user->token->access_token);
-                } catch (\Throwable $e) {
-                    // Недоступность SSO не должна мешать выйти локально.
-                }
-
-                $user->token()->delete();
-            }
-
-            Auth::logout();
-            \Uzairports\Uzairid\Events\UzairLoggedOut::dispatch($user);
-        }
-
-        if ($request->hasSession()) {
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
-        }
-
-        return $request->wantsJson()
-            ? new JsonResponse([], 204)
-            : redirect('/');
-    }
-
-    private function expiresAt(SocialiteUser $uzairUser): ?Carbon
-    {
-        return $uzairUser->expiresIn === null
-            ? null
-            : now()->addSeconds((int) $uzairUser->expiresIn);
-    }
-}
-```
-
-Пользователь и его токен пишутся в одной транзакции **до** `Auth::login()`: сессия рядом с
-недописанным токеном оставила бы пользователя авторизованным, но без возможности обратиться
-к SSO. Токены хранятся в зашифрованном виде (`encrypted`).
+Если нужно изменить шаг, унаследуйтесь от контроллера и передайте его в `Uzair::routes()`.
 
 #### Модель пользователя
 Подключите трейт `HasUzairToken` в модели `User.php`:
@@ -204,7 +190,88 @@ class User extends Authenticatable
 }
 ```
 
-Трейт предоставляет отношение `$user->token`, а также удобные методы `$user->getUzairAccessToken()` и `$user->isUzairUser()`.
+Трейт даёт:
+
+| Метод | Что возвращает |
+| --- | --- |
+| `$user->tokens` | все входы аккаунта — по одному на устройство |
+| `$user->currentToken()` | вход текущего браузера, либо `null` |
+| `$user->getUzairAccessToken()` | access token текущего браузера, либо `null` |
+| `$user->token` | последний по времени вход, каким бы устройством он ни был сделан |
+| `$user->isUzairUser()` | связан ли аккаунт с UzAirports ID |
+
+`$user->token` оставлен для показа чего-то об аккаунте. **Не действуйте от его имени:** на
+втором устройстве это чужой браузер. Всё, что обращается к SSO от лица человека перед вами,
+должно брать `currentToken()`.
+
+Запрос без сессии — API-клиент, консольная команда, очередь — не принадлежит ни одному
+браузеру, поэтому `currentToken()` для него `null`.
+
+### Несколько устройств
+
+Строка `oauth_tokens` — это один вход, а не «токен аккаунта»: уникальна пара
+`(user_id, session_id)`. Один и тот же человек может быть залогинен с телефона и с рабочего
+компьютера одновременно, и у каждого браузера свой грант — ровно так, как это задумано в
+OAuth: каждый обменял собственный код авторизации, значит и ротирует собственный refresh
+token.
+
+`uzair.token` ищет токен по паре, поэтому чужая строка для запроса не существует. Если строки
+для этой сессии нет, а `uzair_id` у пользователя заполнен, вход был завершён: сессия
+сбрасывается и поднимается `AuthenticationException` — браузер уезжает на `login`,
+API-клиент получает `401`. Аккаунтов без `uzair_id` это не касается, локальные учётки живут
+как жили.
+
+#### Завершение входов
+
+`EndSessions` делает три вещи, и каждая закрывает пробел двух других:
+
+1. **отзывает токен в SSO.** Без этого устройство всего лишь уезжает на `login`, а UzAirports
+   ID, который всё ещё держит сессию для его браузера, отвечает свежим кодом авторизации — и
+   устройство заходит обратно, не показав ни одной формы;
+2. **удаляет строку**, поэтому `uzair.token` отказывает этой сессии при любом драйвере сессий;
+3. **удаляет саму сессию из хранилища**, поэтому устройство, чей следующий запрос не дойдёт до
+   middleware, тоже теряет сессию. Доступно только драйверу `database`.
+
+Отсюда следствие: вешайте `uzair.token` на все аутентифицированные маршруты, а не только на
+те, где нужен свежий access token.
+
+`POST /auth/logout` завершает текущее устройство, `POST /auth/logout-all` — все, включая
+текущее. Недоступность SSO не оставляет пользователя залогиненным: строка удаляется в любом
+случае, а ошибка пишется в лог.
+
+#### Список активных входов
+
+```blade
+@foreach ($user->tokens as $login)
+    {{ $login->deviceLabel() }} · {{ $login->ip_address }} · {{ $login->created_at }}
+    @if ($login->is($user->currentToken())) (это устройство) @endif
+@endforeach
+```
+
+`deviceLabel()` — догадка по `User-Agent`, строке, которую браузер волен выдумать: её хватает,
+чтобы человек узнал свой телефон в списке, и никогда не хватает, чтобы что-то на ней решать.
+
+#### Уборка
+
+Закрытый браузер не выходит — он просто перестаёт приходить, и его строка остаётся. `OauthToken`
+реализует `Prunable`: строки, не обновлявшиеся дольше двух `session.lifetime`, именуют сессию,
+которой в хранилище давно нет. Запланируйте уборку в `routes/console.php`:
+
+```php
+Schedule::command('model:prune')->daily();
+```
+
+#### Единственная сессия
+
+Если одновременная работа с нескольких устройств — то, что вам нужно запретить:
+
+```env
+UZAIR_SINGLE_SESSION=true
+```
+
+Тогда вход завершает все остальные входы аккаунта. Учтите: полагаться это будет на то, что
+ваш `/api/v1/oauth/logout` гасит грант переданного токена. Если он завершает SSO-сессию
+учётной записи целиком, отзыв старого токена заденет и только что выданный.
 
 ### События (Events)
 
@@ -229,11 +296,13 @@ Middleware обновляет токен, если тот истекает в б
 секунд (по умолчанию 60, настраивается через `UZAIR_REFRESH_LEEWAY`). Если SSO отказывается
 обменивать refresh token, токен удаляется, сессия сбрасывается и поднимается
 `AuthenticationException` — браузер уезжает на маршрут из `uzairports.login_route` с
-сохранением исходного адреса, а запрос с `Accept: application/json` получает `401`.
+сохранением исходного адреса, а запрос с `Accept: application/json` получает `401`. Если
+маршрута с таким именем нет, пользователь отправляется на корень сайта, а несоответствие
+пишется в лог — конфигурационная опечатка не превращается в 500.
 
 UzAirports ID ротирует refresh token, поэтому потратить его можно только один раз: два
-параллельных запроса, обменивающих один и тот же токен, оставили бы проигравшего с уже
-аннулированным. Обмен идёт под блокировкой (`Cache::lock`), и тот, кто её дождался, читает
+параллельных запроса одного и того же браузера, обменивающих один и тот же токен, оставили бы
+проигравшего с уже аннулированным. Обмен идёт под блокировкой (`Cache::lock`), и тот, кто её дождался, читает
 токен, сохранённый победителем, вместо повторного обмена. Блокировку держит кеш, поэтому в
 продакшене он должен быть общим для всех процессов приложения (`database`, `redis`,
 `memcached`, `file`): `array` живёт внутри одного процесса и запросы между собой не разведёт.
@@ -243,7 +312,14 @@ UzAirports ID ротирует refresh token, поэтому потратить 
 ```php
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 
-$refreshed = app(RefreshAccessToken::class)($user->token);
+$refreshed = app(RefreshAccessToken::class)($user->currentToken());
+```
+
+### Тесты и статический анализ
+
+```bash
+composer test
+composer analyse
 ```
 
 ## Лицензия

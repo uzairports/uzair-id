@@ -55,15 +55,32 @@ class ResolveUserFromSocialite
      * Find an account created before the package was installed.
      *
      * An account without an e-mail address carries no evidence of who owns it,
-     * so it is never claimed this way.
+     * so it is never claimed this way. Neither is an address more than one
+     * unclaimed account carries: the migrations drop the unique index on
+     * `users.email`, so duplicates are expected, and picking one of them would
+     * hand the identity whichever row the database happened to return first.
+     *
+     * Linking is off unless the host application turns it on, because the
+     * identity provider does not promise that the address it reports was ever
+     * verified, and an unverified address is enough to claim the account.
      */
     private function findUnlinkedUserByEmail(?string $email): ?Model
     {
-        if ($email === null || ! config('uzairports.link_by_email', true)) {
+        if ($email === null || ! config('uzairports.link_by_email', false)) {
             return null;
         }
 
-        return $this->query()->whereNull('uzair_id')->firstWhere('email', $email);
+        $candidates = $this->query()
+            ->whereNull('uzair_id')
+            ->where('email', $email)
+            ->limit(2)
+            ->get();
+
+        if ($candidates->count() !== 1) {
+            return null;
+        }
+
+        return $candidates->first();
     }
 
     /**

@@ -42,9 +42,12 @@ class RefreshAccessTokenTest extends TestCase
         $refresher = new RefreshAccessToken;
         $result = $refresher($token);
 
+        $stored = $token->fresh();
+
         $this->assertTrue($result);
-        $this->assertSame('new_access', $token->fresh()->access_token);
-        $this->assertSame('new_refresh', $token->fresh()->refresh_token);
+        $this->assertNotNull($stored);
+        $this->assertSame('new_access', $stored->access_token);
+        $this->assertSame('new_refresh', $stored->refresh_token);
         Event::assertDispatched(UzairTokenRefreshed::class);
     }
 

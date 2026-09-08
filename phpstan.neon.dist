@@ -1,0 +1,16 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
+parameters:
+    paths:
+        - src/
+        - tests/
+
+    level: 8
+
+    # `env()` is only ever read from the package's own configuration file.
+    configDirectories:
+        - src/config
+
+    excludePaths:
+        - src/database/migrations/

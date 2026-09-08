@@ -33,6 +33,33 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Proof Key for Code Exchange
+    |--------------------------------------------------------------------------
+    |
+    | Whether the authorization code is bound to a one-time verifier, so that a
+    | code intercepted on its way back cannot be redeemed by anyone else. Turn
+    | it off only for an identity provider that rejects `code_challenge`.
+    |
+    */
+
+    'pkce' => (bool) env('UZAIR_PKCE', true),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Scopes
+    |--------------------------------------------------------------------------
+    |
+    | The scopes requested on the authorization URL, as a space-separated list.
+    | Empty means the identity provider decides what the token may reach.
+    |
+    */
+
+    'scopes' => array_values(array_filter(
+        explode(' ', (string) env('UZAIR_SCOPES', ''))
+    )),
+
+    /*
+    |--------------------------------------------------------------------------
     | Refresh Leeway
     |--------------------------------------------------------------------------
     |
@@ -70,15 +97,68 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Redirect Destinations Around the Flow
+    |--------------------------------------------------------------------------
+    |
+    | Where the user lands when the handshake could not be completed, and where
+    | a browser goes after logging out. Both accept a route name or a path.
+    |
+    */
+
+    'redirect_on_error' => env('UZAIR_REDIRECT_ON_ERROR', '/'),
+
+    'redirect_after_logout' => env('UZAIR_REDIRECT_AFTER_LOGOUT', '/'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Routes
+    |--------------------------------------------------------------------------
+    |
+    | Defaults for the routes `Uzair::routes()` registers. The throttle is an
+    | `attempts,minutes` pair spent per browser, not per address: an office
+    | behind one NAT gateway is a single address, and a limit low enough to be
+    | worth having would lock everyone out the moment a few colleagues signed in
+    | together. One sign-in costs two requests — the redirect and the callback —
+    | so the budget is generous by design. Set it to null to lift the limit.
+    |
+    */
+
+    'routes' => [
+
+        'prefix' => env('UZAIR_ROUTE_PREFIX', 'auth'),
+
+        'throttle' => env('UZAIR_ROUTE_THROTTLE', '60,1'),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Single Active Session
+    |--------------------------------------------------------------------------
+    |
+    | Whether signing in ends every other login the account holds, leaving only
+    | the browser that just authenticated. Off by default: an account is
+    | normally allowed a phone and a desktop at once, and users who want the
+    | rest gone have the "sign out everywhere" endpoint to say so. Turn it on
+    | only where concurrent use is something you have to prevent.
+    |
+    */
+
+    'single_session' => (bool) env('UZAIR_SINGLE_SESSION', false),
+
+    /*
+    |--------------------------------------------------------------------------
     | Account Linking by Email
     |--------------------------------------------------------------------------
     |
     | Whether existing local accounts without an UzAirports ID should be
-    | claimed by email on first SSO login.
+    | claimed by email on first SSO login. It is off by default: the identity
+    | provider does not promise the address it reports was ever verified, so
+    | turn it on only for a one-off migration you are willing to stand behind.
     |
     */
 
-    'link_by_email' => (bool) env('UZAIR_LINK_BY_EMAIL', true),
+    'link_by_email' => (bool) env('UZAIR_LINK_BY_EMAIL', false),
 
     /*
     |--------------------------------------------------------------------------

@@ -13,7 +13,7 @@ jobs:
       fail-fast: true
       matrix:
         php: [8.3, 8.4]
-        laravel: [11.*, 12.*]
+        laravel: [11.*, 12.*, 13.*]
         stability: [prefer-lowest, prefer-stable]
 
     name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }}
@@ -38,6 +38,9 @@ jobs:
         run: |
           composer require "illuminate/support:${{ matrix.laravel }}" --no-interaction --no-update
           composer update --${{ matrix.stability }} --prefer-dist --no-interaction
+
+      - name: Analyse
+        run: vendor/bin/phpstan analyse --no-progress
 
       - name: Execute tests
         run: vendor/bin/phpunit
