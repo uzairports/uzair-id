@@ -115,4 +115,49 @@ class ResolveUserFromSocialiteTest extends TestCase
 
         $this->assertSame('Preserved Name', $resolved->getAttribute('name'));
     }
+
+    /**
+     * An address the identity provider did not send is not an address it
+     * withdrew: it is optional on its side, and the sign-in says nothing about
+     * the one already on file. It used to be overwritten with null.
+     */
+    public function test_preserves_the_stored_email_when_socialite_returns_none(): void
+    {
+        TestUser::create([
+            'uzair_id' => '2003',
+            'name' => 'Known Address',
+            'email' => 'known@uzairports.com',
+        ]);
+
+        $socialiteUser = SocialiteUser::fake([
+            'id' => '2003',
+            'name' => 'Known Address',
+            'email' => '',
+        ]);
+
+        $resolver = new ResolveUserFromSocialite;
+        $resolved = $resolver($socialiteUser);
+
+        $this->assertSame('known@uzairports.com', $resolved->getAttribute('email'));
+    }
+
+    public function test_an_address_that_changed_on_the_identity_provider_is_written(): void
+    {
+        TestUser::create([
+            'uzair_id' => '2004',
+            'name' => 'Moved Address',
+            'email' => 'old@uzairports.com',
+        ]);
+
+        $socialiteUser = SocialiteUser::fake([
+            'id' => '2004',
+            'name' => 'Moved Address',
+            'email' => 'new@uzairports.com',
+        ]);
+
+        $resolver = new ResolveUserFromSocialite;
+        $resolved = $resolver($socialiteUser);
+
+        $this->assertSame('new@uzairports.com', $resolved->getAttribute('email'));
+    }
 }

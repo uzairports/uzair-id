@@ -18,6 +18,12 @@ class ResolveUserFromSocialite
      * is therefore just a one-off migration path for accounts created before the
      * package was installed.
      *
+     * What the identity provider leaves out is not an answer about the account.
+     * The name and the e-mail address are optional on its side, and a sign-in
+     * that arrives without one says nothing more than that it was not sent — so
+     * the stored value stands rather than being overwritten with nothing. An
+     * address that actually changed still arrives as an address, and is written.
+     *
      * The profile is written with `forceFill()` so that the host model does not
      * have to expose these columns for mass assignment.
      *
@@ -31,16 +37,18 @@ class ResolveUserFromSocialite
             throw new RuntimeException('UzAirports SSO returned a user without an id.');
         }
 
-        $email = $uzairUser->getEmail() ?: null;
+        $reportedEmail = $uzairUser->getEmail() ?: null;
 
         $user = $this->query()->firstWhere('uzair_id', $uzairId)
-            ?? $this->findUnlinkedUserByEmail($email)
+            ?? $this->findUnlinkedUserByEmail($reportedEmail)
             ?? $this->newUser();
 
         $name = $uzairUser->getName();
         if (blank($name)) {
             $name = $user->getAttribute('name') ?: 'User';
         }
+
+        $email = $reportedEmail ?? $user->getAttribute('email');
 
         $user->forceFill([
             'uzair_id' => $uzairId,

@@ -42,6 +42,34 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     }
 
     /**
+     * A request carrying no session names no browser, so the row it is matched
+     * with is whichever device signed in last — somebody else's. Refusing the
+     * request is right; signing that device out over a call it never made is
+     * not, and the row used to go with the refusal.
+     */
+    public function test_a_request_without_a_session_leaves_the_login_it_borrowed_standing(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4010']);
+
+        $login = $user->tokens()->create([
+            'access_token' => 'the_browsers_token',
+            'refresh_token' => null,
+            'expires_at' => now()->subMinute(),
+            'session_id' => 'the-browsers-session',
+        ]);
+
+        try {
+            $this->handle($this->statelessRequest($user));
+
+            $this->fail('A token that cannot be renewed should have been refused.');
+        } catch (AuthenticationException) {
+            //
+        }
+
+        $this->assertModelExists($login);
+    }
+
+    /**
      * A route name that resolves to nothing used to raise a
      * `RouteNotFoundException` while building the redirect — a 500 in place of
      * the answer, at the one moment the user most needs to be sent back

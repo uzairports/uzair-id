@@ -71,7 +71,14 @@ class EnsureAccessTokenIsFresh
             return $next($request);
         }
 
-        $token->delete();
+        // A request carrying no session is not the browser that made this login
+        // — the row it was matched with belongs to whichever device signed in
+        // last, and dropping it would sign that device out over a call it never
+        // made. The request is still refused, because the token it would have
+        // used cannot be renewed, but the login is left where it stands.
+        if ($request->hasSession()) {
+            $token->delete();
+        }
 
         $this->endSession($request);
 
@@ -87,7 +94,9 @@ class EnsureAccessTokenIsFresh
      *
      * A request without a session — an API client, a console command — names no
      * browser, so there is nothing to match on, and the account's most recent
-     * login is the best that can be said.
+     * login is the best that can be said. It is a guess, and it is somebody
+     * else's row: the caller may read a token through it, but nothing it does
+     * may end that login. `handle()` keeps to that.
      *
      * The session is read off the request this middleware was handed rather
      * than off the global one: they are the same object in an ordinary HTTP
