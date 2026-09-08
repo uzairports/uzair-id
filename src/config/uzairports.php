@@ -50,6 +50,24 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Revoke Grants When Pruning
+    |--------------------------------------------------------------------------
+    |
+    | Whether the cleanup gives each login's grant up at the identity provider
+    | before dropping its row. A closed browser never signs out, so without
+    | this its refresh token stays honoured long after nothing here points at
+    | it — which is the one way a login can end holding a live grant.
+    |
+    | It costs the provider's revocation calls per row, in a command that may
+    | be sweeping thousands. Turn it off only where that backlog is real and
+    | the grants expire on their own.
+    |
+    */
+
+    'revoke_on_prune' => (bool) env('UZAIR_REVOKE_ON_PRUNE', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | Proof Key for Code Exchange
     |--------------------------------------------------------------------------
     |

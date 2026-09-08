@@ -57,12 +57,7 @@ class UzairAuthController
         EndSessions $endSessions,
     ): RedirectResponse {
         if ($request->has('error')) {
-            $error = (string) $request->query('error');
-            $description = (string) $request->query('error_description', '');
-
-            Log::info("UzAirports OAuth callback returned error: {$error}", [
-                'error_description' => $description,
-            ]);
+            Log::info('UzAirports OAuth callback returned an error.');
 
             return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
         }
@@ -85,9 +80,7 @@ class UzairAuthController
                 $request->session()->regenerateToken();
             }
 
-            $safeMessage = preg_replace('/(client_secret|token|refresh_token)=[^\s&]+/i', '$1=***', $e->getMessage()) ?: $e::class;
-
-            Log::error('UzAirports OAuth callback failed: '.$safeMessage, [
+            Log::error('UzAirports OAuth callback failed.', [
                 'exception_class' => $e::class,
             ]);
 
@@ -168,37 +161,6 @@ class UzairAuthController
         return $request->wantsJson()
             ? new JsonResponse([], 204)
             : back();
-    }
-
-    /**
-     * Sign the account out everywhere, this device included.
-     *
-     * Every login the account holds is given up at the identity provider and
-     * dropped, so the other devices are not merely locked out of this
-     * application: they cannot walk back in through SSO on a session the
-     * provider is still holding for them.
-     */
-    public function logoutAll(Request $request, EndSessions $endSessions): JsonResponse|RedirectResponse
-    {
-        $user = Auth::user();
-
-        if ($user !== null) {
-            $key = $this->accountKey($user);
-
-            try {
-                $endSessions($key);
-            } catch (Throwable $e) {
-                Log::warning('Error while revoking remote sessions on logoutAll: '.$e->getMessage(), [
-                    'user_id' => $key,
-                ]);
-            }
-
-            Auth::logout();
-
-            UzairLoggedOut::dispatch($user);
-        }
-
-        return $this->finishLogout($request);
     }
 
     /**

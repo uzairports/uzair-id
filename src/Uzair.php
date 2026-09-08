@@ -21,6 +21,14 @@ class Uzair
      * to name a different limiter, or an `attempts,minutes` pair to be counted
      * by Laravel's default key instead; pass null to register without a limit.
      *
+     * There is no "sign out everywhere" endpoint. Ending an account's logins
+     * means surrendering each grant to the identity provider in turn, and one
+     * request cannot answer for an unbounded number of them: an account signed
+     * in on a dozen devices would spend a dozen revocation timeouts before the
+     * browser heard anything back. `logout-device` ends them one at a time,
+     * off the list of devices the account can already see, and each request
+     * costs one login's worth of waiting.
+     *
      * `logout-device` names a login by its row id, which is always an integer,
      * so the parameter is constrained to digits. Without that a request for
      * `/logout-device/abc` would reach the query and be compared against a
@@ -57,7 +65,6 @@ class Uzair
             Route::get('redirect', [$controller, 'redirect'])->name($loginRoute);
             Route::get('callback', [$controller, 'callback'])->name('uzair.callback');
             Route::post('logout', [$controller, 'logout'])->name('uzair.logout');
-            Route::post('logout-all', [$controller, 'logoutAll'])->name('uzair.logoutAll');
             Route::post('logout-device/{token}', [$controller, 'logoutDevice'])
                 ->whereNumber('token')
                 ->name('uzair.logoutDevice');

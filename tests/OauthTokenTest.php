@@ -2,12 +2,24 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use Exception;
 use Illuminate\Database\UniqueConstraintViolationException;
+use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Laravel\Socialite\Facades\Socialite;
+use Mockery;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class OauthTokenTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        Mockery::close();
+
+        parent::tearDown();
+    }
+
     public function test_tokens_are_encrypted_in_database(): void
     {
         $user = TestUser::create([
@@ -110,6 +122,87 @@ class OauthTokenTest extends TestCase
         $this->travel(5)->hours();
 
         $this->assertSame(1, (new OauthToken)->prunable()->count());
+    }
+
+    /**
+     * A closed browser never signs out, so the grant it was issued outlives
+     * the row unless the sweep hands it back.
+     */
+    public function test_pruning_a_login_gives_its_grant_up_at_the_identity_provider(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1011']);
+
+        $user->tokens()->create([
+            'access_token' => 'abandoned_access_token',
+            'refresh_token' => 'abandoned_refresh_token',
+            'session_id' => 'abandoned-session',
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logout')->with('abandoned_access_token')->once();
+        $provider->shouldReceive('revokeRefreshToken')->with('abandoned_refresh_token')->once();
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->travel(5)->hours();
+
+        $this->assertSame(0, Artisan::call('model:prune', ['--model' => [OauthToken::class]]));
+
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
+     * The sweep runs over a whole table, so an installation whose grants expire
+     * on their own may not want a revocation call per row.
+     */
+    public function test_the_sweep_can_be_told_not_to_revoke(): void
+    {
+        config(['session.lifetime' => 120, 'uzairports.revoke_on_prune' => false]);
+
+        $user = TestUser::create(['uzair_id' => '1012']);
+
+        $user->tokens()->create([
+            'access_token' => 'abandoned_access_token',
+            'session_id' => 'abandoned-session',
+        ]);
+
+        Socialite::shouldReceive('driver')->never();
+
+        $this->travel(5)->hours();
+
+        $this->assertSame(0, Artisan::call('model:prune', ['--model' => [OauthToken::class]]));
+
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
+     * A revocation raised rather than logged would leave the row behind — and
+     * the sweep would come back for it tomorrow, and every day the identity
+     * provider stayed unreachable.
+     */
+    public function test_a_refused_revocation_still_lets_the_row_go(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1013']);
+
+        $user->tokens()->create([
+            'access_token' => 'abandoned_access_token',
+            'session_id' => 'abandoned-session',
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logout')->once()->andThrow(new Exception('SSO service unavailable'));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->travel(5)->hours();
+
+        $this->assertSame(0, Artisan::call('model:prune', ['--model' => [OauthToken::class]]));
+
+        $this->assertSame(0, OauthToken::query()->count());
     }
 
     /**

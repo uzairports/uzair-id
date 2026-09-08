@@ -90,11 +90,28 @@ class UzairRoutesTest extends TestCase
         $this->assertSame(['GET', 'HEAD'], $this->routeFor('sso/redirect')->methods());
         $this->assertSame(['GET', 'HEAD'], $this->routeFor('sso/callback')->methods());
         $this->assertSame(['POST'], $this->routeFor('sso/logout')->methods());
-        $this->assertSame(['POST'], $this->routeFor('sso/logout-all')->methods());
         $this->assertSame(['POST'], $this->routeFor('sso/logout-device/{token}')->methods());
     }
 
+    /**
+     * Ending every login of an account means one revocation timeout per device
+     * inside a single request. The devices are ended one at a time instead, so
+     * nothing here registers an endpoint that fans out.
+     */
+    public function test_no_endpoint_ends_every_login_at_once(): void
+    {
+        Uzair::routes(['prefix' => 'sso']);
+
+        $this->assertFalse(Route::has('uzair.logoutAll'));
+        $this->assertNull($this->findRoute('sso/logout-all'));
+    }
+
     private function routeFor(string $uri): RegisteredRoute
+    {
+        return $this->findRoute($uri) ?? $this->fail("No route is registered for [{$uri}].");
+    }
+
+    private function findRoute(string $uri): ?RegisteredRoute
     {
         foreach (Route::getRoutes()->getRoutes() as $route) {
             if ($route->uri() === $uri) {
@@ -102,7 +119,7 @@ class UzairRoutesTest extends TestCase
             }
         }
 
-        $this->fail("No route is registered for [{$uri}].");
+        return null;
     }
 }
 

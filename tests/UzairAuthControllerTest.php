@@ -230,7 +230,7 @@ class UzairAuthControllerTest extends TestCase
     {
         Log::shouldReceive('error')
             ->once()
-            ->withArgs(fn (string $message): bool => str_contains($message, 'RuntimeException'));
+            ->withArgs(fn (string $message, array $context): bool => $context['exception_class'] === RuntimeException::class);
 
         $provider = Mockery::mock(UzairportsProvider::class);
         $provider->shouldReceive('user')->once()->andThrow(new RuntimeException);
@@ -281,35 +281,6 @@ class UzairAuthControllerTest extends TestCase
         $this->assertSame(['the-other-devices-session'], $user->tokens()->pluck('session_id')->all());
 
         Event::assertDispatched(UzairLoggedOut::class);
-    }
-
-    public function test_logout_all_ends_every_device(): void
-    {
-        $user = TestUser::create(['uzair_id' => '5008', 'name' => 'Leaving Everywhere']);
-        $user->tokens()->create([
-            'access_token' => 'the_other_devices_token',
-            'session_id' => 'the-other-devices-session',
-        ]);
-
-        $provider = Mockery::mock(UzairportsProvider::class);
-        $provider->shouldReceive('user')->once()->andReturn(SocialiteUser::fake([
-            'id' => '5008',
-            'name' => 'Leaving Everywhere',
-            'token' => 'this_devices_token',
-        ]));
-        $provider->shouldReceive('logout')->with('this_devices_token')->once();
-        $provider->shouldReceive('logout')->with('the_other_devices_token')->once();
-
-        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
-
-        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
-
-        $thisDevice = $user->tokens()->where('session_id', '!=', 'the-other-devices-session')->firstOrFail();
-
-        $this->onTheDeviceHolding($thisDevice)->post(route('uzair.logoutAll'))->assertRedirect(url('/'));
-
-        $this->assertGuest();
-        $this->assertSame(0, $user->tokens()->count());
     }
 
     public function test_logout_survives_an_unreachable_identity_provider(): void

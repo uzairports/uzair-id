@@ -72,10 +72,11 @@ class UzairServiceProvider extends ServiceProvider
             /** @var array<string, mixed> $config */
             $config = $app['config']['uzairports'] ?? [];
 
-            $config['guzzle'] = array_merge([
-                'timeout' => $seconds($config['timeout'] ?? null, 10),
-                'connect_timeout' => $seconds($config['connect_timeout'] ?? null, 5),
-            ], (array) ($config['guzzle'] ?? []));
+            $guzzle = (array) ($config['guzzle'] ?? []);
+            $config['guzzle'] = array_merge($guzzle, [
+                'timeout' => $seconds($guzzle['timeout'] ?? $config['timeout'] ?? null, 10),
+                'connect_timeout' => $seconds($guzzle['connect_timeout'] ?? $config['connect_timeout'] ?? null, 5),
+            ]);
 
             /** @var UzairportsProvider $provider */
             $provider = $socialite->buildProvider(
@@ -173,7 +174,7 @@ class UzairServiceProvider extends ServiceProvider
      */
     private function seconds(mixed $value, int $default): int
     {
-        return is_numeric($value) ? (int) $value : $default;
+        return is_numeric($value) && (float) $value > 0 ? (int) ceil((float) $value) : $default;
     }
 
     private function configPath(): string

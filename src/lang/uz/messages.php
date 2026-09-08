@@ -2,6 +2,8 @@
 
 return [
 
+    'temporarily_unavailable' => 'Kirish xizmati vaqtincha ishlamayapti. Birozdan keyin qayta urinib ko‘ring.',
+
     'authentication_failed' => 'Kirish amalga oshmadi. Qaytadan urinib ko‘ring.',
 
     'handshake_lost' => 'Kirish yakunlanmadi: sessiya saqlanib qolmadi. Bitta sahifada qaytadan kiring.',

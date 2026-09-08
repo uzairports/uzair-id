@@ -2,6 +2,8 @@
 
 return [
 
+    'temporarily_unavailable' => 'Sign-in service is temporarily unavailable. Please try again shortly.',
+
     'authentication_failed' => 'Authentication failed. Please try again.',
 
     'handshake_lost' => 'The sign-in did not complete because its session was lost. Please start again, in a single tab.',

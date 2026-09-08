@@ -2,12 +2,14 @@
 
 namespace Uzairports\Uzairid\Actions;
 
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Throwable;
 use Uzairports\Uzairid\Events\UzairTokenRefreshed;
 use Uzairports\Uzairid\Events\UzairTokenRefreshFailed;
@@ -16,16 +18,6 @@ use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class RefreshAccessToken
 {
-    /**
-     * How long the exchange may hold the lock before it is released for someone else.
-     */
-    private const int LOCK_SECONDS = 15;
-
-    /**
-     * How long a request waits for an exchange already running in another process.
-     */
-    private const int WAIT_SECONDS = 10;
-
     /**
      * Exchange the stored refresh token for a fresh access token.
      *
@@ -45,16 +37,25 @@ class RefreshAccessToken
         /** @var LockProvider $cache */
         $cache = is_string($store) && $store !== '' ? Cache::store($store) : Cache::store();
 
+        $lockSeconds = UzairportsProvider::requestTimeout() + 5;
         /** @var Lock $lock */
-        $lock = $cache->lock($this->lockKey($token), self::LOCK_SECONDS);
+        $lock = $cache->lock($this->lockKey($token), $lockSeconds);
 
         try {
             /** @var bool $refreshed */
-            $refreshed = $lock->block(self::WAIT_SECONDS, fn (): bool => $this->exchange($token, $leeway));
+            $refreshed = $lock->block($lockSeconds, fn (): bool => $this->exchange($token, $leeway));
 
             return $refreshed;
         } catch (LockTimeoutException) {
-            return $this->wasRenewedElsewhere($token, $leeway);
+            if ($this->wasRenewedElsewhere($token, $leeway)) {
+                return true;
+            }
+
+            if ($token->fresh() === null) {
+                return false;
+            }
+
+            throw $this->temporarilyUnavailable();
         }
     }
 
@@ -63,6 +64,10 @@ class RefreshAccessToken
      */
     private function exchange(OauthToken $token, int $leeway): bool
     {
+        if ($token->fresh() === null) {
+            return false;
+        }
+
         if ($this->wasRenewedElsewhere($token, $leeway)) {
             return true;
         }
@@ -79,15 +84,19 @@ class RefreshAccessToken
 
             $refreshed = $provider->refreshToken($token->refresh_token);
         } catch (Throwable $e) {
-            $safeMessage = preg_replace('/(client_secret|token|refresh_token)=[^\s&]+/i', '$1=***', $e->getMessage()) ?: $e::class;
-
-            Log::warning('Failed to refresh UzAirports access token: '.$safeMessage, [
+            Log::warning('Failed to refresh UzAirports access token.', [
                 'user_id' => $token->user_id,
+                'exception_class' => $e::class,
+                'http_status' => $e instanceof RequestException ? $e->getResponse()?->getStatusCode() : null,
             ]);
 
             UzairTokenRefreshFailed::dispatch($token, $e);
 
-            return false;
+            if ($this->grantWasRejected($e)) {
+                return false;
+            }
+
+            throw $this->temporarilyUnavailable();
         }
 
         if (blank($refreshed->token)) {
@@ -97,7 +106,7 @@ class RefreshAccessToken
 
             UzairTokenRefreshFailed::dispatch($token);
 
-            return false;
+            throw $this->temporarilyUnavailable();
         }
 
         $expiresIn = $refreshed->expiresIn;
@@ -141,5 +150,21 @@ class RefreshAccessToken
     private function lockKey(OauthToken $token): string
     {
         return "uzairid:refresh-access-token:{$token->id}";
+    }
+
+    private function grantWasRejected(Throwable $exception): bool
+    {
+        if (! $exception instanceof RequestException || $exception->getResponse()?->getStatusCode() !== 400) {
+            return false;
+        }
+
+        $response = json_decode((string) $exception->getResponse()->getBody(), true);
+
+        return is_array($response) && ($response['error'] ?? null) === 'invalid_grant';
+    }
+
+    private function temporarilyUnavailable(): ServiceUnavailableHttpException
+    {
+        return new ServiceUnavailableHttpException(10, __('uzairid::messages.temporarily_unavailable'));
     }
 }

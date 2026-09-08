@@ -141,6 +141,79 @@ class UzairportsProviderTest extends TestCase
         $this->assertSame('https://auth.uzairports.com/revoke', $recorded->uri);
     }
 
+    public function test_refresh_uses_the_effective_timeout_without_following_redirects(): void
+    {
+        config(['uzairports.timeout' => 10, 'uzairports.guzzle.timeout' => 30.5]);
+
+        $provider = $this->provider(['handler' => HandlerStack::create(new MockHandler([
+            function (RequestInterface $request, array $options): Response {
+                $this->assertSame(31, $options['timeout']);
+                $this->assertSame(5, $options['connect_timeout']);
+                $this->assertFalse($options['allow_redirects']);
+
+                return new Response(200, [], '{"access_token":"new-access","expires_in":3600}');
+            },
+        ]))]);
+
+        $this->assertSame('new-access', $provider->refreshToken('old-refresh')->token);
+    }
+
+    public function test_invalid_timeouts_cannot_make_refresh_requests_wait_forever(): void
+    {
+        foreach ([0, -1, 'invalid'] as $timeout) {
+            config(['uzairports.timeout' => $timeout, 'uzairports.connect_timeout' => $timeout]);
+
+            $provider = $this->provider(['handler' => HandlerStack::create(new MockHandler([
+                function (RequestInterface $request, array $options): Response {
+                    $this->assertSame(10, $options['timeout']);
+                    $this->assertSame(5, $options['connect_timeout']);
+
+                    return new Response(200, [], '{"access_token":"new-access","expires_in":3600}');
+                },
+            ]))]);
+
+            $this->assertSame('new-access', $provider->refreshToken('old-refresh')->token);
+        }
+    }
+
+    public function test_refresh_accepts_an_omitted_refresh_token_and_expiry(): void
+    {
+        $provider = $this->provider(['handler' => HandlerStack::create(new MockHandler([
+            new Response(200, [], '{"access_token":"new-access"}'),
+        ]))]);
+
+        $token = $provider->refreshToken('old-refresh');
+
+        $this->assertSame('new-access', $token->token);
+        $this->assertSame('', $token->refreshToken);
+        $this->assertSame(0, $token->expiresIn);
+    }
+
+    public function test_a_logout_redirect_does_not_count_as_a_successful_revocation(): void
+    {
+        $provider = $this->provider(['handler' => HandlerStack::create(new MockHandler([
+            new Response(302, ['Location' => 'https://sso.test/login']),
+        ]))]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('did not confirm token revocation');
+
+        $provider->logout('access-token');
+    }
+
+    public function test_a_refresh_revocation_redirect_does_not_count_as_success(): void
+    {
+        config(['uzairports.revoke_endpoint' => '/oauth/revoke']);
+        $provider = $this->provider(['handler' => HandlerStack::create(new MockHandler([
+            new Response(302, ['Location' => 'https://sso.test/login']),
+        ]))]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('did not confirm token revocation');
+
+        $provider->revokeRefreshToken('refresh-token');
+    }
+
     /**
      * A handler stack that answers with 200 and writes down what it was asked.
      */

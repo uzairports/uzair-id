@@ -9,6 +9,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Uzairports\Uzairid\Actions\EndSessions;
 
 /**
  * One SSO login: the tokens it was issued and the browser session holding them.
@@ -97,6 +98,33 @@ class OauthToken extends Model
     public function prunable(): Builder
     {
         return $this->newQuery()->where('updated_at', '<', now()->subMinutes(self::sessionLifetime() * 2));
+    }
+
+    /**
+     * Give the login's grant up before the row goes.
+     *
+     * Deleting the row says nothing to UzAirports ID: the refresh token it
+     * held keeps working until the identity provider retires it on its own,
+     * and whoever holds a copy of it has a way into the account long after the
+     * browser that earned it stopped coming back. Every other way a login ends
+     * surrenders the grant; the sweep is the one that would not have.
+     *
+     * A provider that refuses is logged and not raised. The row goes either
+     * way: it names a session the store has already collected, so leaving it
+     * behind would only have it swept again tomorrow.
+     *
+     * Each row costs the revocation calls the provider offers, in a command
+     * that may be sweeping thousands of them. Where that backlog is real and
+     * the grants expire on their own, `uzairports.revoke_on_prune` turns the
+     * calls off and leaves the sweep to delete rows and nothing more.
+     */
+    protected function pruning(): void
+    {
+        if (! config('uzairports.revoke_on_prune', true)) {
+            return;
+        }
+
+        app(EndSessions::class)->surrender($this);
     }
 
     /**

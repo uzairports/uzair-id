@@ -2,7 +2,9 @@
 
 namespace Uzairports\Uzairid\Tests;
 
-use Exception;
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Psr7\Request;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
@@ -11,6 +13,7 @@ use Illuminate\Support\Facades\Event;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
 use Mockery;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Events\UzairTokenRefreshed;
 use Uzairports\Uzairid\Events\UzairTokenRefreshFailed;
@@ -71,7 +74,7 @@ class RefreshAccessTokenTest extends TestCase
         $provider->shouldReceive('refreshToken')
             ->with('faulty_refresh')
             ->once()
-            ->andThrow(new Exception('invalid_grant'));
+            ->andThrow(new RequestException('Rejected grant', new Request('POST', 'https://sso.test/oauth/token'), new Response(400, [], '{"error":"invalid_grant"}')));
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
@@ -136,6 +139,32 @@ class RefreshAccessTokenTest extends TestCase
         Event::assertDispatched(UzairTokenRefreshFailed::class);
     }
 
+    public function test_lock_contention_preserves_an_existing_login(): void
+    {
+        $token = $this->expiredToken('lock-contention');
+        $this->lockTimesOut();
+        Socialite::shouldReceive('driver')->never();
+
+        try {
+            (new RefreshAccessToken)($token);
+            $this->fail('An in-progress refresh must answer with a temporary failure.');
+        } catch (ServiceUnavailableHttpException $exception) {
+            $this->assertSame(503, $exception->getStatusCode());
+        }
+
+        $this->assertModelExists($token);
+        $this->assertSame('old_refresh', $token->refresh_token);
+    }
+
+    public function test_a_deleted_login_is_not_exchanged_after_acquiring_the_lock(): void
+    {
+        $token = $this->expiredToken('deleted-login');
+        OauthToken::query()->whereKey($token->getKey())->delete();
+        Socialite::shouldReceive('driver')->never();
+
+        $this->assertFalse((new RefreshAccessToken)($token));
+    }
+
     public function test_an_exchange_that_answers_with_an_empty_access_token_is_refused(): void
     {
         Event::fake([UzairTokenRefreshFailed::class]);
@@ -144,7 +173,12 @@ class RefreshAccessTokenTest extends TestCase
 
         $this->providerReturns('old_refresh', new Token('', 'new_refresh', 3600, []));
 
-        $this->assertFalse((new RefreshAccessToken)($token));
+        try {
+            (new RefreshAccessToken)($token);
+            $this->fail('An invalid token response must answer with a temporary failure.');
+        } catch (ServiceUnavailableHttpException $exception) {
+            $this->assertSame(503, $exception->getStatusCode());
+        }
 
         $stored = $token->fresh();
 

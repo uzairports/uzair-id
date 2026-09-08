@@ -62,6 +62,42 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     }
 
     /**
+     * The refresh exchange and its lock must use the same finite timeout.
+     */
+    public static function requestTimeout(): int
+    {
+        return self::seconds(config('uzairports.guzzle.timeout', config('uzairports.timeout', 10)), 10);
+    }
+
+    /** @return array<array-key, mixed> */
+    protected function getRefreshTokenResponse($refreshToken): array
+    {
+        $response = $this->getHttpClient()->post($this->getTokenUrl(), [
+            RequestOptions::TIMEOUT => self::requestTimeout(),
+            RequestOptions::CONNECT_TIMEOUT => min($this->connectTimeout(), self::requestTimeout()),
+            RequestOptions::ALLOW_REDIRECTS => false,
+            RequestOptions::HEADERS => ['Accept' => 'application/json'],
+            RequestOptions::FORM_PARAMS => [
+                'grant_type' => 'refresh_token',
+                'refresh_token' => $refreshToken,
+                'client_id' => $this->clientId,
+                'client_secret' => $this->clientSecret,
+            ],
+        ]);
+
+        $decoded = json_decode((string) $response->getBody(), true);
+
+        if (! is_array($decoded) || ! is_string($decoded['access_token'] ?? null) || trim($decoded['access_token']) === '') {
+            throw new RuntimeException('UzAirports SSO returned an invalid token response.');
+        }
+
+        $decoded['refresh_token'] = is_string($decoded['refresh_token'] ?? null) ? $decoded['refresh_token'] : '';
+        $decoded['expires_in'] = is_numeric($decoded['expires_in'] ?? null) ? (int) $decoded['expires_in'] : 0;
+
+        return $decoded;
+    }
+
+    /**
      * Read the profile behind an access token.
      *
      * A body that is not a JSON object — an empty response, a bare string, a
@@ -107,9 +143,11 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     public function logout(string $token): ResponseInterface
     {
-        return $this->getHttpClient()->post(
+        $response = $this->getHttpClient()->post(
             $this->getHost().'/api/v1/oauth/logout', $this->getRequestOptions($token, $this->revocationTimeout())
         );
+
+        return $this->ensureRevoked($response);
     }
 
     /**
@@ -140,9 +178,10 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
         $revocationTimeout = $this->revocationTimeout();
 
-        return $this->getHttpClient()->post($this->absoluteUrl($endpoint), [
+        $response = $this->getHttpClient()->post($this->absoluteUrl($endpoint), [
             RequestOptions::TIMEOUT => $revocationTimeout,
             RequestOptions::CONNECT_TIMEOUT => min($this->connectTimeout(), $revocationTimeout),
+            RequestOptions::ALLOW_REDIRECTS => false,
             RequestOptions::HEADERS => ['Accept' => 'application/json'],
             RequestOptions::FORM_PARAMS => [
                 'token' => $refreshToken,
@@ -151,6 +190,17 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
                 'client_secret' => $this->clientSecret,
             ],
         ]);
+
+        return $this->ensureRevoked($response);
+    }
+
+    private function ensureRevoked(ResponseInterface $response): ResponseInterface
+    {
+        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
+            throw new RuntimeException('UzAirports SSO did not confirm token revocation.');
+        }
+
+        return $response;
     }
 
     /**
@@ -175,6 +225,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         return [
             RequestOptions::TIMEOUT => $effectiveTimeout,
             RequestOptions::CONNECT_TIMEOUT => min($this->connectTimeout(), $effectiveTimeout),
+            RequestOptions::ALLOW_REDIRECTS => false,
             RequestOptions::HEADERS => [
                 'Accept' => 'application/json',
                 'Authorization' => 'Bearer '.$token,
@@ -184,16 +235,21 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
     private function timeout(): int
     {
-        return (int) ($this->config['timeout'] ?? config('uzairports.timeout', 10));
+        return self::requestTimeout();
     }
 
     private function connectTimeout(): int
     {
-        return (int) ($this->config['connect_timeout'] ?? config('uzairports.connect_timeout', 5));
+        return self::seconds(config('uzairports.guzzle.connect_timeout', config('uzairports.connect_timeout', 5)), 5);
     }
 
-    private function revocationTimeout(): int
+    public static function revocationTimeout(): int
     {
-        return (int) ($this->config['revocation_timeout'] ?? config('uzairports.revocation_timeout', 3));
+        return self::seconds(config('uzairports.revocation_timeout', 3), 3);
+    }
+
+    private static function seconds(mixed $value, int $default): int
+    {
+        return is_numeric($value) && (float) $value > 0 ? (int) ceil((float) $value) : $default;
     }
 }

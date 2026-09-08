@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Actions;
 
+use GuzzleHttp\Exception\RequestException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
@@ -41,82 +42,93 @@ class EndSessions
             ->get();
 
         foreach ($tokens as $token) {
-            $this->end($token);
+            $token->delete();
         }
 
         $this->deleteStoredSessions($userId, $exceptSessionId);
+
+        foreach ($tokens as $token) {
+            $this->revoke($token);
+        }
 
         return $tokens->count();
     }
 
     /**
-     * End one login: give its token up at the identity provider and drop the row.
+     * Refuse the login locally before submitting remote revocation.
      */
     public function end(OauthToken $token): void
     {
-        $this->revoke($token);
+        $token->delete();
 
         if ($token->session_id !== null) {
             $this->deleteStoredSessionById($token->session_id);
         }
 
-        $token->delete();
+        $this->revoke($token);
     }
 
     /**
-     * Give up both of the login's tokens at the identity provider.
+     * Give a login's grant up at the identity provider, leaving the row alone.
      *
-     * The access token is what `logout` hands back, and it is the only thing
-     * the provider is told about there. The refresh token is surrendered
-     * separately. Nothing in OAuth promises that retiring an access
-     * token retires the refresh token issued with it — and one that outlives
-     * the logout is a way back into the account for whoever holds a copy.
-     * Where the provider offers no revocation endpoint, the second call is a
-     * no-op; see `uzairports.revoke_endpoint`.
-     *
-     * The two are attempted independently, so a provider that refuses one still
-     * hears about the other. An identity provider that cannot be reached at all
-     * must not keep the user signed in here, so the row goes either way and the
-     * failures are only logged.
+     * This is what pruning needs. The sweep deletes the row itself, and the
+     * session it named was collected by the store long before the sweep
+     * reached it — so all that is left is to stop the identity provider
+     * honouring a grant nobody is holding any more.
+     */
+    public function surrender(OauthToken $token): void
+    {
+        $this->revoke($token);
+    }
+
+    /**
+     * Revoke both tokens during this request after local access has ended.
+     * Each call has the provider's revocation timeout. A failed access-token
+     * revocation must not prevent the refresh token from being surrendered.
      */
     private function revoke(OauthToken $token): void
     {
-        if (blank($token->access_token) && blank($token->refresh_token)) {
-            return;
-        }
-
         try {
+            $accessToken = $token->access_token;
+            $refreshToken = $token->refresh_token;
+
+            if (blank($accessToken) && blank($refreshToken)) {
+                return;
+            }
+
             /** @var UzairportsProvider $provider */
             $provider = Socialite::driver('uzairports');
-        } catch (Throwable $e) {
-            $this->reportFailedRevocation($token, $e);
+        } catch (Throwable $exception) {
+            $this->reportFailedRevocation($token, $exception);
 
             return;
         }
 
-        if (filled($token->access_token)) {
+        if (filled($accessToken)) {
             try {
-                $provider->logout($token->access_token);
-            } catch (Throwable $e) {
-                $this->reportFailedRevocation($token, $e);
+                $provider->logout($accessToken);
+            } catch (Throwable $exception) {
+                if (! $exception instanceof RequestException || $exception->getResponse()?->getStatusCode() !== 401) {
+                    $this->reportFailedRevocation($token, $exception);
+                }
             }
         }
 
-        if (filled($token->refresh_token)) {
+        if (filled($refreshToken)) {
             try {
-                $provider->revokeRefreshToken($token->refresh_token);
-            } catch (Throwable $e) {
-                $this->reportFailedRevocation($token, $e);
+                $provider->revokeRefreshToken($refreshToken);
+            } catch (Throwable $exception) {
+                $this->reportFailedRevocation($token, $exception);
             }
         }
     }
 
-    private function reportFailedRevocation(OauthToken $token, Throwable $e): void
+    private function reportFailedRevocation(OauthToken $token, Throwable $exception): void
     {
-        $safeMessage = preg_replace('/(client_secret|token|refresh_token)=[^\s&]+/i', '$1=***', $e->getMessage()) ?: $e::class;
-
-        Log::warning('Failed to revoke an UzAirports token while ending a session: '.$safeMessage, [
+        Log::warning('Failed to revoke an UzAirports token.', [
             'user_id' => $token->user_id,
+            'exception_class' => $exception::class,
+            'http_status' => $exception instanceof RequestException ? $exception->getResponse()?->getStatusCode() : null,
         ]);
     }
 
@@ -135,8 +147,8 @@ class EndSessions
                 ->where('id', $sessionId)
                 ->delete();
         } catch (Throwable $e) {
-            Log::warning('Failed to delete the stored session of an UzAirports user: '.$e->getMessage(), [
-                'session_id' => $sessionId,
+            Log::warning('Failed to delete the stored session of an UzAirports user.', [
+                'exception_class' => $e::class,
             ]);
         }
     }
@@ -164,8 +176,9 @@ class EndSessions
                 ->when($exceptSessionId !== null, fn ($query) => $query->where('id', '!=', $exceptSessionId))
                 ->delete();
         } catch (Throwable $e) {
-            Log::warning('Failed to delete the stored sessions of an UzAirports user: '.$e->getMessage(), [
+            Log::warning('Failed to delete the stored sessions of an UzAirports user.', [
                 'user_id' => $userId,
+                'exception_class' => $e::class,
             ]);
         }
     }
