@@ -12,8 +12,8 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        php: [8.3, 8.4]
-        laravel: [11.*, 12.*, 13.*]
+        php: [8.4]
+        laravel: [13.*]
         stability: [prefer-lowest, prefer-stable]
 
     name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }}
@@ -46,4 +46,4 @@ jobs:
         run: vendor/bin/phpstan analyse --no-progress
 
       - name: Execute tests
-        run: vendor/bin/phpunit
+        run: vendor/bin/pest
