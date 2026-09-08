@@ -11,7 +11,7 @@ return new class extends Migration
      * Run the migrations.
      *
      * `expires_at` is the moment the access token stops being accepted, which is
-     * what the refresh middleware reads. A null expiry is treated as expired,
+     * what the refresh middleware reads. Null expiry is treated as expired,
      * so a token stored without one is renewed on the owner's next request.
      *
      * `refresh_token` is nullable because the identity provider is not obliged
@@ -28,8 +28,13 @@ return new class extends Migration
      * `session_id` is nullable because a token can be issued outside a session
      * — an API client, a console command.
      *
-     * `ip_address` and `user_agent` are what a person recognises their own
+     * `ip_address` and `user_agent` are what a person recognizes their own
      * device by when they are shown the list of their logins.
+     *
+     * `updated_at` is indexed because it is the one column the package reads
+     * without a `user_id` beside it: `OauthToken::prunable()` sweeps the whole
+     * table by it. Every other query names the account, and the unique pair
+     * already covers those.
      */
     public function up(): void
     {
@@ -61,6 +66,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->unique(['user_id', 'session_id']);
+            $table->index('updated_at');
         });
     }
 

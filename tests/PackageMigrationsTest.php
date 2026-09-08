@@ -267,6 +267,64 @@ class PackageMigrationsTest extends TestCase
         $this->assertFalse(Schema::hasColumn('oauth_tokens', 'session_id'));
     }
 
+    /**
+     * `OauthToken::prunable()` sweeps the table by `updated_at` alone — the one
+     * query the package makes without a `user_id` beside it, and so the only
+     * one the unique pair does not already serve.
+     */
+    #[Test]
+    public function test_created_oauth_tokens_are_indexed_for_pruning(): void
+    {
+        $this->createStandardUsersTable();
+
+        $this->migration('add_uzair_id_to_users_table')->up();
+        $this->migration('create_oauth_tokens_table')->up();
+
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['updated_at']));
+    }
+
+    #[Test]
+    public function test_the_upgrade_migration_indexes_a_table_created_before_the_index_existed(): void
+    {
+        Schema::dropIfExists('oauth_tokens');
+
+        Schema::create('oauth_tokens', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('user_id');
+            $table->text('access_token');
+            $table->timestamps();
+        });
+
+        $indexForPruning = $this->migration('index_oauth_tokens_for_pruning');
+
+        $this->assertFalse($this->hasIndexOn('oauth_tokens', ['updated_at']));
+
+        $indexForPruning->up();
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['updated_at']));
+
+        // Idempotency: an installation that already carries the index — from
+        // the create migration or by hand — is left alone.
+        $indexForPruning->up();
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['updated_at']));
+
+        $indexForPruning->down();
+        $this->assertFalse($this->hasIndexOn('oauth_tokens', ['updated_at']));
+    }
+
+    /**
+     * @param  list<string>  $columns
+     */
+    private function hasIndexOn(string $table, array $columns): bool
+    {
+        foreach (Schema::getIndexes($table) as $index) {
+            if ($index['columns'] === $columns) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     #[Test]
     public function test_create_oauth_tokens_supports_string_user_key(): void
     {

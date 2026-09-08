@@ -21,6 +21,12 @@ class Uzair
      * to name a different limiter, or an `attempts,minutes` pair to be counted
      * by Laravel's default key instead; pass null to register without a limit.
      *
+     * `logout-device` names a login by its row id, which is always an integer,
+     * so the parameter is constrained to digits. Without that a request for
+     * `/logout-device/abc` would reach the query and be compared against a
+     * `bigint` column — a 404 on SQLite and MySQL, but a type error, and so a
+     * 500, on PostgreSQL.
+     *
      * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string}  $options
      */
     public static function routes(array $options = []): void
@@ -52,7 +58,9 @@ class Uzair
             Route::get('callback', [$controller, 'callback'])->name('uzair.callback');
             Route::post('logout', [$controller, 'logout'])->name('uzair.logout');
             Route::post('logout-all', [$controller, 'logoutAll'])->name('uzair.logoutAll');
-            Route::post('logout-device/{token}', [$controller, 'logoutDevice'])->name('uzair.logoutDevice');
+            Route::post('logout-device/{token}', [$controller, 'logoutDevice'])
+                ->whereNumber('token')
+                ->name('uzair.logoutDevice');
         });
     }
 }

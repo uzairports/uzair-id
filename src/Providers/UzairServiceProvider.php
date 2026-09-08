@@ -29,7 +29,7 @@ class UzairServiceProvider extends ServiceProvider
      * Apply the settings Socialite cannot read from the driver configuration.
      *
      * `buildProvider()` only understands the client credentials and the
-     * redirect, so the host, the scopes and PKCE are set on the instance it
+     * redirect, so the host, the scopes, and PKCE are set on the instance it
      * returns. PKCE binds the authorization code to a one-time verifier held
      * in the session, which is what stops an intercepted code being redeemed
      * by anyone but the browser that asked for it.
@@ -66,14 +66,15 @@ class UzairServiceProvider extends ServiceProvider
         // no longer this provider. The configuration step is captured up front
         // as a bound callable rather than reached for through `$this`.
         $configureProvider = $this->configureProvider(...);
+        $seconds = $this->seconds(...);
 
-        $socialite->extend('uzairports', function ($app) use ($socialite, $configureProvider) {
+        $socialite->extend('uzairports', function ($app) use ($socialite, $configureProvider, $seconds) {
             /** @var array<string, mixed> $config */
             $config = $app['config']['uzairports'] ?? [];
 
             $config['guzzle'] = array_merge([
-                'timeout' => (int) ($config['timeout'] ?? 10),
-                'connect_timeout' => (int) ($config['connect_timeout'] ?? 5),
+                'timeout' => $seconds($config['timeout'] ?? null, 10),
+                'connect_timeout' => $seconds($config['connect_timeout'] ?? null, 5),
             ], (array) ($config['guzzle'] ?? []));
 
             /** @var UzairportsProvider $provider */
@@ -114,6 +115,7 @@ class UzairServiceProvider extends ServiceProvider
         $this->publishesMigrations([
             __DIR__.'/../database/migrations/add_session_id_to_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_session_id_to_oauth_tokens_table.php'),
             __DIR__.'/../database/migrations/make_oauth_tokens_per_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_make_oauth_tokens_per_session.php'),
+            __DIR__.'/../database/migrations/index_oauth_tokens_for_pruning.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_for_pruning.php'),
         ], 'uzairid-upgrade-migrations');
     }
 
@@ -151,13 +153,25 @@ class UzairServiceProvider extends ServiceProvider
     }
 
     /**
-     * What counts as one browser for the purpose of the limit.
+     * What counts as one browser for the limit.
      */
     private function browserKey(Request $request): string
     {
         return $request->hasSession()
             ? 'session:'.$request->session()->getId()
             : 'ip:'.$request->ip();
+    }
+
+    /**
+     * Read a configured number of seconds, falling back where there is none.
+     *
+     * A timeout that is not a number is a misconfiguration, and casting one
+     * would read as zero — which Guzzle takes to mean "wait forever", turning a
+     * slow identity provider into a hung request. The default stands instead.
+     */
+    private function seconds(mixed $value, int $default): int
+    {
+        return is_numeric($value) ? (int) $value : $default;
     }
 
     private function configPath(): string

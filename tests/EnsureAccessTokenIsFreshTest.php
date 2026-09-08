@@ -7,6 +7,7 @@ use Illuminate\Contracts\Session\Session as SessionContract;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
+use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
@@ -95,8 +96,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     {
         $user = TestUser::create(['uzair_id' => '4004']);
 
-        $session = Session::driver();
-        $session->start();
+        $session = $this->startedSession();
 
         $user->tokens()->create([
             'access_token' => 'current_token',
@@ -132,8 +132,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     {
         $user = TestUser::create(['uzair_id' => '4006']);
 
-        $session = Session::driver();
-        $session->start();
+        $session = $this->startedSession();
 
         $user->tokens()->create([
             'access_token' => 'this_devices_token',
@@ -192,8 +191,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
 
         $user = TestUser::create(['uzair_id' => '4008']);
 
-        $session = Session::driver();
-        $session->start();
+        $session = $this->startedSession();
 
         $token = $user->tokens()->create([
             'access_token' => 'a_token_that_outlives_the_window',
@@ -206,20 +204,19 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
 
         $this->assertSame(0, (new OauthToken)->prunable()->count());
-        $this->assertTrue($token->fresh()?->updated_at->greaterThan(now()->subMinute()));
+        $this->assertTrue($token->fresh()?->updated_at?->greaterThan(now()->subMinute()));
     }
 
     /**
      * The middleware resolves the login to decide whether the session may
-     * continue; a controller asking the same user for it afterwards must be
+     * continue; a controller asking the same user for it afterward must be
      * answered from what was already read.
      */
     public function test_the_login_it_resolved_is_left_on_the_user(): void
     {
         $user = TestUser::create(['uzair_id' => '4009']);
 
-        $session = Session::driver();
-        $session->start();
+        $session = $this->startedSession();
 
         $token = $user->tokens()->create([
             'access_token' => 'valid_token',
@@ -256,6 +253,22 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         $request->setUserResolver(fn () => $user);
 
         return $request;
+    }
+
+    /**
+     * A session with an id, which is what names a login.
+     */
+    private function startedSession(): SessionContract
+    {
+        $session = Session::driver();
+
+        if (! $session instanceof SessionContract) {
+            throw new RuntimeException('The configured session driver is not a session.');
+        }
+
+        $session->start();
+
+        return $session;
     }
 
     private function sessionRequest(TestUser $user, SessionContract $session): Request

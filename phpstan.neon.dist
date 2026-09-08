@@ -6,7 +6,7 @@ parameters:
         - src/
         - tests/
 
-    level: 8
+    level: 9
 
     # `env()` is only ever read from the package's own configuration file.
     configDirectories:

@@ -132,6 +132,6 @@ class RefreshAccessToken
 
     private function lockKey(OauthToken $token): string
     {
-        return 'uzairid:refresh-access-token:'.$token->getKey();
+        return "uzairid:refresh-access-token:{$token->id}";
     }
 }

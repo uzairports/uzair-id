@@ -33,7 +33,7 @@ class EndSessionsTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
-        $ended = (new EndSessions)($user->getKey());
+        $ended = (new EndSessions)($user->id);
 
         $this->assertSame(2, $ended);
         $this->assertSame(0, OauthToken::query()->count());
@@ -54,7 +54,7 @@ class EndSessionsTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
-        $ended = (new EndSessions)($user->getKey(), 'desktop-session');
+        $ended = (new EndSessions)($user->id, 'desktop-session');
 
         $this->assertSame(1, $ended);
         $this->assertSame(['desktop-session'], OauthToken::query()->pluck('session_id')->all());
@@ -78,7 +78,7 @@ class EndSessionsTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
-        $ended = (new EndSessions)($user->getKey(), 'desktop-session');
+        $ended = (new EndSessions)($user->id, 'desktop-session');
 
         $this->assertSame(1, $ended);
         $this->assertSame(['desktop-session'], OauthToken::query()->pluck('session_id')->all());
@@ -99,7 +99,7 @@ class EndSessionsTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
-        (new EndSessions)($user->getKey());
+        (new EndSessions)($user->id);
 
         $this->assertSame(['someone-elses-session'], OauthToken::query()->pluck('session_id')->all());
         $this->assertSame(['someone-elses-session'], $this->storedSessionIds());
@@ -119,7 +119,7 @@ class EndSessionsTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
-        (new EndSessions)($user->getKey());
+        (new EndSessions)($user->id);
 
         $this->assertSame(0, OauthToken::query()->count());
     }
@@ -140,7 +140,7 @@ class EndSessionsTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
-        (new EndSessions)($user->getKey());
+        (new EndSessions)($user->id);
 
         $this->assertSame(0, OauthToken::query()->count());
         $this->assertSame(['phone-session'], $this->storedSessionIds());
@@ -167,7 +167,7 @@ class EndSessionsTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
-        (new EndSessions)($user->getKey());
+        (new EndSessions)($user->id);
 
         $this->assertSame(0, OauthToken::query()->count());
     }
@@ -192,7 +192,7 @@ class EndSessionsTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
-        (new EndSessions)($user->getKey());
+        (new EndSessions)($user->id);
 
         $this->assertSame(0, OauthToken::query()->count());
     }
@@ -206,7 +206,7 @@ class EndSessionsTest extends TestCase
 
         DB::table('sessions')->insert([
             'id' => $sessionId,
-            'user_id' => $user->getKey(),
+            'user_id' => $user->id,
             'payload' => '',
             'last_activity' => now()->getTimestamp(),
         ]);
@@ -217,6 +217,10 @@ class EndSessionsTest extends TestCase
      */
     private function storedSessionIds(): array
     {
-        return DB::table('sessions')->orderBy('id')->pluck('id')->all();
+        return DB::table('sessions')
+            ->orderBy('id')
+            ->pluck('id')
+            ->map(fn (mixed $id): string => is_string($id) ? $id : '')
+            ->all();
     }
 }

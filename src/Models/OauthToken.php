@@ -18,6 +18,7 @@ use RuntimeException;
  * it: each browser exchanged its own authorization code, so each has its own
  * refresh token to rotate.
  *
+ * @property int $id
  * @property int|string $user_id
  * @property string $access_token
  * @property string|null $refresh_token
@@ -25,8 +26,8 @@ use RuntimeException;
  * @property string|null $session_id
  * @property string|null $ip_address
  * @property string|null $user_agent
- * @property Carbon $created_at
- * @property Carbon $updated_at
+ * @property Carbon|null $created_at
+ * @property Carbon|null $updated_at
  */
 class OauthToken extends Model
 {
@@ -86,7 +87,7 @@ class OauthToken extends Model
      * not merely "last refreshed". Without it a login whose access token
      * outlives the window — an identity provider handing out an eight-hour
      * token against a two-hour session lifetime — would go untouched while its
-     * owner worked, and be pruned out from under them.
+     * owner worked and be pruned out from under them.
      *
      * Pruning runs through Laravel's `model:prune` command, which the host
      * application has to schedule for the rows to actually go.
@@ -106,12 +107,19 @@ class OauthToken extends Model
      * changed rather than when the browser was last here. This closes that gap
      * while keeping the cost to one writing per half a session lifetime, instead
      * of one on every request.
+     *
+     * The column is nullable, and a row written around Eloquent — a raw insert,
+     * an import from an earlier version of the package — arrives with nothing
+     * in it. Such a row is not merely unreadable here: `prunable()` compares
+     * against `updated_at`, and null answers no comparison, so it would never
+     * be collected either. It is stamped as seen now, which both answers the
+     * question and puts the row back in reach of pruning.
      */
     public function keepAlive(): void
     {
         $staleAfter = now()->subMinutes(max(intdiv(self::sessionLifetime(), 2), 1));
 
-        if ($this->updated_at->greaterThan($staleAfter)) {
+        if ($this->updated_at !== null && $this->updated_at->greaterThan($staleAfter)) {
             return;
         }
 
@@ -120,10 +128,16 @@ class OauthToken extends Model
 
     /**
      * How long the host application keeps a session, in minutes.
+     *
+     * A lifetime that is not a number is a misconfiguration, and casting one
+     * would read as zero — pruning every login on the next sweep. The default
+     * stands instead.
      */
     private static function sessionLifetime(): int
     {
-        return max((int) config('session.lifetime', 120), 1);
+        $lifetime = config('session.lifetime', 120);
+
+        return max(is_numeric($lifetime) ? (int) $lifetime : 120, 1);
     }
 
     /**

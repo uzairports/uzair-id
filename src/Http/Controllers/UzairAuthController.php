@@ -98,7 +98,7 @@ class UzairAuthController
         $this->endPreviousLogin($endSessions, $token, $previousSessionId);
 
         if (config('uzairports.single_session', false)) {
-            $endSessions($user->getKey(), $token->session_id);
+            $endSessions($this->accountKey($user), $token->session_id);
         }
 
         UzairAuthenticated::dispatch($user, $uzairUser, $token);
@@ -184,7 +184,7 @@ class UzairAuthController
         $user = Auth::user();
 
         if ($user !== null) {
-            $endSessions($user->getAuthIdentifier());
+            $endSessions($this->accountKey($user));
 
             Auth::logout();
 
@@ -192,6 +192,27 @@ class UzairAuthController
         }
 
         return $this->finishLogout($request);
+    }
+
+    /**
+     * The account whose logins are about to be ended.
+     *
+     * `getAuthIdentifier()` promises nothing about what it hands back, and a
+     * key that is neither an integer nor a string names no row: ending "the
+     * logins of that" would either match nothing or, worse, match by whatever
+     * the database made of it.
+     *
+     * @throws RuntimeException when the authenticated user has no usable key
+     */
+    private function accountKey(Authenticatable $user): int|string
+    {
+        $key = $user->getAuthIdentifier();
+
+        if (! is_int($key) && ! is_string($key)) {
+            throw new RuntimeException('The authenticated user has no key that names its logins.');
+        }
+
+        return $key;
     }
 
     /**

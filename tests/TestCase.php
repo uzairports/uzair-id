@@ -93,6 +93,7 @@ abstract class TestCase extends Orchestra
             $table->timestamps();
 
             $table->unique(['user_id', 'session_id']);
+            $table->index('updated_at');
         });
 
         Schema::create('sessions', function (Blueprint $table) {
@@ -107,6 +108,7 @@ abstract class TestCase extends Orchestra
 }
 
 /**
+ * @property int $id
  * @property string|null $uzair_id
  * @property string|null $name
  * @property string|null $email

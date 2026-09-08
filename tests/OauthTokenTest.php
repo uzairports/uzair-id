@@ -135,8 +135,42 @@ class OauthTokenTest extends TestCase
 
         $stored = $token->fresh();
 
+        $this->assertNotNull($writtenAt);
         $this->assertNotNull($stored);
+        $this->assertNotNull($stored->updated_at);
         $this->assertTrue($writtenAt->equalTo($stored->updated_at));
+    }
+
+    /**
+     * A row written around Eloquent — a raw insert, an import from an earlier
+     * version — carries no `updated_at`. Null answers no comparison, so such a
+     * row would never be pruned either; stamping it as seen now both answers
+     * the question and puts it back in reach of the sweep.
+     */
+    public function test_a_login_whose_row_was_never_stamped_is_stamped_as_seen_now(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1010']);
+
+        $token = $user->tokens()->create([
+            'access_token' => 'imported_without_timestamps',
+            'session_id' => 'imported-session',
+        ]);
+
+        DB::table('oauth_tokens')->where('id', $token->getKey())->update(['updated_at' => null]);
+
+        $token->refresh();
+
+        $this->assertNull($token->updated_at);
+
+        $token->keepAlive();
+
+        $stored = $token->fresh();
+
+        $this->assertNotNull($stored);
+        $this->assertNotNull($stored->updated_at);
+        $this->assertSame(0, (new OauthToken)->prunable()->count());
     }
 
     public function test_the_device_label_is_read_off_the_user_agent(): void

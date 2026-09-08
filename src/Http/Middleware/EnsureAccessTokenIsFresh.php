@@ -146,10 +146,16 @@ class EnsureAccessTokenIsFresh
 
     /**
      * How long before the actual expiry the token should be renewed.
+     *
+     * A leeway that is not a number is a misconfiguration, and casting one
+     * would read as no leeway at all — leaving every token to expire in the
+     * middle of the request that was using it. The default stands instead.
      */
     private function leewayInSeconds(): int
     {
-        return (int) config('uzairports.refresh_leeway', 60);
+        $leeway = config('uzairports.refresh_leeway', 60);
+
+        return is_numeric($leeway) ? (int) $leeway : 60;
     }
 
     /**

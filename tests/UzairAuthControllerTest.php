@@ -14,6 +14,7 @@ use Laravel\Socialite\Two\InvalidStateException;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use Mockery;
 use RuntimeException;
+use Throwable;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
@@ -223,7 +224,7 @@ class UzairAuthControllerTest extends TestCase
 
     /**
      * `InvalidStateException` carries no message, which used to leave the log
-     * line reading "callback failed:" and nothing else.
+     * line reading "callback failed": and nothing else.
      */
     public function test_a_failure_carrying_no_message_is_logged_by_its_class(): void
     {
@@ -240,7 +241,7 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
-     * Two callbacks for an identity with no local account yet both see nothing
+     * Two callbacks for an identity with no local account, yet both see nothing
      * to update and both insert. The loser's transaction is rolled back by the
      * unique index on `users.uzair_id`, and the work is done again — this time
      * finding the row the winner wrote.
@@ -411,6 +412,20 @@ class UzairAuthControllerTest extends TestCase
         $this->assertSame(1, $bystander->tokens()->count());
     }
 
+    /**
+     * A login names itself by its row id, which is always an integer. Letting
+     * anything else through would compare a word against a `bigint` column —
+     * nothing found on SQLite and MySQL, a type error and a 500 on PostgreSQL.
+     */
+    public function test_a_login_named_by_something_that_is_not_a_row_id_is_not_found(): void
+    {
+        $user = TestUser::create(['uzair_id' => '5016', 'name' => 'Guessing']);
+
+        $this->actingAs($user)
+            ->post('auth/logout-device/not-a-row-id')
+            ->assertNotFound();
+    }
+
     public function test_ending_a_device_answers_an_api_client_with_204(): void
     {
         $user = TestUser::create(['uzair_id' => '5015', 'name' => 'Api Client']);
@@ -482,7 +497,7 @@ class UzairAuthControllerTest extends TestCase
      */
     private function fromTheBrowser(string $sessionId): void
     {
-        $this->withCookie((string) config('session.cookie'), $sessionId);
+        $this->withCookie($this->sessionCookie(), $sessionId);
     }
 
     /**
@@ -490,11 +505,26 @@ class UzairAuthControllerTest extends TestCase
      */
     private function onTheDeviceHolding(OauthToken $token): static
     {
-        return $this->withCookie((string) config('session.cookie'), (string) $token->session_id);
+        return $this->withCookie($this->sessionCookie(), (string) $token->session_id);
     }
 
     /**
-     * @param  array<string, mixed>  $attributes
+     * The name of the cookie a browser is recognised by.
+     */
+    private function sessionCookie(): string
+    {
+        $cookie = config('session.cookie');
+
+        if (! is_string($cookie)) {
+            throw new RuntimeException('The session cookie has no name, so no browser can be spoken for.');
+        }
+
+        return $cookie;
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     * @throws Throwable
      */
     private function fakeIdentity(array $attributes, int $times = 1, ?string $logout = null): void
     {
