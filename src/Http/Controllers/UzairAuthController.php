@@ -2,13 +2,13 @@
 
 namespace Uzairports\Uzairid\Http\Controllers;
 
+use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -19,6 +19,7 @@ use Laravel\Socialite\Two\InvalidStateException;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\RedirectResponse as SymfonyRedirectResponse;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
@@ -49,7 +50,7 @@ class UzairAuthController
      * they were a guest, and the token row is named by the session it belongs
      * to, so that id has to be settled before the row is written.
      *
-     * The account and its token are then written in one transaction, before the
+     * The account and its token are then written in one transaction before the
      * user is authenticated: a session opened next to a half-written token would
      * keep the user signed in with no way to call the identity provider.
      */
@@ -84,7 +85,7 @@ class UzairAuthController
             return $this->handshakeFailed(__('uzairid::messages.handshake_lost'));
         } catch (Throwable $e) {
             // An exception can carry no message at all — `InvalidStateException`
-            // used to leave the line reading "callback failed:" and nothing
+            // used to leave the line reading "callback failed": and nothing
             // else — so the class stands in when there is nothing to say.
             Log::error('UzAirports OAuth callback failed: '.($e->getMessage() ?: $e::class), [
                 'exception' => $e,
@@ -142,6 +143,42 @@ class UzairAuthController
     }
 
     /**
+     * Sign one of the account's logins out, named by its row.
+     *
+     * This is what a list of "your devices" needs: ending one of them without
+     * touching the browser doing the ending. Naming the login by row id is safe     * . The lookup is scoped to the account — a row belonging to somebody
+     * else is not refused but simply not found, so the endpoint cannot be used
+     * to learn which ids exist.
+     *
+     * Ending the login this request is running on is signing yourself out, and
+     * is handed to `logout()` so the session goes with it, rather than leaving
+     * the browser authenticated against a row that no longer exists.
+     */
+    public function logoutDevice(Request $request, EndSessions $endSessions, int|string $token): JsonResponse|RedirectResponse
+    {
+        $user = Auth::user();
+
+        $login = $user === null ? null : OauthToken::query()
+            ->where('user_id', $user->getAuthIdentifier())
+            ->whereKey($token)
+            ->first();
+
+        if ($login === null) {
+            throw new NotFoundHttpException;
+        }
+
+        if ($login->session_id !== null && $login->session_id === $this->sessionId($request)) {
+            return $this->logout($request, $endSessions);
+        }
+
+        $endSessions->end($login);
+
+        return $request->wantsJson()
+            ? new JsonResponse([], 204)
+            : back();
+    }
+
+    /**
      * Sign the account out everywhere, this device included.
      *
      * Every login the account holds is given up at the identity provider and
@@ -170,11 +207,11 @@ class UzairAuthController
      * There are two of them, and the log line cannot be acted on without
      * knowing which:
      *
-     * - no session cookie came back at all, so the browser never had one to
+     * - No session cookie came back at all, so the browser never had one to
      *   send. That is a host mismatch — the flow was started on one name and
      *   `uzairports.redirect` brings it back on another, and a cookie set for
      *   `localhost` is not sent to `127.0.0.1`. Both must be the same name;
-     * - the cookie came back and the state was gone, so the handshake was
+     * - The cookie came back and the state was gone, so the handshake was
      *   started twice — a second tab, a second click — and finished on the
      *   older one, whose state the newer had already replaced.
      */
@@ -245,6 +282,7 @@ class UzairAuthController
      * wrote and updates it.
      *
      * @return array{user: Authenticatable&Model, token: OauthToken}
+     * @throws Throwable
      */
     private function storeIdentity(Request $request, SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): array
     {
@@ -258,7 +296,9 @@ class UzairAuthController
     /**
      * @return array{user: Authenticatable&Model, token: OauthToken}
      *
-     * @throws RuntimeException when the configured auth model cannot be signed in
+     * @throws RuntimeException
+     * @throws Throwable
+     * when the configured auth model cannot be signed in
      */
     private function writeIdentity(Request $request, SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): array
     {
@@ -298,7 +338,7 @@ class UzairAuthController
      * expired, so the token is renewed on the next request rather than used
      * until it is refused.
      */
-    private function expiresAt(SocialiteUser $uzairUser): ?Carbon
+    private function expiresAt(SocialiteUser $uzairUser): ?CarbonInterface
     {
         if ($uzairUser->expiresIn === null) {
             return null;

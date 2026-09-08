@@ -5,10 +5,12 @@ namespace Uzairports\Uzairid\Tests;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Session\Session as SessionContract;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
 use Symfony\Component\HttpFoundation\Response;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
+use Uzairports\Uzairid\Models\OauthToken;
 
 class EnsureAccessTokenIsFreshTest extends TestCase
 {
@@ -150,6 +152,68 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         $this->actingAs($user)->get(route('protected'))->assertStatus(200);
 
         $this->assertAuthenticated();
+    }
+
+    /**
+     * Letting a fresh token through is the one moment the middleware learns the
+     * login is still in use, and pruning has nothing else to go on.
+     */
+    public function test_a_login_let_through_is_kept_alive(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '4008']);
+
+        $session = Session::driver();
+        $session->start();
+
+        $token = $user->tokens()->create([
+            'access_token' => 'a_token_that_outlives_the_window',
+            'expires_at' => now()->addHours(8),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->travel(5)->hours();
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+
+        $this->assertSame(0, (new OauthToken)->prunable()->count());
+        $this->assertTrue($token->fresh()?->updated_at->greaterThan(now()->subMinute()));
+    }
+
+    /**
+     * The middleware resolves the login to decide whether the session may
+     * continue; a controller asking the same user for it afterwards must be
+     * answered from what was already read.
+     */
+    public function test_the_login_it_resolved_is_left_on_the_user(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4009']);
+
+        $session = Session::driver();
+        $session->start();
+
+        $token = $user->tokens()->create([
+            'access_token' => 'valid_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $request = $this->sessionRequest($user, $session);
+
+        // What the container hands back is what the trait reads, the way it
+        // does in an ordinary request. Binding it re-points the user resolver
+        // at the auth guard, so the account under test is named again after.
+        app()->instance('request', $request);
+        $request->setUserResolver(fn () => $user);
+
+        $this->handle($request);
+
+        // Nothing may be read from the database a second time, so the row is
+        // taken away before the question is asked again.
+        DB::table('oauth_tokens')->delete();
+
+        $this->assertTrue($token->is($user->currentToken()));
     }
 
     private function handle(Request $request): Response

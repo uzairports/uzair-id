@@ -2,11 +2,13 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Http\Request;
 use Laravel\Socialite\Facades\Socialite;
+use Psr\Http\Message\RequestInterface;
 use RuntimeException;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
@@ -86,6 +88,77 @@ class UzairportsProviderTest extends TestCase
     }
 
     /**
+     * A provider that offers no revocation endpoint must not be guessed at: a
+     * logout would then pay a failed request every time.
+     * @throws GuzzleException
+     */
+    public function test_no_refresh_token_is_revoked_without_a_configured_endpoint(): void
+    {
+        config(['uzairports.revoke_endpoint' => null]);
+
+        $this->assertNull($this->provider()->revokeRefreshToken('refresh-token-value'));
+    }
+
+    /**
+     * @throws GuzzleException
+     */
+    public function test_a_refresh_token_is_surrendered_as_an_rfc_7009_revocation(): void
+    {
+        config(['uzairports.revoke_endpoint' => '/oauth/revoke']);
+
+        $recorded = new RecordedRequest;
+
+        $response = $this->provider(['handler' => $this->recordingStack($recorded)])
+            ->revokeRefreshToken('refresh-token-value');
+
+        $this->assertNotNull($response);
+        $this->assertSame('POST', $recorded->method);
+        $this->assertSame('https://my.uzairports.com/oauth/revoke', $recorded->uri);
+
+        parse_str((string) $recorded->body, $body);
+
+        $this->assertSame([
+            'token' => 'refresh-token-value',
+            'token_type_hint' => 'refresh_token',
+            'client_id' => 'test-client',
+            'client_secret' => 'test-secret',
+        ], $body);
+    }
+
+    /**
+     * @throws GuzzleException
+     */
+    public function test_a_revocation_endpoint_may_be_a_full_url(): void
+    {
+        config(['uzairports.revoke_endpoint' => 'https://auth.uzairports.com/revoke']);
+
+        $recorded = new RecordedRequest;
+
+        $this->provider(['handler' => $this->recordingStack($recorded)])
+            ->revokeRefreshToken('refresh-token-value');
+
+        $this->assertSame('https://auth.uzairports.com/revoke', $recorded->uri);
+    }
+
+    /**
+     * A handler stack that answers with 200 and writes down what it was asked.
+     */
+    private function recordingStack(RecordedRequest $recorded): HandlerStack
+    {
+        $stack = HandlerStack::create(new MockHandler([new Response(200)]));
+
+        $stack->push(fn (callable $handler): callable => function (RequestInterface $request, array $options) use ($handler, $recorded) {
+            $recorded->method = $request->getMethod();
+            $recorded->uri = (string) $request->getUri();
+            $recorded->body = (string) $request->getBody();
+
+            return $handler($request, $options);
+        });
+
+        return $stack;
+    }
+
+    /**
      * @param  array<string, mixed>  $guzzle
      */
     private function provider(array $guzzle = []): UzairportsProvider
@@ -98,4 +171,16 @@ class UzairportsProviderTest extends TestCase
             $guzzle,
         );
     }
+}
+
+/**
+ * What a recording handler stack was asked to send.
+ */
+class RecordedRequest
+{
+    public ?string $method = null;
+
+    public ?string $uri = null;
+
+    public ?string $body = null;
 }

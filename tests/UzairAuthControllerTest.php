@@ -337,6 +337,102 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
+     * What a list of "your devices" needs: ending one of them from another,
+     * without signing the browser doing the ending out.
+     */
+    public function test_one_of_the_accounts_other_devices_can_be_ended(): void
+    {
+        $user = TestUser::create(['uzair_id' => '5011', 'name' => 'Two Devices']);
+
+        $theOtherDevice = $user->tokens()->create([
+            'access_token' => 'the_other_devices_token',
+            'session_id' => 'the-other-devices-session',
+        ]);
+
+        $this->fakeIdentity(
+            ['id' => '5011', 'name' => 'Two Devices', 'token' => 'this_devices_token'],
+            logout: 'the_other_devices_token',
+        );
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $thisDevice = $user->tokens()->where('session_id', '!=', 'the-other-devices-session')->firstOrFail();
+
+        $this->onTheDeviceHolding($thisDevice)
+            ->from(route('dashboard'))
+            ->post(route('uzair.logoutDevice', $theOtherDevice))
+            ->assertRedirect(route('dashboard'));
+
+        $this->assertAuthenticated();
+        $this->assertSame([$thisDevice->session_id], $user->tokens()->pluck('session_id')->all());
+    }
+
+    /**
+     * Ending the login you are running on is signing yourself out, and has to
+     * take the session with it rather than leave a browser authenticated
+     * against a row that no longer exists.
+     */
+    public function test_ending_this_devices_own_login_signs_it_out(): void
+    {
+        $user = TestUser::create(['uzair_id' => '5012', 'name' => 'Leaving Here']);
+
+        $this->fakeIdentity(['id' => '5012', 'name' => 'Leaving Here', 'token' => 'this_devices_token'], logout: 'this_devices_token');
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $thisDevice = $user->tokens()->firstOrFail();
+
+        $this->onTheDeviceHolding($thisDevice)
+            ->post(route('uzair.logoutDevice', $thisDevice))
+            ->assertRedirect(url('/'));
+
+        $this->assertGuest();
+        $this->assertSame(0, $user->tokens()->count());
+    }
+
+    /**
+     * Someone else's login is not refused but simply not found, so the endpoint
+     * cannot be used to learn which rows exist.
+     */
+    public function test_another_accounts_login_cannot_be_ended(): void
+    {
+        $user = TestUser::create(['uzair_id' => '5013', 'name' => 'Curious']);
+        $bystander = TestUser::create(['uzair_id' => '5014', 'name' => 'Bystander']);
+
+        $theirs = $bystander->tokens()->create([
+            'access_token' => 'someone_elses_token',
+            'session_id' => 'someone-elses-session',
+        ]);
+
+        $this->actingAs($user)
+            ->post(route('uzair.logoutDevice', $theirs))
+            ->assertNotFound();
+
+        $this->assertSame(1, $bystander->tokens()->count());
+    }
+
+    public function test_ending_a_device_answers_an_api_client_with_204(): void
+    {
+        $user = TestUser::create(['uzair_id' => '5015', 'name' => 'Api Client']);
+
+        $theOtherDevice = $user->tokens()->create([
+            'access_token' => 'the_other_devices_token',
+            'session_id' => 'the-other-devices-session',
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logout')->with('the_other_devices_token')->once();
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->actingAs($user)
+            ->postJson(route('uzair.logoutDevice', $theOtherDevice))
+            ->assertStatus(204);
+
+        $this->assertAuthenticated();
+        $this->assertSame(0, $user->tokens()->count());
+    }
+
+    /**
      * The SSO endpoints are unauthenticated and each callback costs a round
      * trip to the identity provider, so they are registered behind a limit.
      */

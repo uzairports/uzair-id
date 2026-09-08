@@ -123,6 +123,57 @@ class EndSessionsTest extends TestCase
         $this->assertSame(['phone-session'], $this->storedSessionIds());
     }
 
+    /**
+     * Nothing in OAuth promises that retiring an access token retires the
+     * refresh token issued with it, and one that outlives the logout is a way
+     * back into the account.
+     */
+    public function test_the_refresh_token_is_given_up_as_well(): void
+    {
+        $user = TestUser::create(['uzair_id' => '7007']);
+
+        $user->tokens()->create([
+            'access_token' => 'phone_token',
+            'refresh_token' => 'phone_refresh_token',
+            'session_id' => 'phone-session',
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logout')->with('phone_token')->once();
+        $provider->shouldReceive('revokeRefreshToken')->with('phone_refresh_token')->once();
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)($user->getKey());
+
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
+     * The two are surrendered independently, so a provider that refuses one
+     * still hears about the other.
+     */
+    public function test_a_refused_access_token_does_not_spare_the_refresh_token(): void
+    {
+        $user = TestUser::create(['uzair_id' => '7008']);
+
+        $user->tokens()->create([
+            'access_token' => 'phone_token',
+            'refresh_token' => 'phone_refresh_token',
+            'session_id' => 'phone-session',
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logout')->once()->andThrow(new Exception('SSO service unavailable'));
+        $provider->shouldReceive('revokeRefreshToken')->with('phone_refresh_token')->once();
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)($user->getKey());
+
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
     private function login(TestUser $user, string $sessionId, string $accessToken): void
     {
         $user->tokens()->create([

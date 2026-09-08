@@ -39,6 +39,9 @@ jobs:
           composer require "illuminate/support:${{ matrix.laravel }}" --no-interaction --no-update
           composer update --${{ matrix.stability }} --prefer-dist --no-interaction
 
+      - name: Check code style
+        run: vendor/bin/pint --test
+
       - name: Analyse
         run: vendor/bin/phpstan analyse --no-progress
 

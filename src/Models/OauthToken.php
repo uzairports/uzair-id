@@ -78,8 +78,15 @@ class OauthToken extends Model
      *
      * A browser that is simply closed leaves its row behind: nothing signs it
      * out, and the session it names expires quietly in the session store. Twice
-     * the session lifetime after the row was last written, whatever it names is
+     * the session lifetime after the row was last used, whatever it names is
      * gone, and so is any use for the row.
+     *
+     * What makes that safe is `keepAlive()`: the row is written again while its
+     * browser is still making requests, so `updated_at` means "last seen" and
+     * not merely "last refreshed". Without it a login whose access token
+     * outlives the window — an identity provider handing out an eight-hour
+     * token against a two-hour session lifetime — would go untouched while its
+     * owner worked, and be pruned out from under them.
      *
      * Pruning runs through Laravel's `model:prune` command, which the host
      * application has to schedule for the rows to actually go.
@@ -88,9 +95,35 @@ class OauthToken extends Model
      */
     public function prunable(): Builder
     {
-        $lifetime = (int) config('session.lifetime', 120);
+        return $this->newQuery()->where('updated_at', '<', now()->subMinutes(self::sessionLifetime() * 2));
+    }
 
-        return $this->newQuery()->where('updated_at', '<', now()->subMinutes(max($lifetime, 1) * 2));
+    /**
+     * Record that the login is still in use, if it has not been written lately.
+     *
+     * `updated_at` is what pruning reads, and nothing else writes the row
+     * between refreshes — so on its own it would say when the token last
+     * changed rather than when the browser was last here. This closes that gap
+     * while keeping the cost to one writing per half a session lifetime, instead
+     * of one on every request.
+     */
+    public function keepAlive(): void
+    {
+        $staleAfter = now()->subMinutes(max(intdiv(self::sessionLifetime(), 2), 1));
+
+        if ($this->updated_at->greaterThan($staleAfter)) {
+            return;
+        }
+
+        $this->forceFill(['updated_at' => now()])->saveQuietly();
+    }
+
+    /**
+     * How long the host application keeps a session, in minutes.
+     */
+    private static function sessionLifetime(): int
+    {
+        return max((int) config('session.lifetime', 120), 1);
     }
 
     /**
@@ -120,7 +153,7 @@ class OauthToken extends Model
      * A short name for the device this login is running on.
      *
      * It is a guess read off the user agent, which is a string the browser is
-     * free to make up: good enough for a person to recognise their own phone in
+     * free to make up: good enough for a person to recognize their own phone in
      * a list, never good enough to decide anything on.
      */
     public function deviceLabel(): string

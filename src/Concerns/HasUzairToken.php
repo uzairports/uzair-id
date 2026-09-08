@@ -9,6 +9,19 @@ use Uzairports\Uzairid\Models\OauthToken;
 trait HasUzairToken
 {
     /**
+     * The login resolved for the session named by `$resolvedForSessionId`.
+     *
+     * Null is an answer in its own right — this session holds no login — which
+     * is why the session it was resolved for is remembered separately.
+     */
+    protected ?OauthToken $resolvedCurrentToken = null;
+
+    /**
+     * The session `$resolvedCurrentToken` was resolved for, or null if none was.
+     */
+    protected ?string $resolvedForSessionId = null;
+
+    /**
      * Every SSO login the account currently holds — one per browser session.
      *
      * @return HasMany<OauthToken, $this>
@@ -32,15 +45,16 @@ trait HasUzairToken
         return $this->hasOne(OauthToken::class, 'user_id')->latestOfMany();
     }
 
-    protected ?OauthToken $resolvedCurrentToken = null;
-
-    protected bool $hasResolvedCurrentToken = false;
-
     /**
      * The login the current session is running on.
      *
      * A request without a session — an API client, a console command — belongs
      * to no browser, so there is no login to hand back.
+     *
+     * The answer is remembered for the session it was resolved for, so asking
+     * twice in one request costs one query. "No login for this session" is
+     * remembered too: it is the answer the `uzair.token` middleware acts on,
+     * and re-reading it would mean a query on every ask.
      */
     public function currentToken(): ?OauthToken
     {
@@ -50,14 +64,31 @@ trait HasUzairToken
             return null;
         }
 
-        if ($this->hasResolvedCurrentToken && $this->resolvedCurrentToken?->session_id === $sessionId) {
+        if ($this->resolvedForSessionId === $sessionId) {
             return $this->resolvedCurrentToken;
         }
 
         $this->resolvedCurrentToken = $this->tokens()->firstWhere('session_id', $sessionId);
-        $this->hasResolvedCurrentToken = true;
+        $this->resolvedForSessionId = $sessionId;
 
         return $this->resolvedCurrentToken;
+    }
+
+    /**
+     * Adopt a login already looked up for the given session.
+     *
+     * The `uzair.token` middleware resolves the login to decide whether the
+     * session may continue and hands the result here so that a controller or a
+     * view asking the same question afterward is answered without a second
+     * query. Null is adopted as readily as a row: "this session holds no login"
+     * is an answer worth keeping.
+     */
+    public function rememberCurrentToken(?OauthToken $token, string $sessionId): static
+    {
+        $this->resolvedCurrentToken = $token;
+        $this->resolvedForSessionId = $sessionId;
+
+        return $this;
     }
 
     /**

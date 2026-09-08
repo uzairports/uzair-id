@@ -52,6 +52,7 @@ class Uzair
             Route::get('callback', [$controller, 'callback'])->name('uzair.callback');
             Route::post('logout', [$controller, 'logout'])->name('uzair.logout');
             Route::post('logout-all', [$controller, 'logoutAll'])->name('uzair.logoutAll');
+            Route::post('logout-device/{token}', [$controller, 'logoutDevice'])->name('uzair.logoutDevice');
         });
     }
 }

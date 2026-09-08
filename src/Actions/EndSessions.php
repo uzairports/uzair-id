@@ -17,13 +17,13 @@ class EndSessions
      * Three things have to go for a device to actually be signed out, and each
      * covers a gap the others leave:
      *
-     * - the token is revoked at UzAirports ID. Without this the device is only
+     * - The token is revoked at UzAirports ID. Without this the device is only
      *   sent back through `login`, where the identity provider — which still
      *   holds a session for that browser — answers with a fresh authorization
      *   code and lets it straight back in;
-     * - the row is deleted, so `uzair.token` refuses that session on its next
+     * - The row is deleted, so `uzair.token` refuses that session on its next
      *   request whatever the session driver is;
-     * - the session itself is deleted from the store, so a device that never
+     * - The session itself is deleted from the store, so a device that never
      *   reaches the middleware loses its session too. Only the database driver
      *   keeps sessions somewhere this can reach.
      *
@@ -58,27 +58,58 @@ class EndSessions
     }
 
     /**
-     * Give up the token at the identity provider.
+     * Give up both of the login's tokens at the identity provider.
      *
-     * An identity provider that cannot be reached must not keep the user signed
-     * in here, so the row goes either way and the failure is only logged.
+     * The access token is what `logout` hands back, and it is the only thing
+     * the provider is told about there. The refresh token is surrendered
+     * separately. Nothing in OAuth promises that retiring an access
+     * token retires the refresh token issued with it — and one that outlives
+     * the logout is a way back into the account for whoever holds a copy.
+     * Where the provider offers no revocation endpoint, the second call is a
+     * no-op; see `uzairports.revoke_endpoint`.
+     *
+     * The two are attempted independently, so a provider that refuses one still
+     * hears about the other. An identity provider that cannot be reached at all
+     * must not keep the user signed in here, so the row goes either way and the
+     * failures are only logged.
      */
     private function revoke(OauthToken $token): void
     {
-        if (blank($token->access_token)) {
+        if (blank($token->access_token) && blank($token->refresh_token)) {
             return;
         }
 
         try {
             /** @var UzairportsProvider $provider */
             $provider = Socialite::driver('uzairports');
-
-            $provider->logout($token->access_token);
         } catch (Throwable $e) {
-            Log::warning('Failed to revoke an UzAirports token while ending a session: '.$e->getMessage(), [
-                'user_id' => $token->user_id,
-            ]);
+            $this->reportFailedRevocation($token, $e);
+
+            return;
         }
+
+        if (filled($token->access_token)) {
+            try {
+                $provider->logout($token->access_token);
+            } catch (Throwable $e) {
+                $this->reportFailedRevocation($token, $e);
+            }
+        }
+
+        if (filled($token->refresh_token)) {
+            try {
+                $provider->revokeRefreshToken($token->refresh_token);
+            } catch (Throwable $e) {
+                $this->reportFailedRevocation($token, $e);
+            }
+        }
+    }
+
+    private function reportFailedRevocation(OauthToken $token, Throwable $e): void
+    {
+        Log::warning('Failed to revoke an UzAirports token while ending a session: '.($e->getMessage() ?: $e::class), [
+            'user_id' => $token->user_id,
+        ]);
     }
 
     /**

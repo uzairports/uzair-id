@@ -4,6 +4,7 @@ namespace Uzairports\Uzairid\Tests;
 
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
+use Uzairports\Uzairid\Models\OauthToken;
 
 class OauthTokenTest extends TestCase
 {
@@ -69,5 +70,97 @@ class OauthTokenTest extends TestCase
         $this->assertFalse($token->hasExpired());
         $this->assertTrue($token->expiresWithin(60));
         $this->assertFalse($token->expiresWithin(10));
+    }
+
+    /**
+     * The row is written on refresh and on nothing else, so an access token
+     * that outlives the pruning window would leave the login untouched while
+     * its owner was still working — and pruned out from under them.
+     */
+    public function test_a_login_still_in_use_survives_pruning(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1005']);
+
+        $token = $user->tokens()->create([
+            'access_token' => 'a_token_that_outlives_the_window',
+            'expires_at' => now()->addHours(8),
+            'session_id' => 'desktop-session',
+        ]);
+
+        $this->travel(5)->hours();
+
+        $token->keepAlive();
+
+        $this->assertSame(0, (new OauthToken)->prunable()->count());
+    }
+
+    public function test_a_login_nothing_has_touched_is_pruned(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1006']);
+
+        $user->tokens()->create([
+            'access_token' => 'left_behind_by_a_closed_browser',
+            'session_id' => 'abandoned-session',
+        ]);
+
+        $this->travel(5)->hours();
+
+        $this->assertSame(1, (new OauthToken)->prunable()->count());
+    }
+
+    /**
+     * Keeping the row alive costs one write per half a session lifetime, not
+     * one per request.
+     */
+    public function test_keeping_a_login_alive_does_not_rewrite_a_recent_row(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1007']);
+
+        $token = $user->tokens()->create([
+            'access_token' => 'recently_written',
+            'session_id' => 'desktop-session',
+        ]);
+
+        $writtenAt = $token->updated_at;
+
+        $this->travel(10)->minutes();
+
+        $token->keepAlive();
+
+        $stored = $token->fresh();
+
+        $this->assertNotNull($stored);
+        $this->assertTrue($writtenAt->equalTo($stored->updated_at));
+    }
+
+    public function test_the_device_label_is_read_off_the_user_agent(): void
+    {
+        $user = TestUser::create(['uzair_id' => '1008']);
+
+        $token = $user->tokens()->create([
+            'access_token' => 'test',
+            'session_id' => 'desktop-session',
+            'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        ]);
+
+        $this->assertSame('Chrome — Windows', $token->deviceLabel());
+
+        // Chrome names itself Safari too, and Edge names itself both; the more
+        // specific token has to win.
+        $token->user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0';
+        $this->assertSame('Edge — macOS', $token->deviceLabel());
+
+        // Nothing recognisable is handed back as it came, not guessed at.
+        $token->user_agent = 'curl/8.4.0';
+        $this->assertSame('curl/8.4.0', $token->deviceLabel());
+
+        $token->user_agent = null;
+        $this->assertSame('Unknown device', $token->deviceLabel());
     }
 }

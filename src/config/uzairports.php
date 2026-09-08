@@ -33,6 +33,23 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Token Revocation Endpoint
+    |--------------------------------------------------------------------------
+    |
+    | Where the refresh token is surrendered when a login ends, as an RFC 7009
+    | revocation request. Signing out hands the access token back, and nothing
+    | in OAuth promises that retires the refresh token issued with it — one that
+    | survives is a way back into the account for whoever holds a copy.
+    |
+    | Empty means the identity provider offers no such endpoint and only the
+    | access token is given up. Accepts a full URL or a path on the host.
+    |
+    */
+
+    'revoke_endpoint' => env('UZAIR_REVOKE_ENDPOINT'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Proof Key for Code Exchange
     |--------------------------------------------------------------------------
     |
@@ -139,7 +156,7 @@ return [
     | Whether signing in ends every other login the account holds, leaving only
     | the browser that just authenticated. Off by default: an account is
     | normally allowed a phone and a desktop at once, and users who want the
-    | rest gone have the "sign out everywhere" endpoint to say so. Turn it on
+    | rest gone have the "sign-out everywhere" endpoint to say so. Turn it on
     | only where concurrent use is something you have to prevent.
     |
     */

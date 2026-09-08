@@ -113,17 +113,78 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     }
 
     /**
+     * Give a refresh token up at the identity provider, per RFC 7009.
+     *
+     * `logout()` hands back the access token, which is all the identity
+     * provider is told about. Whether that also retires the refresh token
+     * issued alongside it is the provider's business. Nothing in the
+     * protocol promises it does — so where a revocation endpoint exists, the
+     * refresh token is surrendered explicitly rather than left to a cascade
+     * that may not happen. A refresh token that survives a logout is a way back
+     * into the account for whoever holds a copy of it.
+     *
+     * The endpoint is not guessed: without `uzairports.revoke_endpoint` there
+     * is nothing to call and the method says so by returning null, so a
+     * deployment whose provider offers no such endpoint pays no failed request
+     * on every logout.
+     *
+     * @throws GuzzleException
+     */
+    public function revokeRefreshToken(string $refreshToken): ?ResponseInterface
+    {
+        $endpoint = config('uzairports.revoke_endpoint');
+
+        if (! is_string($endpoint) || $endpoint === '') {
+            return null;
+        }
+
+        return $this->getHttpClient()->post($this->absoluteUrl($endpoint), [
+            RequestOptions::TIMEOUT => $this->timeout(),
+            RequestOptions::CONNECT_TIMEOUT => $this->connectTimeout(),
+            RequestOptions::HEADERS => ['Accept' => 'application/json'],
+            RequestOptions::FORM_PARAMS => [
+                'token' => $refreshToken,
+                'token_type_hint' => 'refresh_token',
+                'client_id' => $this->clientId,
+                'client_secret' => $this->clientSecret,
+            ],
+        ]);
+    }
+
+    /**
+     * Resolve a configured endpoint, which may be a full URL or a path on the host.
+     */
+    private function absoluteUrl(string $endpoint): string
+    {
+        if (str_starts_with($endpoint, 'http://') || str_starts_with($endpoint, 'https://')) {
+            return $endpoint;
+        }
+
+        return $this->getHost().'/'.ltrim($endpoint, '/');
+    }
+
+    /**
      * @return array<string, mixed>
      */
     protected function getRequestOptions(string $token): array
     {
         return [
-            RequestOptions::TIMEOUT => (int) ($this->config['timeout'] ?? config('uzairports.timeout', 10)),
-            RequestOptions::CONNECT_TIMEOUT => (int) ($this->config['connect_timeout'] ?? config('uzairports.connect_timeout', 5)),
+            RequestOptions::TIMEOUT => $this->timeout(),
+            RequestOptions::CONNECT_TIMEOUT => $this->connectTimeout(),
             RequestOptions::HEADERS => [
                 'Accept' => 'application/json',
                 'Authorization' => 'Bearer '.$token,
             ],
         ];
+    }
+
+    private function timeout(): int
+    {
+        return (int) ($this->config['timeout'] ?? config('uzairports.timeout', 10));
+    }
+
+    private function connectTimeout(): int
+    {
+        return (int) ($this->config['connect_timeout'] ?? config('uzairports.connect_timeout', 5));
     }
 }

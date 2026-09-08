@@ -19,11 +19,11 @@ class EnsureAccessTokenIsFresh
     public function __construct(private RefreshAccessToken $refreshAccessToken) {}
 
     /**
-     * Refresh this session's UzAirports access token before it expires, and
+     * Refresh this session's UzAirports access token before it expires and
      * refuse a session whose login has been ended.
      *
-     * A login belongs to one browser session, so the token is looked up by the
-     * pair: another device's row is none of this request's business. When the
+     * A login belongs to one browser session, so the pair looks up the token:
+     * another device's row is none of this request's business. When the
      * refresh token is no longer accepted, or the login was ended elsewhere —
      * signed out on this device from another, or through "sign out everywhere"
      * — the session is dropped and an authentication failure raised, so the
@@ -62,6 +62,8 @@ class EnsureAccessTokenIsFresh
         $leeway = $this->leewayInSeconds();
 
         if (! $token->expiresWithin($leeway)) {
+            $token->keepAlive();
+
             return $next($request);
         }
 
@@ -84,8 +86,17 @@ class EnsureAccessTokenIsFresh
      * The login this request is running on.
      *
      * A request without a session — an API client, a console command — names no
-     * browser, so there is nothing to match on and the account's most recent
+     * browser, so there is nothing to match on, and the account's most recent
      * login is the best that can be said.
+     *
+     * The session is read off the request this middleware was handed rather
+     * than off the global one: they are the same object in an ordinary HTTP
+     * request, but nothing guarantees it, and the request in hand is the one
+     * whose session this decision is about.
+     *
+     * What is found is handed to a user model carrying `HasUzairToken`, so that
+     * anything downstream asking the user for its login — a controller, a view —
+     * reads what was looked up here instead of repeating the query.
      */
     private function tokenFor(Request $request, Authenticatable $user): ?OauthToken
     {
@@ -95,7 +106,15 @@ class EnsureAccessTokenIsFresh
             return $tokens->latest('id')->first();
         }
 
-        return $tokens->where('session_id', $request->session()->getId())->first();
+        $sessionId = $request->session()->getId();
+
+        $token = $tokens->where('session_id', $sessionId)->first();
+
+        if (method_exists($user, 'rememberCurrentToken')) {
+            $user->rememberCurrentToken($token, $sessionId);
+        }
+
+        return $token;
     }
 
     private function isUzairUser(Authenticatable $user): bool
