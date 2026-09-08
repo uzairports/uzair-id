@@ -2,6 +2,8 @@
 
 namespace Uzairports\Uzairid\Actions;
 
+use Illuminate\Contracts\Cache\Lock;
+use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -39,7 +41,12 @@ class RefreshAccessToken
      */
     public function __invoke(OauthToken $token, int $leeway = 0): bool
     {
-        $lock = Cache::lock($this->lockKey($token), self::LOCK_SECONDS);
+        $store = config('uzairports.lock_store');
+        /** @var LockProvider $cache */
+        $cache = is_string($store) && $store !== '' ? Cache::store($store) : Cache::store();
+
+        /** @var Lock $lock */
+        $lock = $cache->lock($this->lockKey($token), self::LOCK_SECONDS);
 
         try {
             /** @var bool $refreshed */

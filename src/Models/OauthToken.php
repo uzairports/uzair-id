@@ -18,7 +18,7 @@ use RuntimeException;
  * it: each browser exchanged its own authorization code, so each has its own
  * refresh token to rotate.
  *
- * @property int $user_id
+ * @property int|string $user_id
  * @property string $access_token
  * @property string|null $refresh_token
  * @property Carbon|null $expires_at

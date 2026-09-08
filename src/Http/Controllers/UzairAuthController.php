@@ -58,6 +58,17 @@ class UzairAuthController
         ResolveUserFromSocialite $resolveUser,
         EndSessions $endSessions,
     ): RedirectResponse {
+        if ($request->has('error')) {
+            $error = (string) $request->query('error');
+            $description = (string) $request->query('error_description', '');
+
+            Log::info("UzAirports OAuth callback returned error: {$error}", [
+                'error_description' => $description,
+            ]);
+
+            return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
+        }
+
         try {
             /** @var SocialiteUser $uzairUser */
             $uzairUser = Socialite::driver('uzairports')->user();

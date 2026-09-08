@@ -17,11 +17,19 @@ php artisan vendor:publish --tag=uzairid-migrations
 php artisan migrate
 ```
 
-Публикуются шесть миграций: они приводят таблицу `users` к виду, пригодному для SSO
-(добавляют `uzair_id`, убирают `password` и ограничения с `email`), создают таблицу
-`oauth_tokens` и доводят её до вида «одна строка — один вход». Все изменения существующих
-таблиц идемпотентны — если колонка уже есть или ограничение уже снято, шаг пропускается,
-поэтому миграции безопасно публиковать в существующее приложение.
+Публикуются базовые миграции (`uzairid-migrations`):
+- `add_uzair_id_to_users_table` — добавляет `uzair_id` в таблицу пользователей;
+- `create_oauth_tokens_table` — создаёт таблицу `oauth_tokens` со структурой «одна строка — один вход» (поддерживает integer, UUID и строковые идентификаторы пользователей).
+
+Опциональные миграции для модификации таблицы `users` (удаление `password` и снятие ограничений с `email`):
+```bash
+php artisan vendor:publish --tag=uzairid-user-migrations
+```
+
+Для обновления со старых версий пакета (где был один токен на аккаунт):
+```bash
+php artisan vendor:publish --tag=uzairid-upgrade-migrations
+```
 
 > Обновляетесь с версии, где у пользователя был один токен? Строки без `session_id` при
 > миграции удаляются: они держат токен для браузера, на который больше нельзя указать.
@@ -69,6 +77,7 @@ php artisan vendor:publish --tag=uzairid-config
 | `routes.throttle` | `UZAIR_ROUTE_THROTTLE` | `60,1` | Лимит запросов на SSO-эндпоинты (`попыток,минут`), на браузер |
 | `timeout` | `UZAIR_TIMEOUT` | `10` | Таймаут HTTP-запросов к SSO (сек) |
 | `connect_timeout` | `UZAIR_CONNECT_TIMEOUT` | `5` | Таймаут соединения с SSO (сек) |
+| `lock_store` | `UZAIR_LOCK_STORE` | — | Хранилище кеша для atomic lock при обновлении токена |
 
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
 
@@ -143,16 +152,17 @@ callback, — поэтому бюджет намеренно щедрый: он 
 ```php
 Uzair::routes([
     'prefix' => 'sso',
+    'middleware' => ['web'],     // дополнительные middleware при необходимости
     'throttle' => 'my-limiter',  // имя своего лимитера, либо пара «попыток,минут»,
                                  // либо null — зарегистрировать без лимита
     'controller' => \App\Http\Controllers\OAuthController::class,
 ]);
+```
 
 Снять лимит целиком, не трогая маршруты:
 
 ```env
 UZAIR_ROUTE_THROTTLE=
-```
 ```
 
 #### Контроллер

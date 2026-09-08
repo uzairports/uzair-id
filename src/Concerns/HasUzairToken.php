@@ -32,6 +32,10 @@ trait HasUzairToken
         return $this->hasOne(OauthToken::class, 'user_id')->latestOfMany();
     }
 
+    protected ?OauthToken $resolvedCurrentToken = null;
+
+    protected bool $hasResolvedCurrentToken = false;
+
     /**
      * The login the current session is running on.
      *
@@ -46,7 +50,14 @@ trait HasUzairToken
             return null;
         }
 
-        return $this->tokens()->firstWhere('session_id', $sessionId);
+        if ($this->hasResolvedCurrentToken && $this->resolvedCurrentToken?->session_id === $sessionId) {
+            return $this->resolvedCurrentToken;
+        }
+
+        $this->resolvedCurrentToken = $this->tokens()->firstWhere('session_id', $sessionId);
+        $this->hasResolvedCurrentToken = true;
+
+        return $this->resolvedCurrentToken;
     }
 
     /**

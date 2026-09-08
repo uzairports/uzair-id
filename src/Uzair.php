@@ -21,7 +21,7 @@ class Uzair
      * to name a different limiter, or an `attempts,minutes` pair to be counted
      * by Laravel's default key instead; pass null to register without a limit.
      *
-     * @param  array{prefix?: string, throttle?: string|null, controller?: class-string}  $options
+     * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string}  $options
      */
     public static function routes(array $options = []): void
     {
@@ -37,8 +37,14 @@ class Uzair
 
         $group = Route::prefix(is_string($prefix) ? $prefix : 'auth');
 
+        $middleware = (array) ($options['middleware'] ?? []);
+
         if (is_string($throttle) && $throttle !== '') {
-            $group->middleware("throttle:{$throttle}");
+            $middleware[] = "throttle:{$throttle}";
+        }
+
+        if (! empty($middleware)) {
+            $group->middleware($middleware);
         }
 
         $group->group(function () use ($controller, $loginRoute): void {

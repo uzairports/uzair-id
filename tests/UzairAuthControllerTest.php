@@ -166,6 +166,21 @@ class UzairAuthControllerTest extends TestCase
         $this->assertSame(0, OauthToken::query()->count());
     }
 
+    public function test_a_callback_with_an_error_parameter_is_handled_gracefully(): void
+    {
+        Socialite::shouldReceive('driver')->never();
+
+        $response = $this->get(route('uzair.callback', [
+            'error' => 'access_denied',
+            'error_description' => 'User cancelled authorization',
+        ]));
+
+        $response->assertRedirect(url('/'));
+        $response->assertSessionHasErrors(['oauth' => __('uzairid::messages.authentication_failed')]);
+
+        $this->assertGuest();
+    }
+
     /**
      * The session that held the handshake's state was lost between the redirect
      * and the callback, or the flow was started twice and finished on the older

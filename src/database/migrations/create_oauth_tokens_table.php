@@ -1,5 +1,6 @@
 <?php
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
@@ -34,7 +35,23 @@ return new class extends Migration
     {
         Schema::create('oauth_tokens', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete()->cascadeOnUpdate();
+
+            $userModel = config('auth.providers.users.model');
+            if (is_string($userModel) && class_exists($userModel)) {
+                $user = new $userModel;
+                if ($user instanceof Model) {
+                    if ($user->getKeyType() === 'string') {
+                        $table->string('user_id')->index();
+                    } else {
+                        $table->foreignId('user_id')->constrained($user->getTable())->cascadeOnDelete()->cascadeOnUpdate();
+                    }
+                } else {
+                    $table->foreignId('user_id')->constrained()->cascadeOnDelete()->cascadeOnUpdate();
+                }
+            } else {
+                $table->foreignId('user_id')->constrained()->cascadeOnDelete()->cascadeOnUpdate();
+            }
+
             $table->text('access_token');
             $table->text('refresh_token')->nullable();
             $table->timestamp('expires_at')->nullable();

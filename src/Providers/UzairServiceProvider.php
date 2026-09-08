@@ -71,6 +71,11 @@ class UzairServiceProvider extends ServiceProvider
             /** @var array<string, mixed> $config */
             $config = $app['config']['uzairports'] ?? [];
 
+            $config['guzzle'] = array_merge([
+                'timeout' => (int) ($config['timeout'] ?? 10),
+                'connect_timeout' => (int) ($config['connect_timeout'] ?? 5),
+            ], (array) ($config['guzzle'] ?? []));
+
             /** @var UzairportsProvider $provider */
             $provider = $socialite->buildProvider(
                 UzairportsProvider::class,
@@ -97,13 +102,19 @@ class UzairServiceProvider extends ServiceProvider
         $time = time();
 
         $this->publishesMigrations([
-            __DIR__.'/../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_remove_password_column_from_users_table.php'),
             __DIR__.'/../database/migrations/add_uzair_id_to_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_uzair_id_to_users_table.php'),
-            __DIR__.'/../database/migrations/relax_email_column_on_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_relax_email_column_on_users_table.php'),
             __DIR__.'/../database/migrations/create_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_create_oauth_tokens_table.php'),
+        ], 'uzairid-migrations');
+
+        $this->publishesMigrations([
+            __DIR__.'/../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_remove_password_column_from_users_table.php'),
+            __DIR__.'/../database/migrations/relax_email_column_on_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_relax_email_column_on_users_table.php'),
+        ], 'uzairid-user-migrations');
+
+        $this->publishesMigrations([
             __DIR__.'/../database/migrations/add_session_id_to_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_session_id_to_oauth_tokens_table.php'),
             __DIR__.'/../database/migrations/make_oauth_tokens_per_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_make_oauth_tokens_per_session.php'),
-        ], 'uzairid-migrations');
+        ], 'uzairid-upgrade-migrations');
     }
 
     /**

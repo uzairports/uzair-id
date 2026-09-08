@@ -174,4 +174,16 @@ return [
 
     'connect_timeout' => (int) env('UZAIR_CONNECT_TIMEOUT', 5),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Lock Cache Store
+    |--------------------------------------------------------------------------
+    |
+    | The cache store used for atomic locks during token refresh. When null,
+    | the application's default cache store is used.
+    |
+    */
+
+    'lock_store' => env('UZAIR_LOCK_STORE'),
+
 ];
