@@ -81,7 +81,10 @@ abstract class TestCase extends Orchestra
             $app['config']->set('database.default', 'testing');
             $app['config']->set('database.connections.testing', [
                 'driver' => 'sqlite',
-                'database' => getenv('DB_DATABASE') ?: ':memory:',
+                // In memory whatever `DB_DATABASE` holds: the other two branches
+                // read it as a database on a server, and an environment that sets
+                // it for them hands SQLite the same value as a path to a file.
+                'database' => ':memory:',
                 'prefix' => '',
             ]);
         }
