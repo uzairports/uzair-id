@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Socialite\Contracts\Factory;
 use Laravel\Socialite\SocialiteManager;
+use Symfony\Component\HttpFoundation\Response;
 use Uzairports\Uzairid\Console\Commands\PruneCommand;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -191,9 +192,31 @@ class UzairServiceProvider extends ServiceProvider
                 return Limit::none();
             }
 
+            $responseCallback = function (Request $request, array $headers): Response {
+                $message = __('uzairid::messages.rate_limited');
+
+                if ($request->expectsJson()) {
+                    return response()->json(['message' => $message], 429, $headers);
+                }
+
+                if ($request->hasSession() && $request->headers->has('referer')) {
+                    $referer = (string) $request->headers->get('referer');
+
+                    if ($referer !== $request->fullUrl()) {
+                        return back()->withErrors(['oauth' => $message])->withHeaders($headers);
+                    }
+                }
+
+                return response($message, 429, $headers);
+            };
+
             [$attempts, $minutes] = $this->budget($throttle);
 
-            $limits = [Limit::perMinutes($minutes, $attempts)->by($this->browserKey($request))];
+            $limits = [
+                Limit::perMinutes($minutes, $attempts)
+                    ->by($this->browserKey($request))
+                    ->response($responseCallback),
+            ];
 
             $ceiling = config('uzairports.routes.ip_throttle', '120,1');
 
@@ -201,7 +224,8 @@ class UzairServiceProvider extends ServiceProvider
                 [$ceilingAttempts, $ceilingMinutes] = $this->budget($ceiling);
 
                 $limits[] = Limit::perMinutes($ceilingMinutes, $ceilingAttempts)
-                    ->by('address:'.$request->ip());
+                    ->by('address:'.$request->ip())
+                    ->response($responseCallback);
             }
 
             return $limits;

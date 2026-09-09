@@ -119,10 +119,11 @@ class UzairAuthController
         $user = Auth::user();
 
         if ($user !== null) {
-            $token = OauthToken::query()
-                ->where('user_id', $user->getAuthIdentifier())
-                ->where('session_id', $this->sessionId($request))
-                ->first();
+            $tokens = OauthToken::query()->where('user_id', $user->getAuthIdentifier());
+
+            $token = $request->hasSession()
+                ? $tokens->where('session_id', $this->sessionId($request))->first()
+                : $tokens->whereNull('session_id')->latest('id')->first();
 
             if ($token !== null) {
                 $endSessions->end($token);

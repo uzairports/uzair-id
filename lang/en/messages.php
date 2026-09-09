@@ -14,4 +14,6 @@ return [
 
     'unknown_device' => 'Unknown device',
 
+    'rate_limited' => 'Too many requests. Please try again shortly.',
+
 ];

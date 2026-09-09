@@ -573,6 +573,21 @@ class OauthTokenTest extends TestCase
         $token->user_agent = 'Mozilla/5.0 (Linux; Android 14; SAMSUNG SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/24.0 Chrome/118.0.0.0 Mobile Safari/537.36';
         $this->assertSame('Samsung Internet — Android', $token->deviceLabel());
 
+        $token->user_agent = 'Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Vivaldi/6.5.3206.50';
+        $this->assertSame('Vivaldi — Windows', $token->deviceLabel());
+
+        $token->user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Brave/120';
+        $this->assertSame('Brave — macOS', $token->deviceLabel());
+
+        $token->user_agent = 'Mozilla/5.0 (Linux; U; Android 13; SM-G991B; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/115.0.5790.166 Mobile Safari/537.36';
+        $this->assertSame('WebView — Android', $token->deviceLabel());
+
+        $token->user_agent = 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+        $this->assertSame('Chrome — ChromeOS', $token->deviceLabel());
+
+        $token->user_agent = 'Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.4896.127 Mobile Safari/537.36 DuckDuckGo/5';
+        $this->assertSame('DuckDuckGo — Android', $token->deviceLabel());
+
         // Nothing recognizable is handed back as it came, not guessed at.
         $token->user_agent = 'curl/8.4.0';
         $this->assertSame('curl/8.4.0', $token->deviceLabel());
@@ -590,5 +605,6 @@ class OauthTokenTest extends TestCase
         $this->assertSame('UzAirports ID sessiyasi muddati tugadi.', __('uzairid::messages.session_expired'));
         $this->assertSame('Ushbu qurilmadagi seans yakunlandi.', __('uzairid::messages.session_ended'));
         $this->assertSame('Kirish yakunlanmadi: sessiya saqlanib qolmadi. Bitta sahifada qaytadan kiring.', __('uzairid::messages.handshake_lost'));
+        $this->assertSame('So‘rovlar soni juda ko‘p. Iltimos, birozdan so‘ng qayta urinib ko‘ring.', __('uzairid::messages.rate_limited'));
     }
 }

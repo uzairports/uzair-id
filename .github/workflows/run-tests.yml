@@ -9,14 +9,39 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+          MYSQL_DATABASE: test
+        ports:
+          - 3306:3306
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 3
+
     strategy:
       fail-fast: true
       matrix:
         php: [8.4]
         laravel: [13.*]
         stability: [prefer-lowest, prefer-stable]
+        database: [sqlite, mysql, pgsql]
+        exclude:
+          - stability: prefer-lowest
+            database: mysql
+          - stability: prefer-lowest
+            database: pgsql
 
-    name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }}
+    name: P${{ matrix.php }} - L${{ matrix.laravel }} - ${{ matrix.stability }} - ${{ matrix.database }}
 
     steps:
       - name: Checkout code
@@ -26,7 +51,7 @@ jobs:
         uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
-          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv
+          extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, pdo_mysql, pdo_pgsql, bcmath, soap, intl, gd, exif, iconv
           # pcov rather than xdebug: it only measures which lines ran, which is
           # all the report needs, and costs a fraction of the run time.
           coverage: pcov
@@ -72,9 +97,18 @@ jobs:
       # spends longer starting its workers than it saves. Worth revisiting if
       # the suite grows to where the run is dominated by the tests themselves.
       - name: Execute tests
-        if: matrix.stability != 'prefer-stable'
+        if: matrix.stability != 'prefer-stable' || matrix.database != 'sqlite'
         run: vendor/bin/pest
+        env:
+          DB_CONNECTION: ${{ matrix.database }}
+          DB_HOST: 127.0.0.1
+          DB_PORT: ${{ matrix.database == 'mysql' && 3306 || 5432 }}
+          DB_DATABASE: test
+          DB_USERNAME: ${{ matrix.database == 'mysql' && 'root' || 'postgres' }}
+          DB_PASSWORD: ${{ matrix.database == 'mysql' && '' || 'password' }}
 
       - name: Execute tests with coverage
-        if: matrix.stability == 'prefer-stable'
+        if: matrix.stability == 'prefer-stable' && matrix.database == 'sqlite'
         run: vendor/bin/pest --coverage
+        env:
+          DB_CONNECTION: ${{ matrix.database }}

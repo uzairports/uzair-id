@@ -47,12 +47,45 @@ abstract class TestCase extends Orchestra
     protected function defineEnvironment($app): void
     {
         $app['config']->set('auth.providers.users.model', TestUser::class);
-        $app['config']->set('database.default', 'testing');
-        $app['config']->set('database.connections.testing', [
-            'driver' => 'sqlite',
-            'database' => ':memory:',
-            'prefix' => '',
-        ]);
+
+        $driver = getenv('DB_CONNECTION') ?: 'testing';
+
+        if ($driver === 'pgsql') {
+            $app['config']->set('database.default', 'pgsql');
+            $app['config']->set('database.connections.pgsql', [
+                'driver' => 'pgsql',
+                'host' => getenv('DB_HOST') ?: '127.0.0.1',
+                'port' => getenv('DB_PORT') ?: '5432',
+                'database' => getenv('DB_DATABASE') ?: 'test',
+                'username' => getenv('DB_USERNAME') ?: 'postgres',
+                'password' => getenv('DB_PASSWORD') ?: 'password',
+                'charset' => 'utf8',
+                'prefix' => '',
+                'schema' => 'public',
+                'sslmode' => 'prefer',
+            ]);
+        } elseif ($driver === 'mysql') {
+            $app['config']->set('database.default', 'mysql');
+            $app['config']->set('database.connections.mysql', [
+                'driver' => 'mysql',
+                'host' => getenv('DB_HOST') ?: '127.0.0.1',
+                'port' => getenv('DB_PORT') ?: '3306',
+                'database' => getenv('DB_DATABASE') ?: 'test',
+                'username' => getenv('DB_USERNAME') ?: 'root',
+                'password' => getenv('DB_PASSWORD') ?: '',
+                'charset' => 'utf8mb4',
+                'collation' => 'utf8mb4_unicode_ci',
+                'prefix' => '',
+            ]);
+        } else {
+            $app['config']->set('database.default', 'testing');
+            $app['config']->set('database.connections.testing', [
+                'driver' => 'sqlite',
+                'database' => getenv('DB_DATABASE') ?: ':memory:',
+                'prefix' => '',
+            ]);
+        }
+
         $app['config']->set('uzairports.client_id', 'test-client-id');
         $app['config']->set('uzairports.client_secret', 'test-client-secret');
         $app['config']->set('uzairports.redirect', 'https://app.test/auth/callback');
@@ -109,6 +142,14 @@ abstract class TestCase extends Orchestra
 
     protected function setUpDatabase(): void
     {
+        Schema::disableForeignKeyConstraints();
+
+        Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('sessions');
+        Schema::dropIfExists('users');
+
+        Schema::enableForeignKeyConstraints();
+
         Schema::create('users', function (Blueprint $table) {
             $table->id();
             $table->string('uzair_id')->nullable()->unique();

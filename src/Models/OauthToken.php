@@ -624,8 +624,31 @@ class OauthToken extends Model
             return __('uzairid::messages.unknown_device');
         }
 
-        $browsers = ['Edg' => 'Edge', 'OPR' => 'Opera', 'YaBrowser' => 'Yandex', 'SamsungBrowser' => 'Samsung Internet', 'Firefox' => 'Firefox', 'Chrome' => 'Chrome', 'Safari' => 'Safari'];
-        $platforms = ['Android' => 'Android', 'iPhone' => 'iPhone', 'iPad' => 'iPad', 'Windows' => 'Windows', 'Macintosh' => 'macOS', 'Linux' => 'Linux'];
+        $browsers = [
+            'Vivaldi' => 'Vivaldi',
+            'Brave' => 'Brave',
+            'Edg' => 'Edge',
+            'OPR' => 'Opera',
+            'YaBrowser' => 'Yandex',
+            'SamsungBrowser' => 'Samsung Internet',
+            'DuckDuckGo' => 'DuckDuckGo',
+            'MiuiBrowser' => 'Miui Browser',
+            'UCBrowser' => 'UC Browser',
+            '; wv' => 'WebView',
+            'WebView' => 'WebView',
+            'Firefox' => 'Firefox',
+            'Chrome' => 'Chrome',
+            'Safari' => 'Safari',
+        ];
+        $platforms = [
+            'Android' => 'Android',
+            'iPhone' => 'iPhone',
+            'iPad' => 'iPad',
+            'Windows' => 'Windows',
+            'Macintosh' => 'macOS',
+            'CrOS' => 'ChromeOS',
+            'Linux' => 'Linux',
+        ];
 
         $browser = $this->firstMatch($agent, $browsers);
         $platform = $this->firstMatch($agent, $platforms);

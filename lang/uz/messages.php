@@ -14,4 +14,6 @@ return [
 
     'unknown_device' => 'Noma’lum qurilma',
 
+    'rate_limited' => 'So‘rovlar soni juda ko‘p. Iltimos, birozdan so‘ng qayta urinib ko‘ring.',
+
 ];

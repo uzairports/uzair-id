@@ -6,6 +6,8 @@ use Exception;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\UniqueConstraintViolationException;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
@@ -16,9 +18,11 @@ use Laravel\Socialite\Two\User as SocialiteUser;
 use Mockery;
 use RuntimeException;
 use Throwable;
+use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
+use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
@@ -384,6 +388,23 @@ class UzairAuthControllerTest extends TestCase
         $this->assertGuest();
     }
 
+    public function test_logout_for_sessionless_request_ends_the_latest_token(): void
+    {
+        $user = TestUser::create(['uzair_id' => '5011', 'name' => 'Sessionless']);
+        $older = $user->tokens()->create(['access_token' => 'older_token', 'session_id' => null]);
+        $newer = $user->tokens()->create(['access_token' => 'newer_token', 'session_id' => null]);
+
+        $request = Request::create(route('uzair.logout'), 'POST', server: ['HTTP_ACCEPT' => 'application/json']);
+        $request->setUserResolver(fn () => $user);
+        Auth::setUser($user);
+
+        $response = app(UzairAuthController::class)->logout($request, app(EndSessions::class));
+
+        $this->assertSame(204, $response->getStatusCode());
+        $this->assertDatabaseHas('oauth_tokens', ['id' => $older->id]);
+        $this->assertDatabaseMissing('oauth_tokens', ['id' => $newer->id]);
+    }
+
     /**
      * What a list of "your devices" needs: ending one of them from another,
      * without signing the browser doing the ending out.
@@ -574,6 +595,38 @@ class UzairAuthControllerTest extends TestCase
         $this->get(route('login'))->assertStatus(302);
         $this->get(route('login'))->assertStatus(302);
         $this->get(route('login'))->assertStatus(429);
+    }
+
+    public function test_rate_limited_api_request_returns_json_and_headers(): void
+    {
+        config(['uzairports.routes.throttle' => '1,1']);
+
+        $this->fromTheBrowser(Str::random(40));
+
+        $this->getJson(route('login'))->assertStatus(302);
+        $response = $this->getJson(route('login'));
+
+        $response->assertStatus(429)
+            ->assertJson(['message' => __('uzairid::messages.rate_limited')])
+            ->assertHeader('Retry-After');
+    }
+
+    public function test_rate_limited_web_request_with_referer_redirects_back_with_error(): void
+    {
+        config(['uzairports.routes.throttle' => '1,1']);
+
+        $browser = Str::random(40);
+        $this->fromTheBrowser($browser);
+
+        $this->get(route('login'))->assertStatus(302);
+
+        $this->fromTheBrowser($browser);
+        $response = $this->from('https://example.com/welcome')
+            ->get(route('login'));
+
+        $response->assertRedirect('https://example.com/welcome');
+        $response->assertSessionHasErrors(['oauth' => __('uzairid::messages.rate_limited')]);
+        $response->assertHeader('Retry-After');
     }
 
     /**
