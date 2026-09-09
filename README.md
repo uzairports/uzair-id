@@ -404,12 +404,64 @@ UZAIR_SINGLE_SESSION=true
 
 ### События (Events)
 
-Пакет инициирует следующие события, на которые можно подписаться для аудита и синхронизации:
+Пакет генерирует 4 доменных события жизненного цикла авторизации, на которые можно подписаться для аудита безопасности, синхронизации ролей и мониторинга:
 
-- `Uzairports\Uzairid\Events\UzairAuthenticated ($user, $socialiteUser, $token)` — успешный вход через SSO.
-- `Uzairports\Uzairid\Events\UzairLoggedOut ($user)` — выход пользователя.
-- `Uzairports\Uzairid\Events\UzairTokenRefreshed ($token)` — успешное фоновое обновление токена.
-- `Uzairports\Uzairid\Events\UzairTokenRefreshFailed ($token, $exception)` — отказ в продлении токена.
+#### 1. `Uzairports\Uzairid\Events\UzairAuthenticated`
+Вызывается сразу после успешного OAuth-входа и фиксации токена в БД (за пределами транзакции, поэтому связанная модель пользователя уже зафиксирована).
+
+* **Свойства события:**
+  * `$event->user` (`Illuminate\Database\Eloquent\Model`) — модель локального аутентифицированного пользователя.
+  * `$event->socialiteUser` (`Laravel\Socialite\Two\User`) — объект профиля от провайдера UzAirports ID (включая `$socialiteUser->getId()`, `$socialiteUser->getEmail()`, `$socialiteUser->getName()` и сырые данные `$socialiteUser->getRaw()`).
+  * `$event->token` (`?Uzairports\Uzairid\Models\OauthToken`) — сохраненная модель токена текущей сессии.
+
+#### 2. `Uzairports\Uzairid\Events\UzairLoggedOut`
+Вызывается при завершении сеанса пользователя через маршрут `uzair.logout`.
+
+* **Свойства события:**
+  * `$event->user` (`?Illuminate\Database\Eloquent\Model`) — выходящий пользователь (или `null`, если сессия уже была сброшена).
+
+#### 3. `Uzairports\Uzairid\Events\UzairTokenRefreshed`
+Вызывается при успешном фоновом или ручном обновлении access-токена через `RefreshAccessToken`.
+
+* **Свойства события:**
+  * `$event->token` (`Uzairports\Uzairid\Models\OauthToken`) — обновленная модель токена с новым `access_token`, `refresh_token` и `expires_at`.
+
+#### 4. `Uzairports\Uzairid\Events\UzairTokenRefreshFailed`
+Вызывается при отказе сервера SSO обменять refresh-токен (например, токен отозван или устарел) либо при сбое соединения.
+
+* **Свойства события:**
+  * `$event->token` (`Uzairports\Uzairid\Models\OauthToken`) — токен, который не удалось обновить.
+  * `$event->exception` (`?Throwable`) — исключение, возникшее при попытке обмена (если доступно).
+
+#### Пример регистрации слушателей (в `AppServiceProvider::boot()`):
+
+```php
+use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
+use Uzairports\Uzairid\Events\UzairAuthenticated;
+use Uzairports\Uzairid\Events\UzairTokenRefreshFailed;
+
+public function boot(): void
+{
+    // Аудит успешных входов и синхронизация дополнительных полей
+    Event::listen(function (UzairAuthenticated $event): void {
+        Log::info('User authenticated via UzAirports ID', [
+            'user_id' => $event->user->getKey(),
+            'uzair_id' => $event->socialiteUser->getId(),
+            'device' => $event->token?->deviceLabel(),
+        ]);
+    });
+
+    // Оповещение об ошибке ротации токена
+    Event::listen(function (UzairTokenRefreshFailed $event): void {
+        Log::warning('UzAirports token refresh failed', [
+            'token_id' => $event->token->id,
+            'user_id' => $event->token->user_id,
+            'reason' => $event->exception?->getMessage(),
+        ]);
+    });
+}
+```
 
 ### Обновление токена
 
