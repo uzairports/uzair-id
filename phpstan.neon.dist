@@ -12,8 +12,7 @@ parameters:
 
     # `env()` is only ever read from the package's own configuration file.
     configDirectories:
-        - src/config
+        - config
 
     excludePaths:
-        - src/database/migrations/
         - vendor/

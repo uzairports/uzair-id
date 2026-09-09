@@ -105,20 +105,20 @@ class UzairServiceProvider extends ServiceProvider
         $time = time();
 
         $this->publishesMigrations([
-            __DIR__.'/../database/migrations/add_uzair_id_to_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_uzair_id_to_users_table.php'),
-            __DIR__.'/../database/migrations/create_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_create_oauth_tokens_table.php'),
+            __DIR__.'/../../database/migrations/add_uzair_id_to_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_uzair_id_to_users_table.php'),
+            __DIR__.'/../../database/migrations/create_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_create_oauth_tokens_table.php'),
         ], 'uzairid-migrations');
 
         $this->publishesMigrations([
-            __DIR__.'/../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_remove_password_column_from_users_table.php'),
-            __DIR__.'/../database/migrations/relax_email_column_on_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_relax_email_column_on_users_table.php'),
+            __DIR__.'/../../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_remove_password_column_from_users_table.php'),
+            __DIR__.'/../../database/migrations/relax_email_column_on_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_relax_email_column_on_users_table.php'),
         ], 'uzairid-user-migrations');
 
         $this->publishesMigrations([
-            __DIR__.'/../database/migrations/add_session_id_to_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_session_id_to_oauth_tokens_table.php'),
-            __DIR__.'/../database/migrations/make_oauth_tokens_per_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_make_oauth_tokens_per_session.php'),
-            __DIR__.'/../database/migrations/index_oauth_tokens_for_pruning.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_for_pruning.php'),
-            __DIR__.'/../database/migrations/index_oauth_tokens_by_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_by_session.php'),
+            __DIR__.'/../../database/migrations/add_session_id_to_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_session_id_to_oauth_tokens_table.php'),
+            __DIR__.'/../../database/migrations/make_oauth_tokens_per_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_make_oauth_tokens_per_session.php'),
+            __DIR__.'/../../database/migrations/index_oauth_tokens_for_pruning.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_for_pruning.php'),
+            __DIR__.'/../../database/migrations/index_oauth_tokens_by_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_by_session.php'),
         ], 'uzairid-upgrade-migrations');
 
         if ($this->app->runningInConsole()) {
@@ -187,11 +187,11 @@ class UzairServiceProvider extends ServiceProvider
 
     private function configPath(): string
     {
-        return __DIR__.'/../config/uzairports.php';
+        return __DIR__.'/../../config/uzairports.php';
     }
 
     private function langPath(): string
     {
-        return __DIR__.'/../lang';
+        return __DIR__.'/../../lang';
     }
 }

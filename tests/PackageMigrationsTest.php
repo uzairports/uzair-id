@@ -23,7 +23,7 @@ class PackageMigrationsTest extends TestCase
     private function migration(string $name): Migration
     {
         /** @var RunnableMigration $migration */
-        $migration = require __DIR__."/../src/database/migrations/{$name}.php";
+        $migration = require __DIR__."/../database/migrations/{$name}.php";
 
         return $migration;
     }
