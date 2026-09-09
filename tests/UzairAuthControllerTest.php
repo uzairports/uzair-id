@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Exception;
+use Illuminate\Auth\Events\Login;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
@@ -494,6 +495,73 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
+     * A host application's `Login` listeners are entitled to a committed
+     * account.
+     *
+     * The sign-in used to happen inside the transaction that wrote the account,
+     * so a listener dispatching a queued job handed a worker the name of a row
+     * that did not exist yet, and one reading over a second connection saw no
+     * account at all.
+     */
+    public function test_the_sign_in_event_reaches_listeners_outside_the_transaction(): void
+    {
+        $depth = null;
+
+        Event::listen(Login::class, function () use (&$depth): void {
+            $depth = DB::transactionLevel();
+        });
+
+        $this->fakeIdentity([
+            'id' => '5030',
+            'name' => 'Captain Pilot',
+            'email' => 'pilot@uzairports.com',
+            'token' => 'access_token_value',
+            'refreshToken' => 'refresh_token_value',
+            'expiresIn' => 3600,
+        ]);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $this->assertSame(0, $depth);
+    }
+
+    /**
+     * What separating the two writes gives up, said out loud.
+     *
+     * A login that cannot be stored no longer takes the account back with it.
+     * The row left behind is the profile of an identity that just authenticated
+     * successfully, the browser is signed out either way, and the account stays
+     * linked — so the next attempt finds it instead of racing for the unique
+     * index again.
+     */
+    public function test_an_account_stays_linked_when_its_login_cannot_be_stored(): void
+    {
+        $this->fakeIdentity([
+            'id' => '5031',
+            'name' => 'Captain Pilot',
+            'email' => 'pilot@uzairports.com',
+            'token' => 'access_token_value',
+            'refreshToken' => 'refresh_token_value',
+            'expiresIn' => 3600,
+        ]);
+
+        OauthToken::creating(function (): void {
+            throw new RuntimeException('the login cannot be stored');
+        });
+
+        try {
+            $this->get(route('uzair.callback'))->assertRedirect(url('/'));
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertGuest();
+
+        $this->assertNotNull(TestUser::query()->firstWhere('uzair_id', '5031'));
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
      * The SSO endpoints are unauthenticated and each callback costs a round
      * trip to the identity provider, so they are registered behind a limit.
      */
@@ -533,6 +601,45 @@ class UzairAuthControllerTest extends TestCase
         $this->fromTheBrowser(Str::random(40));
 
         for ($attempt = 1; $attempt <= 30; $attempt++) {
+            $this->get(route('login'))->assertStatus(302);
+        }
+    }
+
+    /**
+     * Which browser a request belongs to is read off a cookie the caller
+     * writes, so one arriving with a fresh session id every time is a fresh
+     * browser every time, and the per-browser budget never catches it. The
+     * ceiling on the address is the limit that actually holds for it.
+     */
+    public function test_a_caller_rotating_its_session_cookie_is_held_by_the_address(): void
+    {
+        config([
+            'uzairports.routes.throttle' => '60,1',
+            'uzairports.routes.ip_throttle' => '3,1',
+        ]);
+
+        for ($attempt = 1; $attempt <= 3; $attempt++) {
+            $this->fromTheBrowser(Str::random(40));
+            $this->get(route('login'))->assertStatus(302);
+        }
+
+        $this->fromTheBrowser(Str::random(40));
+        $this->get(route('login'))->assertStatus(429);
+    }
+
+    /**
+     * The ceiling is the one limit a whole NAT gateway shares, so an address
+     * that really does carry that many sign-ins has to be able to lift it.
+     */
+    public function test_the_ceiling_on_the_address_can_be_lifted(): void
+    {
+        config([
+            'uzairports.routes.throttle' => '60,1',
+            'uzairports.routes.ip_throttle' => null,
+        ]);
+
+        for ($attempt = 1; $attempt <= 30; $attempt++) {
+            $this->fromTheBrowser(Str::random(40));
             $this->get(route('login'))->assertStatus(302);
         }
     }

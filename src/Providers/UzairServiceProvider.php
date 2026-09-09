@@ -168,9 +168,19 @@ class UzairServiceProvider extends ServiceProvider
      * limit low enough to be worth having would lock everyone out the moment a
      * handful of colleagues signed in at once.
      *
-     * An address still gets a ceiling — ten times the per-browser budget — for
-     * the client that ignores cookies and would otherwise arrive with a fresh
-     * session on every request.
+     * What a browser is, though, is decided by the cookie the request carries,
+     * and a caller writes its own cookies. One arriving with a fresh session id
+     * every time lands in a fresh bucket every time. The per-browser budget
+     * never catches it — so the address it comes from is given a ceiling of its
+     * own, which is the limit that actually holds for a caller like that.
+     *
+     * The ceiling used to be ten times the per-browser budget, which on the
+     * defaults left an address free to spend six hundred requests a minute on
+     * endpoints that write to the database and call the identity provider. It
+     * is configured in its own right now — `routes.ip_throttle`, an
+     * `attempts,minutes` pair like the other — so raising what one browser may
+     * do no longer quietly raises what one address may do tenfold. Set it to
+     * null to leave the address uncapped.
      */
     private function registerRateLimiter(): void
     {
@@ -181,20 +191,42 @@ class UzairServiceProvider extends ServiceProvider
                 return Limit::none();
             }
 
-            [$attempts, $minutes] = array_pad(array_map('trim', explode(',', $throttle)), 2, '1');
+            [$attempts, $minutes] = $this->budget($throttle);
 
-            $attempts = max((int) $attempts, 1);
-            $minutes = max((int) $minutes, 1);
+            $limits = [Limit::perMinutes($minutes, $attempts)->by($this->browserKey($request))];
 
-            return [
-                Limit::perMinutes($minutes, $attempts)->by($this->browserKey($request)),
-                Limit::perMinutes($minutes, $attempts * 10)->by((string) $request->ip()),
-            ];
+            $ceiling = config('uzairports.routes.ip_throttle', '120,1');
+
+            if (is_string($ceiling) && $ceiling !== '') {
+                [$ceilingAttempts, $ceilingMinutes] = $this->budget($ceiling);
+
+                $limits[] = Limit::perMinutes($ceilingMinutes, $ceilingAttempts)
+                    ->by('address:'.$request->ip());
+            }
+
+            return $limits;
         });
     }
 
     /**
+     * Read an `attempts,minutes` pair, refusing a budget that permits nothing.
+     *
+     * @return array{int<1, max>, int<1, max>}
+     */
+    private function budget(string $throttle): array
+    {
+        [$attempts, $minutes] = array_pad(array_map('trim', explode(',', $throttle)), 2, '1');
+
+        return [max((int) $attempts, 1), max((int) $minutes, 1)];
+    }
+
+    /**
      * What counts as one browser for the limit.
+     *
+     * A request carrying no session cookie is counted against its address
+     * instead. The key is spelled apart from the one the address ceiling uses,
+     * so such a request is counted in each of them once rather than spending
+     * one bucket twice.
      */
     private function browserKey(Request $request): string
     {

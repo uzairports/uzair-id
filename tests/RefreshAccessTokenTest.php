@@ -8,9 +8,11 @@ use GuzzleHttp\Psr7\Response;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
 use Mockery;
@@ -253,6 +255,59 @@ class RefreshAccessTokenTest extends TestCase
         Cache::shouldReceive('store')->once()->with('shared')->andReturn($store);
 
         $this->assertTrue((new RefreshAccessToken)($token));
+    }
+
+    /**
+     * A store offering no atomic locks used to answer the request with a fatal
+     * error rather than a lock, so a cache setting signed the user out. The
+     * exchange it was guarding still has to happen — and the reason it went
+     * unguarded has to be somewhere an operator can find it.
+     */
+    public function test_a_store_that_offers_no_lock_still_renews_the_token_and_says_so(): void
+    {
+        RefreshAccessToken::flushLockStoreWarnings();
+
+        Log::shouldReceive('warning')->once()->with(Mockery::pattern('/offers no atomic locks/'));
+
+        Cache::shouldReceive('store')->once()->andReturn(Mockery::mock(CacheRepository::class));
+
+        $token = $this->expiredToken('3013');
+
+        $this->providerReturns('old_refresh', new Token('new_access', 'new_refresh', 3600, []));
+
+        $this->assertTrue((new RefreshAccessToken)($token));
+
+        $stored = $token->fresh();
+
+        $this->assertNotNull($stored);
+        $this->assertSame('new_access', $stored->access_token);
+    }
+
+    /**
+     * A lock nobody else can see is not a lock.
+     *
+     * `lock_store` is null by default, so whatever the application caches in is
+     * what guards the one thing that may only be spent once. A store held in
+     * the memory of a single process guards nothing between the processes
+     * serving the application, and said nothing about it — the renewal simply
+     * looked guarded. It is said once, not on every renewal that finds it.
+     */
+    public function test_a_lock_store_held_in_one_process_is_reported_once(): void
+    {
+        RefreshAccessToken::flushLockStoreWarnings();
+
+        config(['cache.default' => 'array']);
+
+        Log::shouldReceive('warning')->once()->with(Mockery::pattern('/memory of one process/'));
+
+        $token = $this->expiredToken('3014');
+
+        $this->providerReturns('old_refresh', new Token('new_access', 'new_refresh', 3600, []));
+
+        $refresher = new RefreshAccessToken;
+
+        $this->assertTrue($refresher($token));
+        $this->assertTrue($refresher($token));
     }
 
     /**

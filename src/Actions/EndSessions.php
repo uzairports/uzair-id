@@ -184,17 +184,24 @@ class EndSessions
      */
     public function surrender(OauthToken $token): void
     {
-        $this->revoke($token);
+        $this->surrenderAll([$token]);
     }
 
     /**
-     * Revoke both tokens during this request after local access has ended.
-     * A failed access-token revocation must not prevent the refresh token from
-     * being surrendered.
+     * Give several logins' grants up at once, leaving their rows alone.
+     *
+     * `surrender()` settles its own revocations, so a sweep calling it per row
+     * waited out one batch after the next: a command dropping thousands of
+     * rows spent a revocation timeout on each of them, in turn, and the sweep
+     * took as long as the sum of them all. A whole chunk goes on the wire
+     * together here and is waited on once — the same bargain every other bulk
+     * path in this package already makes.
+     *
+     * @param  iterable<array-key, OauthToken>  $tokens
      */
-    private function revoke(OauthToken $token): void
+    public function surrenderAll(iterable $tokens): void
     {
-        $this->revokeAll([$token]);
+        $this->revokeAll($tokens);
     }
 
     /**

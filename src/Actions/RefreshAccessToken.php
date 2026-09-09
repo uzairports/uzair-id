@@ -3,6 +3,8 @@
 namespace Uzairports\Uzairid\Actions;
 
 use GuzzleHttp\Exception\RequestException;
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\Repository;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
@@ -33,12 +35,14 @@ class RefreshAccessToken
      */
     public function __invoke(OauthToken $token, int $leeway = 0): bool
     {
-        $store = config('uzairports.lock_store');
-        /** @var LockProvider $cache */
-        $cache = is_string($store) && $store !== '' ? Cache::store($store) : Cache::store();
+        $store = $this->lockStore();
+
+        if ($store === null) {
+            return $this->exchange($token, $leeway);
+        }
 
         /** @var Lock $lock */
-        $lock = $cache->lock($this->lockKey($token), self::lockTtl());
+        $lock = $store->lock($this->lockKey($token), self::lockTtl());
 
         try {
             /** @var bool $refreshed */
@@ -54,6 +58,91 @@ class RefreshAccessToken
 
             throw $this->temporarilyUnavailable();
         }
+    }
+
+    /**
+     * The store the exchange is guarded in, or null if it cannot be guarded.
+     *
+     * The whole reason the exchange runs behind a lock is that the refresh
+     * token rotates and may only be spent once. That promise is only as good as
+     * the store the lock is taken in, and the store was being taken on faith:
+     * one offering no atomic locks answered the call with a fatal error rather
+     * than a lock, and one held in the memory of a single process answered with
+     * a lock that no other process can see — which is not a lock at all in any
+     * deployment running more than one worker, and `lock_store` is null by
+     * default, so whatever the application caches in is what guards this.
+     *
+     * Neither is worth failing a sign-in over: a request that cannot take the
+     * lock still has a token to renew, and refusing to renew it would sign the
+     * user out over a cache setting. Both are said out loud instead — once per
+     * process, because this sits on the hot path — and the exchange runs
+     * unguarded, which is what it was already doing in the second case.
+     *
+     * A store that is shared but not in memory — Redis, Memcached, the
+     * database — cannot be told apart from one that is not by looking at it,
+     * so `file` on more than one server is left to the operator and to the note
+     * on `lock_store` in the published configuration.
+     */
+    private function lockStore(): ?LockProvider
+    {
+        $configured = config('uzairports.lock_store');
+
+        $repository = is_string($configured) && $configured !== ''
+            ? Cache::store($configured)
+            : Cache::store();
+
+        // A lock is taken in the store, not in the repository wrapping it. A
+        // repository that is itself a lock provider is accepted as one.
+        $store = $repository instanceof Repository ? $repository->getStore() : $repository;
+
+        if (! $store instanceof LockProvider) {
+            self::warnAboutTheLockStore(
+                'The cache store behind [uzairports.lock_store] offers no atomic locks, so the UzAirports refresh token exchange runs unguarded and a rotating token may be spent twice.'
+            );
+
+            return null;
+        }
+
+        if ($store instanceof ArrayStore) {
+            self::warnAboutTheLockStore(
+                'The cache store behind [uzairports.lock_store] lives in the memory of one process, so it guards nothing between the processes serving this application and an UzAirports refresh token may be spent twice. Point it at a store every process shares.'
+            );
+        }
+
+        return $store;
+    }
+
+    /**
+     * What has already been said about the lock store in this process.
+     *
+     * @var array<string, true>
+     */
+    private static array $reportedAboutTheLockStore = [];
+
+    /**
+     * Let the warnings be said again, for a suite that asserts on them.
+     */
+    public static function flushLockStoreWarnings(): void
+    {
+        self::$reportedAboutTheLockStore = [];
+    }
+
+    /**
+     * Say a thing about the lock store once, however many requests notice it.
+     *
+     * This is read on every renewal, and a misconfigured store stays
+     * misconfigured — so the line is worth writing once and worth nothing
+     * repeated on every request that finds it.
+     */
+    private static function warnAboutTheLockStore(string $message): void
+    {
+        if (isset(self::$reportedAboutTheLockStore[$message])) {
+            return;
+        }
+
+        self::$reportedAboutTheLockStore[$message] = true;
+
+        Log::warning($message);
     }
 
     /**

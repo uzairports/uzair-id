@@ -79,14 +79,13 @@ class EnsureAccessTokenIsFresh
             return $next($request);
         }
 
-        // A request carrying no session is not the browser that made this login
-        // — the row it was matched with belongs to whichever device signed in
-        // last, and dropping it would sign that device out over a call it never
-        // made. The request is still refused, because the token it would have
-        // used cannot be renewed, but the login is left where it stands.
-        if ($request->hasSession()) {
-            $token->delete();
-        }
+        // The row is this caller's own either way — the session that made it,
+        // or a login that names no session for a request that names none
+        // either — so a login that can no longer be renewed goes with the
+        // refusal. It used to be somebody else's, and dropping it would have
+        // signed that device out over a call it never made; `tokenFor()` no
+        // longer hands out a browser's login to a request without a session.
+        $token->delete();
 
         $this->endSession($request);
 
@@ -101,10 +100,22 @@ class EnsureAccessTokenIsFresh
      * The login this request is running on.
      *
      * A request without a session — an API client, a console command — names no
-     * browser, so there is nothing to match on, and the account's most recent
-     * login is the best that can be said. It is a guess, and it is somebody
-     * else's row: the caller may read a token through it, but nothing it does
-     * may end that login. `handle()` keeps to that.
+     * browser, so it is matched against the logins that name no browser either:
+     * `session_id` is nullable precisely because a token can be issued outside
+     * a session, and such a row is the caller's own.
+     *
+     * It used to be handed the account's most recent login instead, which is
+     * whichever browser signed in last — somebody else's row. Reading a token
+     * through it was the least of it: the request went on to keep that login
+     * alive on every call, so an abandoned browser's row never aged into
+     * `prunable()` and the grant behind it was never surrendered, and it spent
+     * that browser's rotating refresh token to renew a token the caller has no
+     * supported way to read — `HasUzairToken::currentToken()` answers null
+     * without a session. A request that names no browser now neither reads nor
+     * writes a login belonging to one.
+     *
+     * The unique pair does not collapse several null session ids, so the most
+     * recent of them is taken.
      *
      * The session is read off the request this middleware was handed rather
      * than off the global one: they are the same object in an ordinary HTTP
@@ -120,7 +131,7 @@ class EnsureAccessTokenIsFresh
         $tokens = OauthToken::query()->where('user_id', $user->getAuthIdentifier());
 
         if (! $request->hasSession()) {
-            return $tokens->latest('id')->first();
+            return $tokens->whereNull('session_id')->latest('id')->first();
         }
 
         $sessionId = $request->session()->getId();

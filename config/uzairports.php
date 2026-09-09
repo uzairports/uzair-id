@@ -195,6 +195,15 @@ return [
     | together. One sign-in costs two requests — the redirect and the callback —
     | so the budget is generous by design. Set it to null to lift the limit.
     |
+    | Which browser a request belongs to is read off the session cookie it
+    | carries, and a caller writes its own cookies: one arriving with a fresh
+    | session id every time is a fresh browser every time, and the budget above
+    | never catches it. `ip_throttle` is the ceiling that does — the same kind
+    | of pair, spent per address, and the limit that actually holds for a caller
+    | that rotates its cookie. It has to clear a whole NAT gateway's worth of
+    | genuine sign-ins, so raise it where one address really does carry that
+    | many; set it to null to leave the address uncapped.
+    |
     */
 
     'routes' => [
@@ -202,6 +211,8 @@ return [
         'prefix' => env('UZAIR_ROUTE_PREFIX', 'auth'),
 
         'throttle' => env('UZAIR_ROUTE_THROTTLE', '60,1'),
+
+        'ip_throttle' => env('UZAIR_ROUTE_IP_THROTTLE', '120,1'),
 
     ],
 
@@ -330,6 +341,15 @@ return [
     |
     | The cache store used for atomic locks during token refresh. When null,
     | the application's default cache store is used.
+    |
+    | The refresh token rotates and may only be spent once, and the lock is the
+    | only thing standing between two requests spending the same one — so the
+    | store has to be one every process serving this application shares.
+    | `redis`, `memcached` and `database` are; `array` is held in the memory of
+    | one process, and `file` is shared on one server but not between several,
+    | so on more than one machine it guards nothing. A store that is provably
+    | not shared, or that offers no locks at all, is reported in the log once
+    | and the exchange runs unguarded rather than failing the sign-in.
     |
     */
 

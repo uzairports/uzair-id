@@ -31,9 +31,10 @@ use Uzairports\Uzairid\Models\OauthToken;
  * The endpoints behind `Uzair::routes()`.
  *
  * The whole handshake lives here rather than in each host application, so that
- * the ordering it depends on — one transaction, then the session, then the
- * events — is fixed in one place. Applications that need to change a step
- * extend this class and pass it to `Uzair::routes(['controller' => ...])`.
+ * the ordering it depends on — the account, then the session, then the login
+ * that names it, then the events — is fixed in one place. Applications that
+ * need to change a step extend this class and pass it to
+ * `Uzair::routes(['controller' => ...])`.
  */
 class UzairAuthController
 {
@@ -45,11 +46,15 @@ class UzairAuthController
     /**
      * Complete the SSO handshake and open a session for the identity behind it.
      *
-     * The account, authentication, and token are written in one atomic transaction:
-     * `Auth::login()` migrates the session to prevent fixation, settling the final
-     * session ID before the token row is persisted. If storing the token fails,
-     * the transaction rolls back the account changes, the session is invalidated,
-     * and the user is left unauthenticated.
+     * The account is written, then the browser is signed in — `Auth::login()`
+     * migrates the session to prevent fixation, settling the final session id —
+     * and then the token row is written against that id. Each write is atomic
+     * in itself; the sign-in between them is deliberately not inside either,
+     * because it fires events a host application listens to. See
+     * `storeIdentity()`.
+     *
+     * Anything failing along the way leaves the browser unauthenticated: the
+     * session is invalidated and the user is sent back with the reason.
      */
     public function callback(
         Request $request,
@@ -175,9 +180,10 @@ class UzairAuthController
      * logins of that" would either match nothing or, worse, match by whatever
      * the database made of it.
      *
-     * `writeIdentity()` asks for the key before the transaction it opens is
-     * committed, so a model that cannot answer fails the handshake rather than
-     * this call, which runs once the browser is already signed in.
+     * `writeAccount()` asks for the key inside the transaction that writes the
+     *  account before the browser is signed in, so a model that cannot answer
+     * fails the handshake rather than this call, which runs once the browser is
+     * already signed in.
      *
      * @throws RuntimeException when the authenticated user has no usable key
      */
@@ -267,13 +273,23 @@ class UzairAuthController
     }
 
     /**
-     * Write the account and its token, retrying once if another callback won the race.
+     * Write the account, sign it in, and record the login this browser made.
      *
-     * Two callbacks for an identity with no local account, yet both see nothing
-     * to update and both insert; the unique index on `users.uzair_id` refuses
-     * the loser. Its transaction has already been rolled back by then, so the
-     * work is simply done again — the second attempt finds the row the winner
-     * wrote and updates it.
+     * The three steps are ordered by what each needs from the one before, and
+     * the sign-in is deliberately not inside a transaction. `Auth::login()`
+     * fires `Illuminate\Auth\Events\Login`, and a host application's listeners
+     * are entitled to see a committed account: one dispatching a queued job saw
+     * a worker pick it up before the row it names existed, and one reading over
+     * a second connection saw no account at all. Wrapping somebody else's
+     * listeners in a transaction this class opened is not this package's call
+     * to make.
+     *
+     * What that gives up is rolling the account back when the token cannot be
+     * stored. It is worth little: the row that would be rolled back is the
+     * profile of an identity that just authenticated successfully, the caller
+     * signs the browser out either way, and the account is left linked so the
+     * next attempt finds it instead of racing for it again. Each of the two
+     * writes is still atomic in itself.
      *
      * @return array{user: Authenticatable&Model, token: OauthToken}
      *
@@ -281,23 +297,45 @@ class UzairAuthController
      */
     private function storeIdentity(Request $request, SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): array
     {
+        $user = $this->storeAccount($uzairUser, $resolveUser);
+
+        Auth::login($user);
+
+        return ['user' => $user, 'token' => $this->storeToken($request, $uzairUser, $user)];
+    }
+
+    /**
+     * Resolve the account behind the identity, retrying once if another
+     * callback won the race.
+     *
+     * Two callbacks for an identity with no local account, yet both see nothing
+     * to update and both insert; the unique index on `users.uzair_id` refuses
+     * the loser. Its transaction has already been rolled back by then, so the
+     * work is simply done again — the second attempt finds the row the winner
+     * wrote and updates it.
+     *
+     * @return Authenticatable&Model
+     *
+     * @throws Throwable
+     */
+    private function storeAccount(SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): Authenticatable
+    {
         try {
-            return $this->writeIdentity($request, $uzairUser, $resolveUser);
+            return $this->writeAccount($uzairUser, $resolveUser);
         } catch (UniqueConstraintViolationException) {
-            return $this->writeIdentity($request, $uzairUser, $resolveUser);
+            return $this->writeAccount($uzairUser, $resolveUser);
         }
     }
 
     /**
-     * @return array{user: Authenticatable&Model, token: OauthToken}
+     * @return Authenticatable&Model
      *
-     * @throws RuntimeException
+     * @throws RuntimeException when the configured auth model cannot be signed in
      * @throws Throwable
-     *                   when the configured auth model cannot be signed in
      */
-    private function writeIdentity(Request $request, SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): array
+    private function writeAccount(SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): Authenticatable
     {
-        return DB::transaction(function () use ($request, $uzairUser, $resolveUser): array {
+        return DB::transaction(function () use ($uzairUser, $resolveUser): Authenticatable {
             $user = $resolveUser($uzairUser);
 
             if (! $user instanceof Authenticatable) {
@@ -306,35 +344,65 @@ class UzairAuthController
 
             // `single_session` ends the account's other logins once this one is
             // written and names them by whatever `getAuthIdentifier()` hands
-            // back. A key that names no row is asked for here, inside the
-            // transaction, rather than where it is spent: rose on the far
-            // side, the account would already be written and signed in, and a
-            // handshake that worked would end in a 500.
+            // back. A key that names no row is asked for here, before the
+            // browser is signed in, rather than where it is spent: raised on
+            // the far side, the account would already be written and signed in,
+            // and a handshake that worked would end in a 500.
             if (config('uzairports.single_session', false)) {
                 $this->accountKey($user);
             }
 
-            Auth::login($user);
-
-            $sessionId = $this->sessionId($request);
-
-            $token = OauthToken::query()->firstOrNew([
-                'user_id' => $user->getKey(),
-                'session_id' => $sessionId,
-            ]);
-
-            $token->forceFill([
-                'user_id' => $user->getKey(),
-                'session_id' => $sessionId,
-                'access_token' => $uzairUser->token,
-                'refresh_token' => $uzairUser->refreshToken,
-                'expires_at' => $this->expiresAt($uzairUser),
-                'ip_address' => $request->ip(),
-                'user_agent' => Str::limit((string) $request->userAgent(), 500, ''),
-            ])->save();
-
-            return ['user' => $user, 'token' => $token];
+            return $user;
         });
+    }
+
+    /**
+     * Record the login, retrying once if another callback won the same session.
+     *
+     * The session id is settled by now: `Auth::login()` migrated the session to
+     * prevent fixation before this is called, so the row names the id the
+     * browser will actually carry. Two callbacks finishing on one session would
+     * both find nothing and both insert, and `(user_id, session_id)` refuses
+     * the loser — which retries and updates what the winner wrote.
+     *
+     * @param  Authenticatable&Model  $user
+     *
+     * @throws Throwable
+     */
+    private function storeToken(Request $request, SocialiteUser $uzairUser, Authenticatable $user): OauthToken
+    {
+        try {
+            return $this->writeToken($request, $uzairUser, $user);
+        } catch (UniqueConstraintViolationException) {
+            return $this->writeToken($request, $uzairUser, $user);
+        }
+    }
+
+    /**
+     * @param  Authenticatable&Model  $user
+     *
+     * @throws Throwable
+     */
+    private function writeToken(Request $request, SocialiteUser $uzairUser, Authenticatable $user): OauthToken
+    {
+        $sessionId = $this->sessionId($request);
+
+        $token = OauthToken::query()->firstOrNew([
+            'user_id' => $user->getKey(),
+            'session_id' => $sessionId,
+        ]);
+
+        $token->forceFill([
+            'user_id' => $user->getKey(),
+            'session_id' => $sessionId,
+            'access_token' => $uzairUser->token,
+            'refresh_token' => $uzairUser->refreshToken,
+            'expires_at' => $this->expiresAt($uzairUser),
+            'ip_address' => $request->ip(),
+            'user_agent' => Str::limit((string) $request->userAgent(), 500, ''),
+        ])->save();
+
+        return $token;
     }
 
     /**

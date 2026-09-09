@@ -76,6 +76,73 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     }
 
     /**
+     * A login is kept alive by the browser holding it, and by nothing else.
+     *
+     * The request used to be matched with the account's most recent login and
+     * to stamp it as seen on every call, so an API client kept an abandoned
+     * browser's row out of `prunable()` for as long as it kept calling — and a
+     * row that is never pruned is a grant that is never surrendered.
+     */
+    public function test_a_request_without_a_session_does_not_keep_a_browsers_login_alive(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '4020']);
+
+        $login = $user->tokens()->create([
+            'access_token' => 'the_browsers_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => 'the-browsers-session',
+        ]);
+
+        $lastSeen = now()->subMinutes(200)->startOfSecond();
+
+        $login->forceFill(['updated_at' => $lastSeen])->saveQuietly();
+
+        try {
+            $this->handle($this->statelessRequest($user));
+
+            $this->fail('A request holding no login of its own should have been refused.');
+        } catch (AuthenticationException) {
+            //
+        }
+
+        $stored = $login->fresh();
+
+        $this->assertNotNull($stored);
+        $this->assertNotNull($stored->updated_at);
+        $this->assertSame($lastSeen->getTimestamp(), $stored->updated_at->getTimestamp());
+    }
+
+    /**
+     * `session_id` is nullable because a token can be issued outside a session,
+     * and that is the row a request without a session is answered by — not
+     * whichever browser happens to have signed in last.
+     */
+    public function test_a_request_without_a_session_is_answered_by_the_login_that_names_none(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4021']);
+
+        $user->tokens()->create([
+            'access_token' => 'the_clients_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => null,
+        ]);
+
+        // Written last, so the account's most recent login is this one.
+        $user->tokens()->create([
+            'access_token' => 'the_browsers_token',
+            'refresh_token' => null,
+            'expires_at' => now()->subMinute(),
+            'session_id' => 'the-browsers-session',
+        ]);
+
+        $response = $this->handle($this->statelessRequest($user));
+
+        $this->assertSame('OK', $response->getContent());
+    }
+
+    /**
      * A route name that resolves to nothing used to raise a
      * `RouteNotFoundException` while building the redirect — a 500 in place of
      * the answer, at the one moment the user most needs to be sent back

@@ -2,14 +2,19 @@
 
 namespace Uzairports\Uzairid\Models;
 
+use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Prunable;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Events\ModelsPruned;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Psr\SimpleCache\InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
@@ -178,6 +183,93 @@ class OauthToken extends Model
     }
 
     /**
+     * Sweep the abandoned logins, handing a chunk's grants back together.
+     *
+     * The trait's own sweep prunes one model at a time, and `pruning()` settles
+     * that row's revocations before the next one is even read. Every row
+     * therefore cost its own wait on the identity provider — up to the
+     * revocation timeout apiece — so a command dropping thousands of them took
+     * as long as the sum of them all, which for a real backlog is hours rather
+     * than minutes. `revoke_on_prune` was the only way out, and turning it off
+     * means leaving live grants behind.
+     *
+     * A chunk's grants go out together instead and are waited on once, which is
+     * how every other bulk path in this package already spends them. The rows
+     * are still deleted one apiece, the way the trait deletes them, so anything
+     * observing the model hears about each of them; `pruning()` is not called
+     * along the way, because the chunk has already been surrendered.
+     *
+     * A row that will not delete is reported, and the sweep carries on again as
+     * the trait does: one unhappy row must not leave the rest of the backlog
+     * standing.
+     *
+     * @throws Throwable
+     */
+    public function pruneAll(int $chunkSize = 1000): int
+    {
+        $total = 0;
+
+        $this->prunable()->chunkById($chunkSize, function (Collection $tokens) use (&$total): void {
+            $total += $this->pruneChunk($tokens);
+
+            Event::dispatch(new ModelsPruned(static::class, $total));
+        });
+
+        return $total;
+    }
+
+    /**
+     * Surrender a chunk's grants, then drop its rows.
+     *
+     * The entries the resolved logins were cached under go too. Pruning is the
+     * one path that used to leave them — `login_cache_ttl` documents a swept
+     * row as exactly what the entry's lifetime covers — but the sweep is
+     * holding every session id it is about to orphan anyway, and dropping them
+     * costs one call for the whole chunk.
+     *
+     * @param Collection<int, OauthToken> $tokens
+     * @return int the number of rows actually dropped
+     * @throws Throwable
+     */
+    private function pruneChunk(Collection $tokens): int
+    {
+        if ($tokens->isEmpty()) {
+            return 0;
+        }
+
+        if (config('uzairports.revoke_on_prune', true)) {
+            (static::$pruner ??= app(EndSessions::class))->surrenderAll($tokens);
+        }
+
+        $pruned = 0;
+
+        /** @var array<string, true> $sessionIds */
+        $sessionIds = [];
+
+        foreach ($tokens as $token) {
+            try {
+                $token->delete();
+            } catch (Throwable $exception) {
+                app(ExceptionHandler::class)->report($exception);
+
+                continue;
+            }
+
+            $pruned++;
+
+            $sessionId = $token->session_id;
+
+            if (is_string($sessionId) && $sessionId !== '') {
+                $sessionIds[$sessionId] = true;
+            }
+        }
+
+        static::forgetLogins(array_keys($sessionIds));
+
+        return $pruned;
+    }
+
+    /**
      * Give the login's grant up before the row goes.
      *
      * Deleting the row says nothing to UzAirports ID: the refresh token it
@@ -190,10 +282,14 @@ class OauthToken extends Model
      * way: it names a session the store has already collected, so leaving it
      * behind would only have it swept again tomorrow.
      *
-     * Each row costs the revocation calls the provider offers, in a command
-     * that may be sweeping thousands of them. Where that backlog is real and
-     * the grants expire on their own, `uzairports.revoke_on_prune` turns the
-     * calls off and leaves the sweep to delete rows and nothing more.
+     * This is the hook for a single `prune()` call. The sweep does not come
+     * through here — `pruneAll()` surrenders a whole chunk at once rather than
+     * paying a wait per row — so the two must not both revoke the same grant.
+     *
+     * Either way the calls cost what the provider charges for them. Where the
+     * backlog is real and the grants expire on their own,
+     * `uzairports.revoke_on_prune` turns them off and leaves the sweep to
+     * delete rows and nothing more.
      */
     protected function pruning(): void
     {
@@ -258,7 +354,7 @@ class OauthToken extends Model
     }
 
     /**
-     * What was last resolved for a session, if it may still be used.
+     * What was last resolved for a session if it may still be used.
      *
      * The account is carried alongside the expiry because a session id is not
      * proof of whose login it names: an entry left by whoever held the session
@@ -313,7 +409,7 @@ class OauthToken extends Model
      * share a cache store, which any deployment running more than one process
      * already needs for locks.
      *
-     * A row dropped from outside the package — a sweep, a hand-written delete —
+     * A row dropped from outside the package — a sweep, a handwritten delete —
      * is what the entry's lifetime is actually covering.
      */
     public static function forgetLogin(?string $sessionId): void
@@ -334,7 +430,8 @@ class OauthToken extends Model
      * are dropped in one call instead, which is a single command on the stores
      * that offer one and the same loop as before on those that do not.
      *
-     * @param  array<array-key, string>  $sessionIds
+     * @param array<array-key, string> $sessionIds
+     * @throws InvalidArgumentException
      */
     public static function forgetLogins(array $sessionIds): void
     {
