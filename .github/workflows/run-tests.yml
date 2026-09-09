@@ -17,7 +17,13 @@ jobs:
           MYSQL_DATABASE: test
         ports:
           - 3306:3306
-        options: --health-cmd="mysqladmin ping -uroot -ppassword" --health-interval=10s --health-timeout=5s --health-retries=3
+        # The ping stays credential-free. `mysqladmin ping` exits 0 on an
+        # access-denied error too — that answer still proves the server is up,
+        # which is all a health check asks — while an authenticated ping fails
+        # for the whole init window, when the entrypoint is running a temporary
+        # server that has no root password yet. Three of those and the runner
+        # gives up on a container that was seconds from ready.
+        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=5 --health-start-period=30s
       postgres:
         image: postgres:16
         env:
