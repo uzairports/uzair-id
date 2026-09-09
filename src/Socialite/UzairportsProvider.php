@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Socialite;
 
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\RequestOptions;
 use Laravel\Socialite\Two\AbstractProvider;
 use Laravel\Socialite\Two\ProviderInterface;
@@ -148,17 +149,32 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     public function logout(string $token): ?ResponseInterface
     {
+        return $this->wait($this->logoutAsync($token));
+    }
+
+    /**
+     * Hand the access token back without waiting for the answer.
+     *
+     * Ending several logins at once means one of these per login, and each
+     * carries the provider's revocation timeout. Waited on in turn they add up:
+     * an account signed in on a dozen devices spent a dozen timeouts inside the
+     * request a browser was holding. Handed back as a promise they are put on
+     * the wire together and the caller waits once, for the slowest.
+     *
+     * Null means there is no endpoint configured to call, which is not a
+     * failure — the identity provider simply offers no such endpoint.
+     */
+    public function logoutAsync(string $token): ?PromiseInterface
+    {
         $endpoint = config('uzairports.logout_endpoint', '/api/v1/oauth/logout');
 
         if (! is_string($endpoint) || $endpoint === '') {
             return null;
         }
 
-        $response = $this->getHttpClient()->post(
+        return $this->confirmed($this->getHttpClient()->postAsync(
             $this->absoluteUrl($endpoint), $this->getRequestOptions($token, $this->revocationTimeout())
-        );
-
-        return $this->ensureRevoked($response);
+        ));
     }
 
     /**
@@ -181,6 +197,19 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     public function revokeRefreshToken(string $refreshToken): ?ResponseInterface
     {
+        return $this->wait($this->revokeRefreshTokenAsync($refreshToken));
+    }
+
+    /**
+     * Surrender the refresh token without waiting for the answer.
+     *
+     * The access token and the refresh token of one login are surrendered
+     * independently — neither answer decides the other — so they travel
+     * together rather than one after the next. See `logoutAsync()` for why the
+     * waiting is done once, by the caller.
+     */
+    public function revokeRefreshTokenAsync(string $refreshToken): ?PromiseInterface
+    {
         $endpoint = config('uzairports.revoke_endpoint');
 
         if (! is_string($endpoint) || $endpoint === '') {
@@ -189,7 +218,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
         $revocationTimeout = $this->revocationTimeout();
 
-        $response = $this->getHttpClient()->post($this->absoluteUrl($endpoint), [
+        return $this->confirmed($this->getHttpClient()->postAsync($this->absoluteUrl($endpoint), [
             RequestOptions::TIMEOUT => $revocationTimeout,
             RequestOptions::CONNECT_TIMEOUT => min($this->connectTimeout(), $revocationTimeout),
             RequestOptions::ALLOW_REDIRECTS => false,
@@ -200,9 +229,39 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
                 'client_id' => $this->clientId,
                 'client_secret' => $this->clientSecret,
             ],
-        ]);
+        ]));
+    }
 
-        return $this->ensureRevoked($response);
+    /**
+     * Hold the promise to the same answer the waited-on call demanded.
+     *
+     * A 2xx is what says the grant was actually given up. Anything else is
+     * turned into a rejection here rather than at the point of waiting, so a
+     * caller settling many of these reads one kind of outcome for all of them.
+     */
+    private function confirmed(PromiseInterface $promise): PromiseInterface
+    {
+        return $promise->then(function (mixed $response): ResponseInterface {
+            if (! $response instanceof ResponseInterface) {
+                throw new RuntimeException('UzAirports SSO did not answer the revocation request.');
+            }
+
+            return $this->ensureRevoked($response);
+        });
+    }
+
+    /**
+     * Wait out a revocation, giving up whatever it was rejected with.
+     */
+    private function wait(?PromiseInterface $promise): ?ResponseInterface
+    {
+        if ($promise === null) {
+            return null;
+        }
+
+        $response = $promise->wait();
+
+        return $response instanceof ResponseInterface ? $response : null;
     }
 
     private function ensureRevoked(ResponseInterface $response): ResponseInterface

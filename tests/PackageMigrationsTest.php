@@ -391,6 +391,8 @@ class PackageMigrationsTest extends TestCase
         $userIdCol = collect($columns)->firstWhere('name', 'user_id');
         $this->assertNotNull($userIdCol);
         $this->assertStringContainsString('varchar', strtolower($userIdCol['type']));
+        $this->assertFalse($this->hasIndexOn('oauth_tokens', ['user_id']));
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['user_id', 'session_id']));
 
         $createTokens->down();
     }

@@ -55,7 +55,7 @@ return new class extends Migration
                 $user = new $userModel;
                 if ($user instanceof Model) {
                     if ($user->getKeyType() === 'string') {
-                        $table->string('user_id')->index();
+                        $table->string('user_id');
                     } else {
                         $table->foreignId('user_id')->constrained($user->getTable())->cascadeOnDelete()->cascadeOnUpdate();
                     }

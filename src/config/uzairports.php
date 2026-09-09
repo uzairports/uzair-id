@@ -280,6 +280,51 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Revocation Concurrency
+    |--------------------------------------------------------------------------
+    |
+    | How many grants are handed back to the identity provider at once when
+    | several logins end together. Each revocation carries the timeout above,
+    | and there are up to two per login, so sending them in turn made the wait
+    | the sum of them all — worst inside the callback `single_session` ends the
+    | account's other logins in.
+    |
+    | Raising it shortens that wait and opens more sockets at once; lowering it
+    | to 1 restores the old one-at-a-time behaviour.
+    |
+    */
+
+    'revocation_concurrency' => (int) env('UZAIR_REVOCATION_CONCURRENCY', 10),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Resolved Login Lifetime
+    |--------------------------------------------------------------------------
+    |
+    | How many seconds the `uzair.token` middleware may let a request through
+    | on the login it last resolved for that session, instead of reading the
+    | row again. Every request through the middleware otherwise costs one read
+    | of `oauth_tokens` to ask two questions whose answer, for a browser
+    | clicking around, is the same nearly every time.
+    |
+    | Zero — the default — reads the row on every request, which is the only
+    | setting under which a login ended anywhere at all is refused on the very
+    | next request. Above zero, every path in this package that ends a login
+    | also drops the entry, so signing a device out from another one still
+    | takes effect at once wherever the two share a cache store. What the
+    | lifetime covers is a row that went away without the package knowing: a
+    | sweep, or a delete run by hand against the database.
+    |
+    | Keep it well under the session lifetime — a few seconds is enough to take
+    | the read off a busy page — and leave it at zero if a login must never
+    | outlive its row by even that much.
+    |
+    */
+
+    'login_cache_ttl' => (int) env('UZAIR_LOGIN_CACHE_TTL', 0),
+
+    /*
+    |--------------------------------------------------------------------------
     | Lock Cache Store
     |--------------------------------------------------------------------------
     |

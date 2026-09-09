@@ -207,8 +207,8 @@ class OauthTokenTest extends TestCase
         ]);
 
         $provider = Mockery::mock(UzairportsProvider::class);
-        $provider->shouldReceive('logout')->with('abandoned_access_token')->once();
-        $provider->shouldReceive('revokeRefreshToken')->with('abandoned_refresh_token')->once();
+        $provider->shouldReceive('logoutAsync')->with('abandoned_access_token')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('abandoned_refresh_token')->once()->andReturn($this->revoked());
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
@@ -260,7 +260,7 @@ class OauthTokenTest extends TestCase
         ]);
 
         $provider = Mockery::mock(UzairportsProvider::class);
-        $provider->shouldReceive('logout')->once()->andThrow(new Exception('SSO service unavailable'));
+        $provider->shouldReceive('logoutAsync')->once()->andThrow(new Exception('SSO service unavailable'));
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 

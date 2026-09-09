@@ -93,6 +93,8 @@ php artisan vendor:publish --tag=uzairid-config
 | `routes.throttle` | `UZAIR_ROUTE_THROTTLE` | `60,1` | Лимит запросов на SSO-эндпоинты (`попыток,минут`), на браузер |
 | `timeout` | `UZAIR_TIMEOUT` | `10` | Таймаут HTTP-запросов к SSO (сек) |
 | `connect_timeout` | `UZAIR_CONNECT_TIMEOUT` | `5` | Таймаут соединения с SSO (сек) |
+| `revocation_concurrency` | `UZAIR_REVOCATION_CONCURRENCY` | `10` | Сколько грантов отзывается у SSO одновременно; `1` — по одному |
+| `login_cache_ttl` | `UZAIR_LOGIN_CACHE_TTL` | `0` | Сколько секунд `uzair.token` может пропускать запрос по уже найденному входу, не читая строку; `0` — читать всегда |
 | `lock_store` | `UZAIR_LOCK_STORE` | — | Хранилище кеша для atomic lock при обновлении токена |
 
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com

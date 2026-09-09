@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Prunable;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
@@ -166,6 +167,16 @@ class OauthToken extends Model
         );
     }
 
+    protected static ?EndSessions $pruner = null;
+
+    /**
+     * Flush the cached pruner instance between sweeps or tests.
+     */
+    public static function flushPruner(): void
+    {
+        static::$pruner = null;
+    }
+
     /**
      * Give the login's grant up before the row goes.
      *
@@ -190,7 +201,7 @@ class OauthToken extends Model
             return;
         }
 
-        app(EndSessions::class)->surrender($this);
+        (static::$pruner ??= app(EndSessions::class))->surrender($this);
     }
 
     /**
@@ -232,6 +243,98 @@ class OauthToken extends Model
         $lifetime = config('session.lifetime', 120);
 
         return max(is_numeric($lifetime) ? (int) $lifetime : 120, 1);
+    }
+
+    /**
+     * How long a resolved login may answer for the row, in seconds.
+     *
+     * Zero — the default — means it may not, and every request reads the row.
+     */
+    public static function loginCacheTtl(): int
+    {
+        $ttl = config('uzairports.login_cache_ttl', 0);
+
+        return max(is_numeric($ttl) ? (int) $ttl : 0, 0);
+    }
+
+    /**
+     * What was last resolved for a session, if it may still be used.
+     *
+     * The account is carried alongside the expiry because a session id is not
+     * proof of whose login it names: an entry left by whoever held the session
+     * before must not answer for whoever holds it now, and the caller compares
+     * the two before trusting it.
+     *
+     * @return array{user: string, expires_at: int|null}|null
+     */
+    public static function cachedLogin(string $sessionId): ?array
+    {
+        if (self::loginCacheTtl() === 0) {
+            return null;
+        }
+
+        $cached = Cache::get(self::loginCacheKey($sessionId));
+
+        if (! is_array($cached) || ! is_string($cached['user'] ?? null)) {
+            return null;
+        }
+
+        $expiresAt = $cached['expires_at'] ?? null;
+
+        return [
+            'user' => $cached['user'],
+            'expires_at' => is_int($expiresAt) ? $expiresAt : null,
+        ];
+    }
+
+    /**
+     * Let this login answer for its row until the entry lapses.
+     */
+    public function cacheLogin(string $sessionId): void
+    {
+        $ttl = self::loginCacheTtl();
+
+        if ($ttl === 0 || $sessionId === '') {
+            return;
+        }
+
+        Cache::put(self::loginCacheKey($sessionId), [
+            'user' => (string) $this->user_id,
+            'expires_at' => $this->expires_at?->getTimestamp(),
+        ], $ttl);
+    }
+
+    /**
+     * Stop a session's entry answering for a row that is no longer there.
+     *
+     * Every path in the package that ends a login calls this, so a device
+     * signed out from another one stops being let through as soon as that
+     * request finishes rather than when the entry lapses — as long as the two
+     * share a cache store, which any deployment running more than one process
+     * already needs for locks.
+     *
+     * A row dropped from outside the package — a sweep, a hand-written delete —
+     * is what the entry's lifetime is actually covering.
+     */
+    public static function forgetLogin(?string $sessionId): void
+    {
+        if ($sessionId === null || $sessionId === '' || self::loginCacheTtl() === 0) {
+            return;
+        }
+
+        Cache::forget(self::loginCacheKey($sessionId));
+    }
+
+    /**
+     * The entry a session's login is kept under.
+     *
+     * The session id is hashed rather than spelled out: it is the credential
+     * the browser holds, and a cache store is a place keys are routinely listed
+     * and dumped.
+     */
+    private static function loginCacheKey(string $sessionId): string
+    {
+        return 'uzairid:login:'.hash('sha256', $sessionId);
     }
 
     /**

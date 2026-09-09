@@ -36,6 +36,23 @@ jobs:
           echo "::add-matcher::${{ runner.tool_cache }}/php.json"
           echo "::add-matcher::${{ runner.tool_cache }}/phpunit.json"
 
+      # The download is the same on every run that does not change a
+      # constraint, and there are two jobs paying for it. The key carries the
+      # stability, because the two resolve to different sets and would
+      # otherwise keep evicting each other.
+      - name: Locate the composer cache
+        id: composer-cache
+        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.composer-cache.outputs.dir }}
+          key: php-${{ matrix.php }}-${{ matrix.laravel }}-${{ matrix.stability }}-${{ hashFiles('composer.json') }}
+          restore-keys: |
+            php-${{ matrix.php }}-${{ matrix.laravel }}-${{ matrix.stability }}-
+            php-${{ matrix.php }}-${{ matrix.laravel }}-
+
       - name: Install dependencies
         run: |
           composer require "illuminate/support:${{ matrix.laravel }}" --no-interaction --no-update
@@ -47,5 +64,17 @@ jobs:
       - name: Analyse
         run: composer analyse
 
+      # The suite is measured once, not once per stability: the report is about
+      # the tests, and they are the same in both jobs. The other job runs them
+      # without the coverage driver attached.
+      #
+      # Not `--parallel`: the suite runs in about three seconds, and paratest
+      # spends longer starting its workers than it saves. Worth revisiting if
+      # the suite grows to where the run is dominated by the tests themselves.
       - name: Execute tests
+        if: matrix.stability != 'prefer-stable'
+        run: vendor/bin/pest
+
+      - name: Execute tests with coverage
+        if: matrix.stability == 'prefer-stable'
         run: vendor/bin/pest --coverage

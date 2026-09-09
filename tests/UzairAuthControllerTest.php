@@ -139,7 +139,7 @@ class UzairAuthControllerTest extends TestCase
             'name' => 'Exclusive',
             'token' => 'the_second_devices_token',
         ]));
-        $provider->shouldReceive('logout')->with('the_first_devices_token')->once();
+        $provider->shouldReceive('logoutAsync')->with('the_first_devices_token')->once()->andReturn($this->revoked());
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
@@ -183,8 +183,8 @@ class UzairAuthControllerTest extends TestCase
             'name' => 'Exclusive',
             'token' => 'the_second_devices_token',
         ]));
-        $provider->shouldNotReceive('logout');
-        $provider->shouldNotReceive('revokeRefreshToken');
+        $provider->shouldNotReceive('logoutAsync');
+        $provider->shouldNotReceive('revokeRefreshTokenAsync');
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
@@ -482,7 +482,7 @@ class UzairAuthControllerTest extends TestCase
         ]);
 
         $provider = Mockery::mock(UzairportsProvider::class);
-        $provider->shouldReceive('logout')->with('the_other_devices_token')->once();
+        $provider->shouldReceive('logoutAsync')->with('the_other_devices_token')->once()->andReturn($this->revoked());
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
         $this->actingAs($user)
@@ -579,9 +579,9 @@ class UzairAuthControllerTest extends TestCase
         $provider->shouldReceive('user')->times($times)->andReturn(SocialiteUser::fake($attributes));
 
         if ($logout !== null) {
-            $provider->shouldReceive('logout')->with($logout)->once();
+            $provider->shouldReceive('logoutAsync')->with($logout)->once()->andReturn($this->revoked());
         } else {
-            $provider->shouldReceive('logout')->andReturnNull();
+            $provider->shouldReceive('logoutAsync')->andReturnNull();
         }
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);

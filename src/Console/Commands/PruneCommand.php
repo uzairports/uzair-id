@@ -12,7 +12,10 @@ class PruneCommand extends Command
      *
      * @var string
      */
-    protected $signature = 'uzair:prune {--pretend : Display the number of prunable tokens without deleting them}';
+    protected $signature = 'uzair:prune
+                            {--pretend : Display the number of prunable tokens without deleting them}
+                            {--chunk= : The number of models to retrieve per chunk}
+                            {--no-revoke : Skip remote grant revocation at the identity provider}';
 
     /**
      * The console command description.
@@ -30,6 +33,14 @@ class PruneCommand extends Command
 
         if ($this->option('pretend')) {
             $parameters['--pretend'] = true;
+        }
+
+        if ($this->option('chunk')) {
+            $parameters['--chunk'] = (int) $this->option('chunk');
+        }
+
+        if ($this->option('no-revoke')) {
+            config(['uzairports.revoke_on_prune' => false]);
         }
 
         return $this->call('model:prune', $parameters);

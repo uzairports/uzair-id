@@ -4,14 +4,19 @@ namespace Uzairports\Uzairid\Tests;
 
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Session\Session as SessionContract;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
+use Laravel\Socialite\Facades\Socialite;
+use Mockery;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
+use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class EnsureAccessTokenIsFreshTest extends TestCase
 {
@@ -239,6 +244,163 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         DB::table('oauth_tokens')->delete();
 
         $this->assertTrue($token->is($user->currentToken()));
+    }
+
+    /**
+     * Off by default: the row is read on every request, which is the only
+     * setting under which a login ended anywhere is refused on the very next
+     * one.
+     */
+    public function test_the_row_is_read_on_every_request_by_default(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4011']);
+
+        $session = $this->startedSession();
+
+        $user->tokens()->create([
+            'access_token' => 'valid_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->handle($this->sessionRequest($user, $session));
+
+        $this->assertSame(1, $this->tokenReadsDuring(fn () => $this->handle($this->sessionRequest($user, $session))));
+    }
+
+    /**
+     * A browser clicking around asks the same two questions of the same row on
+     * every request, and gets the same answer. Given a lifetime to stand for,
+     * that answer is reused and the read goes away.
+     */
+    public function test_a_resolved_login_answers_the_next_request_without_reading_the_row(): void
+    {
+        config(['uzairports.login_cache_ttl' => 10]);
+
+        $user = TestUser::create(['uzair_id' => '4012']);
+
+        $session = $this->startedSession();
+
+        $user->tokens()->create([
+            'access_token' => 'valid_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+
+        $reads = $this->tokenReadsDuring(function () use ($user, $session): void {
+            $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+        });
+
+        $this->assertSame(0, $reads);
+    }
+
+    /**
+     * The entry stands for the row, so a login ended anywhere in the package
+     * has to take it with it — otherwise the device it signed out keeps being
+     * let through until the lifetime lapses.
+     */
+    public function test_ending_a_login_stops_its_entry_answering_for_it(): void
+    {
+        config(['uzairports.login_cache_ttl' => 10]);
+
+        $user = TestUser::create(['uzair_id' => '4013']);
+
+        $session = $this->startedSession();
+
+        $token = $user->tokens()->create([
+            'access_token' => 'valid_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)->end($token);
+
+        $this->expectException(AuthenticationException::class);
+
+        $this->handle($this->sessionRequest($user, $session));
+    }
+
+    /**
+     * A session id names a session, not an account. An entry left by whoever
+     * held the session before must not answer for whoever holds it now.
+     */
+    public function test_an_entry_does_not_answer_for_another_account(): void
+    {
+        config(['uzairports.login_cache_ttl' => 10]);
+
+        $session = $this->startedSession();
+
+        $first = TestUser::create(['uzair_id' => '4014']);
+        $first->tokens()->create([
+            'access_token' => 'the_first_accounts_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($first, $session))->getContent());
+
+        $second = TestUser::create(['uzair_id' => '4015']);
+
+        $this->expectException(AuthenticationException::class);
+
+        $this->handle($this->sessionRequest($second, $session));
+    }
+
+    /**
+     * An unknown expiry is not freshness — the token is renewed rather than let
+     * past — so it must not be cached as though it were.
+     */
+    public function test_a_login_without_a_known_expiry_is_never_answered_from_an_entry(): void
+    {
+        config(['uzairports.login_cache_ttl' => 10]);
+
+        $user = TestUser::create(['uzair_id' => '4016']);
+
+        $session = $this->startedSession();
+
+        $user->tokens()->create([
+            'access_token' => 'a_token_of_unknown_lifetime',
+            'refresh_token' => null,
+            'expires_at' => null,
+            'session_id' => $session->getId(),
+        ]);
+
+        try {
+            $this->handle($this->sessionRequest($user, $session));
+
+            $this->fail('A token of unknown expiry should have been treated as expired.');
+        } catch (AuthenticationException) {
+            //
+        }
+
+        $this->assertNull(OauthToken::cachedLogin($session->getId()));
+    }
+
+    /**
+     * How many times `oauth_tokens` was read while the given work ran.
+     */
+    private function tokenReadsDuring(callable $work): int
+    {
+        $reads = 0;
+
+        DB::listen(function (QueryExecuted $query) use (&$reads): void {
+            if (str_contains(strtolower($query->sql), 'from "oauth_tokens"')) {
+                $reads++;
+            }
+        });
+
+        $work();
+
+        return $reads;
     }
 
     private function handle(Request $request): Response

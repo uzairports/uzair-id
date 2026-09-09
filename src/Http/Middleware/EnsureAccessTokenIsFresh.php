@@ -44,6 +44,12 @@ class EnsureAccessTokenIsFresh
             return $next($request);
         }
 
+        $leeway = $this->leewayInSeconds();
+
+        if ($this->alreadyResolvedAsFresh($request, $user, $leeway)) {
+            return $next($request);
+        }
+
         $token = $this->tokenFor($request, $user);
 
         if ($token === null) {
@@ -60,15 +66,16 @@ class EnsureAccessTokenIsFresh
             );
         }
 
-        $leeway = $this->leewayInSeconds();
-
         if (! $token->expiresWithin($leeway)) {
             $token->keepAlive();
+            $this->rememberResolved($request, $token);
 
             return $next($request);
         }
 
         if (($this->refreshAccessToken)($token, $leeway)) {
+            $this->rememberResolved($request, $token);
+
             return $next($request);
         }
 
@@ -127,6 +134,58 @@ class EnsureAccessTokenIsFresh
         return $token;
     }
 
+    /**
+     * Whether this request may go through on a login already resolved for it.
+     *
+     * Every request through this middleware reads `oauth_tokens` to ask two
+     * questions of one row — is the login still there, and is its token still
+     * good — and for a browser clicking around an application the answer is the
+     * same on almost all of them. `uzairports.login_cache_ttl` lets the answer
+     * stand for a few seconds so those requests cost nothing, and it is zero by
+     * default, which is the behaviour of reading the row every time.
+     *
+     * What the entry cannot be trusted for is who it belongs to. A session id
+     * is not proof of an account — the browser holding it now may not be the
+     * one it was written for — so the account is compared before the entry is
+     * used, and a mismatch falls through to the row.
+     *
+     * An unknown expiry is not freshness: `expiresWithin()` treats it as
+     * expired, so a login stored without one is renewed rather than let past.
+     */
+    private function alreadyResolvedAsFresh(Request $request, Authenticatable $user, int $leeway): bool
+    {
+        if (! $request->hasSession()) {
+            return false;
+        }
+
+        $resolved = OauthToken::cachedLogin($request->session()->getId());
+
+        if ($resolved === null || $resolved['expires_at'] === null) {
+            return false;
+        }
+
+        // `getAuthIdentifier()` promises nothing about what it hands back, and
+        // a key that is neither an integer nor a string names no account to
+        // compare against. The row answers instead.
+        $key = $user->getAuthIdentifier();
+
+        if ((! is_int($key) && ! is_string($key)) || $resolved['user'] !== (string) $key) {
+            return false;
+        }
+
+        return $resolved['expires_at'] > now()->addSeconds($leeway)->getTimestamp();
+    }
+
+    /**
+     * Let the login just resolved answer for the next few requests.
+     */
+    private function rememberResolved(Request $request, OauthToken $token): void
+    {
+        if ($request->hasSession()) {
+            $token->cacheLogin($request->session()->getId());
+        }
+    }
+
     private function isUzairUser(Authenticatable $user): bool
     {
         return $user instanceof Model && filled($user->getAttribute('uzair_id'));
@@ -140,6 +199,8 @@ class EnsureAccessTokenIsFresh
         Auth::logout();
 
         if ($request->hasSession()) {
+            OauthToken::forgetLogin($request->session()->getId());
+
             $request->session()->invalidate();
             $request->session()->regenerateToken();
         }

@@ -2,6 +2,9 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use GuzzleHttp\Promise\Create;
+use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -69,6 +72,19 @@ abstract class TestCase extends Orchestra
                 ->middleware(['auth', 'uzair.token'])
                 ->name('protected');
         });
+    }
+
+    /**
+     * The answer a provider gives to a revocation it accepted.
+     *
+     * Revocations are handed back as promises so that several can be in flight
+     * at once, so a mocked provider answers with one too. Confirming the status
+     * is the real provider's business and is bypassed by the mock, which stands
+     * for a call that already succeeded.
+     */
+    protected function revoked(): PromiseInterface
+    {
+        return Create::promiseFor(new Response(200));
     }
 
     protected function setUpDatabase(): void
