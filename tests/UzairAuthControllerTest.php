@@ -195,6 +195,36 @@ class UzairAuthControllerTest extends TestCase
         $this->assertSame(0, DB::table('sessions')->where('id', 'the-first-devices-session')->count());
     }
 
+    /**
+     * `single_session` names the account's other logins by whatever
+     * `getAuthIdentifier()` hands back, and a model answering with something
+     * that names no row cannot be acted on at all.
+     *
+     * The key is asked for while the transaction is still open, so the
+     * handshake fails the way every other failed handshake does. Asked for
+     * where it is spent — after the commit — the account would already be
+     * written and signed in, and a handshake that worked would answer the
+     * browser with a 500.
+     */
+    public function test_a_key_that_names_no_row_fails_the_handshake_before_anybody_is_signed_in(): void
+    {
+        config([
+            'uzairports.single_session' => true,
+            'auth.providers.users.model' => TestUserWithoutAKey::class,
+        ]);
+
+        $this->fakeIdentity(['id' => '5020', 'name' => 'Keyless', 'token' => 'access_token_value']);
+
+        $response = $this->get(route('uzair.callback'));
+
+        $response->assertRedirect(url('/'));
+        $response->assertSessionHasErrors('oauth');
+
+        $this->assertGuest();
+        $this->assertSame(0, TestUser::query()->count());
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
     public function test_a_failed_handshake_leaves_no_session_and_no_rows_behind(): void
     {
         $provider = Mockery::mock(UzairportsProvider::class);
@@ -555,6 +585,20 @@ class UzairAuthControllerTest extends TestCase
         }
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+    }
+}
+
+/**
+ * An account model whose auth identifier names no row.
+ *
+ * `getAuthIdentifier()` promises nothing about what it hands back, and an
+ * application is free to point it at something no query can be built from.
+ */
+class TestUserWithoutAKey extends TestUser
+{
+    public function getAuthIdentifier(): object
+    {
+        return (object) ['id' => $this->getKey()];
     }
 }
 

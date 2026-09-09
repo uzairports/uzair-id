@@ -93,10 +93,14 @@ trait HasUzairToken
 
     /**
      * Get the decrypted access token of the current session, if any.
+     *
+     * A token stored under a key the application no longer holds cannot be read
+     * back, and answers null the same way a session holding no login does: in
+     * both cases there is no token here to call the identity provider with.
      */
     public function getUzairAccessToken(): ?string
     {
-        return $this->currentToken()?->access_token;
+        return $this->currentToken()?->readableAccessToken();
     }
 
     /**

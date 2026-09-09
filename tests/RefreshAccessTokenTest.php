@@ -9,6 +9,7 @@ use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
@@ -226,6 +227,79 @@ class RefreshAccessTokenTest extends TestCase
         Cache::shouldReceive('store')->once()->with('shared')->andReturn($store);
 
         $this->assertTrue((new RefreshAccessToken)($token));
+    }
+
+    /**
+     * The lock has to outlive the exchange it guards. One that expired at the
+     * moment the request behind it stopped waiting would be released under its
+     * holder, and both of them would then spend the same rotating refresh
+     * token — the one collision the lock exists to prevent.
+     */
+    public function test_the_lock_outlives_the_wait_of_the_request_behind_it(): void
+    {
+        $token = $this->expiredToken('3012');
+
+        $ttl = 0;
+        $wait = 0;
+
+        $lock = Mockery::mock(Lock::class);
+        $lock->shouldReceive('block')->once()->andReturnUsing(
+            function (int $seconds, callable $callback) use (&$wait): bool {
+                $wait = $seconds;
+
+                return (bool) $callback();
+            }
+        );
+
+        $store = Mockery::mock(LockProvider::class);
+        $store->shouldReceive('lock')->once()->andReturnUsing(
+            function (string $name, int $seconds) use ($lock, &$ttl) {
+                $ttl = $seconds;
+
+                return $lock;
+            }
+        );
+
+        Cache::shouldReceive('store')->once()->andReturn($store);
+
+        $this->providerReturns('old_refresh', new Token('new_access', 'new_refresh', 3600, []));
+
+        $this->assertTrue((new RefreshAccessToken)($token));
+
+        $this->assertGreaterThan(
+            UzairportsProvider::requestTimeout(),
+            $wait,
+            'A request must wait out an exchange running to the provider timeout.',
+        );
+
+        $this->assertGreaterThan(
+            $wait,
+            $ttl,
+            'The lock must outlive the wait of the request behind it, or it is released under its holder.',
+        );
+    }
+
+    /**
+     * A grant written under a key the application no longer holds cannot be
+     * exchanged for anything. Reaching for it used to raise the decryption
+     * failure from here — a 500 on every request the login touched, including
+     * the ones that would have ended it — where the login is simply refused and
+     * its owner sent back through SSO.
+     */
+    public function test_a_refresh_token_that_will_not_open_is_refused_rather_than_raised(): void
+    {
+        Event::fake([UzairTokenRefreshFailed::class]);
+
+        $token = $this->expiredToken('3013');
+
+        DB::table('oauth_tokens')->where('id', $token->getKey())->update([
+            'refresh_token' => 'not-a-value-this-key-can-open',
+        ]);
+
+        Socialite::shouldReceive('driver')->never();
+
+        $this->assertFalse((new RefreshAccessToken)($token));
+        Event::assertDispatched(UzairTokenRefreshFailed::class);
     }
 
     public function test_refreshed_token_without_expiry_adopts_default_token_ttl(): void

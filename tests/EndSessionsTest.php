@@ -40,6 +40,38 @@ class EndSessionsTest extends TestCase
         $this->assertSame([], $this->storedSessionIds());
     }
 
+    /**
+     * There is nothing here to hand over: the row holds a grant this
+     * application cannot open, so the identity provider is told nothing and the
+     * login ends locally. It used to raise the decryption failure out of the
+     * logout the user asked for, leaving them signed in with a 500.
+     */
+    public function test_a_login_whose_grant_will_not_open_ends_without_asking_the_provider(): void
+    {
+        $user = TestUser::create(['uzair_id' => '7011']);
+
+        $token = $user->tokens()->create([
+            'access_token' => 'a_token',
+            'refresh_token' => 'a_refresh_token',
+            'session_id' => 'a-session',
+        ]);
+
+        DB::table('oauth_tokens')->where('id', $token->id)->update([
+            'access_token' => 'not-a-value-this-key-can-open',
+            'refresh_token' => 'not-a-value-this-key-can-open',
+        ]);
+
+        $stored = $token->fresh();
+
+        $this->assertNotNull($stored);
+
+        Socialite::shouldReceive('driver')->never();
+
+        (new EndSessions)->end($stored);
+
+        $this->assertModelMissing($token);
+    }
+
     public function test_one_login_can_be_spared(): void
     {
         config(['session.driver' => 'database']);

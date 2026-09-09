@@ -37,22 +37,19 @@ class RefreshAccessToken
         /** @var LockProvider $cache */
         $cache = is_string($store) && $store !== '' ? Cache::store($store) : Cache::store();
 
-        $lockSeconds = UzairportsProvider::requestTimeout() + 5;
         /** @var Lock $lock */
-        $lock = $cache->lock($this->lockKey($token), $lockSeconds);
+        $lock = $cache->lock($this->lockKey($token), self::lockTtl());
 
         try {
             /** @var bool $refreshed */
-            $refreshed = $lock->block($lockSeconds, fn (): bool => $this->exchange($token, $leeway));
+            $refreshed = $lock->block(self::lockWait(), fn (): bool => $this->exchange($token, $leeway));
 
             return $refreshed;
         } catch (LockTimeoutException) {
-            if ($this->wasRenewedElsewhere($token, $leeway)) {
-                return true;
-            }
+            $adopted = $this->reload($token, $leeway);
 
-            if ($token->fresh() === null) {
-                return false;
+            if ($adopted !== null) {
+                return $adopted;
             }
 
             throw $this->temporarilyUnavailable();
@@ -60,19 +57,51 @@ class RefreshAccessToken
     }
 
     /**
+     * How long the store holds the lock before taking it back.
+     *
+     * It outlives the wait rather than matching it. Inside the lock sits the
+     * exchange — a round-trip carrying the provider's own timeout — with a read
+     * and a writing around it, so a slow database is enough to push the whole
+     * thing past a lock that expired at the same moment the next request gave
+     * up waiting. The lock would then be released under its holder, and both
+     * requests would spend the one thing that may only be spent once.
+     */
+    private static function lockTtl(): int
+    {
+        return UzairportsProvider::requestTimeout() + 30;
+    }
+
+    /**
+     * How long a request waits for the exchange already in front of it.
+     *
+     * Long enough to cover an exchange running to the provider's full timeout,
+     * so the ordinary case is waiting rather than a 503.
+     */
+    private static function lockWait(): int
+    {
+        return UzairportsProvider::requestTimeout() + 5;
+    }
+
+    /**
      * Spend the refresh token, unless another process got there first.
+     *
+     * A grant that will not open is treated as one the login does not have.
+     * Nothing can be exchanged for it. Raising the decryption failure from
+     * here would answer the browser with a 500 on every request instead of
+     * sending it back through SSO, which is what a login that cannot renew
+     * itself is owed.
      */
     private function exchange(OauthToken $token, int $leeway): bool
     {
-        if ($token->fresh() === null) {
-            return false;
+        $adopted = $this->reload($token, $leeway);
+
+        if ($adopted !== null) {
+            return $adopted;
         }
 
-        if ($this->wasRenewedElsewhere($token, $leeway)) {
-            return true;
-        }
+        $refreshToken = $token->readableRefreshToken();
 
-        if (blank($token->refresh_token)) {
+        if ($refreshToken === null) {
             UzairTokenRefreshFailed::dispatch($token);
 
             return false;
@@ -82,7 +111,7 @@ class RefreshAccessToken
             /** @var UzairportsProvider $provider */
             $provider = Socialite::driver('uzairports');
 
-            $refreshed = $provider->refreshToken($token->refresh_token);
+            $refreshed = $provider->refreshToken($refreshToken);
         } catch (Throwable $e) {
             Log::warning('Failed to refresh UzAirports access token.', [
                 'user_id' => $token->user_id,
@@ -117,7 +146,7 @@ class RefreshAccessToken
 
         $token->forceFill([
             'access_token' => $refreshed->token,
-            'refresh_token' => $refreshed->refreshToken ?: $token->refresh_token,
+            'refresh_token' => $refreshed->refreshToken ?: $refreshToken,
             'expires_at' => $expiresIn <= 0
                 ? null
                 : now()->addSeconds($expiresIn),
@@ -129,12 +158,19 @@ class RefreshAccessToken
     }
 
     /**
-     * Adopt the stored token and report whether it no longer needs renewing.
+     * Adopt what is stored and say what it leaves the caller to do.
      *
-     * A token whose row is gone was dropped by a process that already saw the
-     * exchange refused, so there is nothing left to adopt.
+     * Both callers ask the same two questions of the row — whether the login is
+     * still there, and whether somebody else has already renewed it — and
+     * asking them one at a time to read the same row twice on the hot path. One
+     * read answers both:
+     *
+     * - `false`: the row is gone. Whoever dropped it had already seen the
+     *   exchange refused, so there is nothing left to adopt;
+     * - `true`: what is stored no longer needs renewing and has been adopted;
+     * - `null`: the login is there and still due.
      */
-    private function wasRenewedElsewhere(OauthToken $token, int $leeway): bool
+    private function reload(OauthToken $token, int $leeway): ?bool
     {
         $stored = $token->fresh();
 
@@ -144,7 +180,7 @@ class RefreshAccessToken
 
         $token->setRawAttributes($stored->getAttributes(), sync: true);
 
-        return ! $token->expiresWithin($leeway);
+        return $token->expiresWithin($leeway) ? null : true;
     }
 
     private function lockKey(OauthToken $token): string

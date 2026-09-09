@@ -45,6 +45,49 @@ class OauthTokenTest extends TestCase
         $this->assertNotSame('plain_refresh_secret', $raw->refresh_token);
     }
 
+    public function test_the_readable_pair_hands_back_what_was_stored(): void
+    {
+        $user = TestUser::create(['uzair_id' => '1002']);
+
+        $token = $user->token()->create([
+            'access_token' => 'plain_access_secret',
+            'refresh_token' => null,
+        ]);
+
+        $this->assertSame('plain_access_secret', $token->readableAccessToken());
+        $this->assertNull($token->readableRefreshToken());
+    }
+
+    /**
+     * A value written under a key the application no longer holds — a rotated
+     * `APP_KEY` with no `APP_PREVIOUS_KEYS` behind it, a dump restored into
+     * another environment — cannot be read back at all, and reaching for the
+     * property raises where it stands.
+     *
+     * The readable pair answers null instead, so a login nobody can spend is
+     * still a login the caller can end.
+     */
+    public function test_a_token_that_will_not_open_reads_as_nothing(): void
+    {
+        $user = TestUser::create(['uzair_id' => '1002b']);
+
+        $token = $user->token()->create([
+            'access_token' => 'plain_access_secret',
+            'refresh_token' => 'plain_refresh_secret',
+        ]);
+
+        DB::table('oauth_tokens')->where('id', $token->id)->update([
+            'access_token' => 'not-a-value-this-key-can-open',
+            'refresh_token' => 'not-a-value-this-key-can-open',
+        ]);
+
+        $stored = $token->fresh();
+
+        $this->assertNotNull($stored);
+        $this->assertNull($stored->readableAccessToken());
+        $this->assertNull($stored->readableRefreshToken());
+    }
+
     public function test_a_user_may_hold_one_login_per_device(): void
     {
         $user = TestUser::create(['uzair_id' => '1003']);

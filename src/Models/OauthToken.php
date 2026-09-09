@@ -7,8 +7,10 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Prunable;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 
 /**
@@ -59,6 +61,59 @@ class OauthToken extends Model
             'refresh_token' => 'encrypted',
             'expires_at' => 'datetime',
         ];
+    }
+
+    /**
+     * The access token to this login was issued, or null if it will not open.
+     */
+    public function readableAccessToken(): ?string
+    {
+        return $this->readable('access_token');
+    }
+
+    /**
+     * The refresh token this login was issued, or null if it will not open.
+     */
+    public function readableRefreshToken(): ?string
+    {
+        return $this->readable('refresh_token');
+    }
+
+    /**
+     * Read one of the token columns back, answering null where it will not open.
+     *
+     * Both columns are `encrypted` casts, so a value written under a key the
+     * application no longer holds — a rotated `APP_KEY` with no
+     * `APP_PREVIOUS_KEYS` behind it, a dump restored into another environment —
+     * raises a decryption failure from wherever the property is read. Left to
+     * itself that is a 500 on every request the login touches, including the
+     * ones that would have ended it: the grant can neither be spent nor given
+     * up, and the account holding it has no way out but a support ticket.
+     *
+     * Null says the same thing to every caller — there is nothing here that can
+     * be spent — so the login is dropped locally, and its owner signs in again,
+     * which is what happens to a login whose grant is refused anyway.
+     *
+     * A column that is merely empty answers null too and says nothing worth
+     * recording. The row carrying a value nobody can open is the one worth a
+     * line, because it is a key that went missing, not a token that was never
+     * issued.
+     */
+    private function readable(string $attribute): ?string
+    {
+        try {
+            $value = $this->getAttribute($attribute);
+        } catch (Throwable $exception) {
+            Log::warning('An UzAirports token cannot be read back.', [
+                'user_id' => $this->user_id,
+                'attribute' => $attribute,
+                'exception_class' => $exception::class,
+            ]);
+
+            return null;
+        }
+
+        return is_string($value) && filled($value) ? $value : null;
     }
 
     /**

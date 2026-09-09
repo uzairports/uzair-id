@@ -175,6 +175,10 @@ class UzairAuthController
      * logins of that" would either match nothing or, worse, match by whatever
      * the database made of it.
      *
+     * `writeIdentity()` asks for the key before the transaction it opens is
+     * committed, so a model that cannot answer fails the handshake rather than
+     * this call, which runs once the browser is already signed in.
+     *
      * @throws RuntimeException when the authenticated user has no usable key
      */
     private function accountKey(Authenticatable $user): int|string
@@ -295,6 +299,16 @@ class UzairAuthController
 
             if (! $user instanceof Authenticatable) {
                 throw new RuntimeException('The configured [auth.providers.users.model] cannot be authenticated.');
+            }
+
+            // `single_session` ends the account's other logins once this one is
+            // written and names them by whatever `getAuthIdentifier()` hands
+            // back. A key that names no row is asked for here, inside the
+            // transaction, rather than where it is spent: rose on the far
+            // side, the account would already be written and signed in, and a
+            // handshake that worked would end in a 500.
+            if (config('uzairports.single_session', false)) {
+                $this->accountKey($user);
             }
 
             Auth::login($user);

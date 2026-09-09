@@ -36,7 +36,7 @@ class EndSessions
      * wait is being paid by a browser — signing in under `single_session` — it
      * can be given up. The first two steps still happen, so the account is
      * signed out here either way; what is surrendered is the promise that its
-     * grants stop being honoured at UzAirports ID before they expire on their
+     * grants stop being honored at UzAirports ID before they expire on their
      * own.
      *
      * @return int the number of logins ended
@@ -82,10 +82,10 @@ class EndSessions
     /**
      * Give a login's grant up at the identity provider, leaving the row alone.
      *
-     * This is what pruning needs. The sweep deletes the row itself, and the
-     * session it named was collected by the store long before the sweep
+     * This is what pruning needs. The sweep deletes the row itself. The
+     * store collected the session it named long before the sweep
      * reached it — so all that is left is to stop the identity provider
-     * honouring a grant nobody is holding any more.
+     * honoring a grant nobody is holding anymore.
      */
     public function surrender(OauthToken $token): void
     {
@@ -96,17 +96,21 @@ class EndSessions
      * Revoke both tokens during this request after local access has ended.
      * Each call has the provider's revocation timeout. A failed access-token
      * revocation must not prevent the refresh token from being surrendered.
+     *
+     * A token that will not open is anything this can hand over, and the model
+     * has already recorded why — so a login holding only unreadable values is
+     * ended locally, and the identity provider is asked for nothing.
      */
     private function revoke(OauthToken $token): void
     {
+        $accessToken = $token->readableAccessToken();
+        $refreshToken = $token->readableRefreshToken();
+
+        if ($accessToken === null && $refreshToken === null) {
+            return;
+        }
+
         try {
-            $accessToken = $token->access_token;
-            $refreshToken = $token->refresh_token;
-
-            if (blank($accessToken) && blank($refreshToken)) {
-                return;
-            }
-
             /** @var UzairportsProvider $provider */
             $provider = Socialite::driver('uzairports');
         } catch (Throwable $exception) {
@@ -115,7 +119,7 @@ class EndSessions
             return;
         }
 
-        if (filled($accessToken)) {
+        if ($accessToken !== null) {
             try {
                 $provider->logout($accessToken);
             } catch (Throwable $exception) {
@@ -125,7 +129,7 @@ class EndSessions
             }
         }
 
-        if (filled($refreshToken)) {
+        if ($refreshToken !== null) {
             try {
                 $provider->revokeRefreshToken($refreshToken);
             } catch (Throwable $exception) {
