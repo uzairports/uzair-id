@@ -112,8 +112,13 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     protected function getUserByToken($token): array
     {
+        $endpoint = config('uzairports.user_endpoint', '/api/user');
+        $url = is_string($endpoint) && $endpoint !== ''
+            ? $this->absoluteUrl($endpoint)
+            : $this->getHost().'/api/user';
+
         $response = $this->getHttpClient()->get(
-            $this->getHost().'/api/user', $this->getRequestOptions((string) $token)
+            $url, $this->getRequestOptions((string) $token)
         );
 
         $decoded = json_decode((string) $response->getBody(), true);
@@ -141,10 +146,16 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * @throws GuzzleException
      */
-    public function logout(string $token): ResponseInterface
+    public function logout(string $token): ?ResponseInterface
     {
+        $endpoint = config('uzairports.logout_endpoint', '/api/v1/oauth/logout');
+
+        if (! is_string($endpoint) || $endpoint === '') {
+            return null;
+        }
+
         $response = $this->getHttpClient()->post(
-            $this->getHost().'/api/v1/oauth/logout', $this->getRequestOptions($token, $this->revocationTimeout())
+            $this->absoluteUrl($endpoint), $this->getRequestOptions($token, $this->revocationTimeout())
         );
 
         return $this->ensureRevoked($response);

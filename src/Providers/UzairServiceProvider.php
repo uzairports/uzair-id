@@ -9,6 +9,7 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Socialite\Contracts\Factory;
+use Uzairports\Uzairid\Console\Commands\PruneCommand;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
@@ -118,6 +119,12 @@ class UzairServiceProvider extends ServiceProvider
             __DIR__.'/../database/migrations/make_oauth_tokens_per_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_make_oauth_tokens_per_session.php'),
             __DIR__.'/../database/migrations/index_oauth_tokens_for_pruning.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_for_pruning.php'),
         ], 'uzairid-upgrade-migrations');
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                PruneCommand::class,
+            ]);
+        }
     }
 
     /**
@@ -125,7 +132,7 @@ class UzairServiceProvider extends ServiceProvider
      *
      * The budget is counted per browser rather than per address. An office
      * behind one NAT gateway is a single address to the server, so a per-address
-     * limit low enough to be worth having would lock out everyone the moment a
+     * limit low enough to be worth having would lock everyone out the moment a
      * handful of colleagues signed in at once.
      *
      * An address still gets a ceiling — ten times the per-browser budget — for

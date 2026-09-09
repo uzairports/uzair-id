@@ -45,7 +45,7 @@ jobs:
         run: vendor/bin/pint --test
 
       - name: Analyse
-        run: vendor/bin/phpstan analyse --no-progress
+        run: composer analyse
 
       - name: Execute tests
         run: vendor/bin/pest --coverage

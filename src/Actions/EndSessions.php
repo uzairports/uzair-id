@@ -50,11 +50,18 @@ class EndSessions
             ))
             ->get();
 
+        $sessionIds = [];
+
         foreach ($tokens as $token) {
+            $sessionId = $token->session_id;
+            if (is_string($sessionId) && $sessionId !== '') {
+                $sessionIds[] = $sessionId;
+            }
+
             $token->delete();
         }
 
-        $this->deleteStoredSessions($userId, $exceptSessionId);
+        $this->deleteStoredSessions($userId, $exceptSessionId, $sessionIds);
 
         if ($revoke) {
             foreach ($tokens as $token) {
@@ -174,8 +181,10 @@ class EndSessions
      * A store that cannot be reached must not cost the caller the rest of the
      * work, so a failure here is logged: the rows are gone already, and the
      * middleware refuses those sessions on their next request regardless.
+     *
+     * @param  array<array-key, string>  $sessionIds
      */
-    private function deleteStoredSessions(int|string $userId, ?string $exceptSessionId): void
+    private function deleteStoredSessions(int|string $userId, ?string $exceptSessionId, array $sessionIds = []): void
     {
         if (config('session.driver') !== 'database') {
             return;
@@ -187,7 +196,12 @@ class EndSessions
         try {
             DB::connection(is_string($connection) ? $connection : null)
                 ->table(is_string($table) ? $table : 'sessions')
-                ->where('user_id', $userId)
+                ->where(function ($query) use ($userId, $sessionIds): void {
+                    $query->where('user_id', $userId);
+                    if (! empty($sessionIds)) {
+                        $query->orWhereIn('id', $sessionIds);
+                    }
+                })
                 ->when($exceptSessionId !== null, fn ($query) => $query->where('id', '!=', $exceptSessionId))
                 ->delete();
         } catch (Throwable $e) {

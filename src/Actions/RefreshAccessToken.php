@@ -190,13 +190,32 @@ class RefreshAccessToken
 
     private function grantWasRejected(Throwable $exception): bool
     {
-        if (! $exception instanceof RequestException || $exception->getResponse()?->getStatusCode() !== 400) {
+        if (! $exception instanceof RequestException) {
             return false;
         }
 
-        $response = json_decode((string) $exception->getResponse()->getBody(), true);
+        $response = $exception->getResponse();
 
-        return is_array($response) && ($response['error'] ?? null) === 'invalid_grant';
+        if ($response === null) {
+            return false;
+        }
+
+        $statusCode = $response->getStatusCode();
+
+        if ($statusCode !== 400 && $statusCode !== 401) {
+            return false;
+        }
+
+        $body = json_decode((string) $response->getBody(), true);
+
+        if (! is_array($body)) {
+            return $statusCode === 401;
+        }
+
+        $error = $body['error'] ?? null;
+
+        return in_array($error, ['invalid_grant', 'invalid_token', 'unauthorized_client'], true)
+            || ($statusCode === 401 && ($error === null || is_string($error)));
     }
 
     private function temporarilyUnavailable(): ServiceUnavailableHttpException

@@ -50,6 +50,31 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Access Token Logout Endpoint
+    |--------------------------------------------------------------------------
+    |
+    | The endpoint called to surrender the access token when a user logs out.
+    | Set to empty or null if the identity provider does not support access token
+    | revocation. Accepts a full URL or a path on the host.
+    |
+    */
+
+    'logout_endpoint' => env('UZAIR_LOGOUT_ENDPOINT', '/api/v1/oauth/logout'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | User Profile Endpoint
+    |--------------------------------------------------------------------------
+    |
+    | Where the user profile is fetched using the issued access token.
+    | Accepts a full URL or a path on the host.
+    |
+    */
+
+    'user_endpoint' => env('UZAIR_USER_ENDPOINT', '/api/user'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Revoke Grants When Pruning
     |--------------------------------------------------------------------------
     |

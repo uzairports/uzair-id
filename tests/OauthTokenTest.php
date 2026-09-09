@@ -349,7 +349,10 @@ class OauthTokenTest extends TestCase
         $token->user_agent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0';
         $this->assertSame('Edge — macOS', $token->deviceLabel());
 
-        // Nothing recognisable is handed back as it came, not guessed at.
+        $token->user_agent = 'Mozilla/5.0 (Linux; Android 14; SAMSUNG SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/24.0 Chrome/118.0.0.0 Mobile Safari/537.36';
+        $this->assertSame('Samsung Internet — Android', $token->deviceLabel());
+
+        // Nothing recognizable is handed back as it came, not guessed at.
         $token->user_agent = 'curl/8.4.0';
         $this->assertSame('curl/8.4.0', $token->deviceLabel());
 

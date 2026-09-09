@@ -86,6 +86,32 @@ class RefreshAccessTokenTest extends TestCase
         Event::assertDispatched(UzairTokenRefreshFailed::class);
     }
 
+    public function test_dispatches_failed_event_when_remote_refresh_returns_401(): void
+    {
+        Event::fake([UzairTokenRefreshFailed::class]);
+
+        $user = TestUser::create(['uzair_id' => '30021']);
+        $token = $user->token()->create([
+            'access_token' => 'old_access',
+            'refresh_token' => 'expired_refresh',
+            'expires_at' => now()->subMinute(),
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')
+            ->with('expired_refresh')
+            ->once()
+            ->andThrow(new RequestException('Unauthorized', new Request('POST', 'https://sso.test/oauth/token'), new Response(401, [], '{"error":"invalid_token"}')));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $refresher = new RefreshAccessToken;
+        $result = $refresher($token);
+
+        $this->assertFalse($result);
+        Event::assertDispatched(UzairTokenRefreshFailed::class);
+    }
+
     public function test_a_token_another_process_already_renewed_is_adopted_instead_of_spent_again(): void
     {
         $token = $this->expiredToken('3003');

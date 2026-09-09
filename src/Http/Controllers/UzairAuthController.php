@@ -242,7 +242,6 @@ class UzairAuthController
         }
 
         OauthToken::query()
-            ->where('user_id', $token->user_id)
             ->where('session_id', $previousSessionId)
             ->get()
             ->each(fn (OauthToken $stale) => $endSessions->end($stale));

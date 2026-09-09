@@ -5,6 +5,7 @@ namespace Uzairports\Uzairid\Tests;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
+use Uzairports\Uzairid\Uzair;
 
 class ResolveUserFromSocialiteTest extends TestCase
 {
@@ -159,5 +160,26 @@ class ResolveUserFromSocialiteTest extends TestCase
         $resolved = $resolver($socialiteUser);
 
         $this->assertSame('new@uzairports.com', $resolved->getAttribute('email'));
+    }
+
+    public function test_custom_user_resolver_callback_is_honored(): void
+    {
+        $customUser = TestUser::create([
+            'uzair_id' => '9999',
+            'name' => 'Custom User',
+            'email' => 'custom@uzairports.com',
+        ]);
+
+        Uzair::resolveUserUsing(fn ($socialite) => $customUser);
+
+        try {
+            $resolver = new ResolveUserFromSocialite;
+            $resolved = $resolver(SocialiteUser::fake(['id' => '9999']));
+
+            $this->assertSame($customUser->getKey(), $resolved->getKey());
+            $this->assertSame('Custom User', $resolved->getAttribute('name'));
+        } finally {
+            Uzair::resolveUserUsing(null);
+        }
     }
 }

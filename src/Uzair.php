@@ -2,11 +2,36 @@
 
 namespace Uzairports\Uzairid;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Route;
+use Laravel\Socialite\Two\User as SocialiteUser;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 
 class Uzair
 {
+    /** @var (callable(SocialiteUser): ?Model)|null */
+    protected static $userResolver = null;
+
+    /**
+     * Register a custom callback to resolve or update the local user model from the SSO identity.
+     *
+     * @param  (callable(SocialiteUser): ?Model)|null  $callback
+     */
+    public static function resolveUserUsing(?callable $callback): void
+    {
+        static::$userResolver = $callback;
+    }
+
+    /**
+     * Get the custom user resolver, if registered.
+     *
+     * @return (callable(SocialiteUser): ?Model)|null
+     */
+    public static function getUserResolver(): ?callable
+    {
+        return static::$userResolver;
+    }
+
     /**
      * Register the SSO endpoints.
      *
@@ -21,7 +46,7 @@ class Uzair
      * to name a different limiter, or an `attempts,minutes` pair to be counted
      * by Laravel's default key instead; pass null to register without a limit.
      *
-     * There is no "sign out everywhere" endpoint. Ending an account's logins
+     * There is no "sign-out everywhere" endpoint. Ending an account's logins
      * means surrendering each grant to the identity provider in turn, and one
      * request cannot answer for an unbounded number of them: an account signed
      * in on a dozen devices would spend a dozen revocation timeouts before the

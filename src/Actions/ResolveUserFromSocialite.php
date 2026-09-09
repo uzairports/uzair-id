@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
+use Uzairports\Uzairid\Uzair;
 
 class ResolveUserFromSocialite
 {
@@ -31,6 +32,14 @@ class ResolveUserFromSocialite
      */
     public function __invoke(SocialiteUser $uzairUser): Model
     {
+        $resolver = Uzair::getUserResolver();
+        if ($resolver !== null) {
+            $resolved = $resolver($uzairUser);
+            if ($resolved instanceof Model) {
+                return $resolved;
+            }
+        }
+
         $uzairId = (string) $uzairUser->getId();
 
         if (blank($uzairId)) {
