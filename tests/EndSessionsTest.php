@@ -423,7 +423,7 @@ class EndSessionsTest extends TestCase
 
         $deletes = 0;
         DB::listen(function (QueryExecuted $query) use (&$deletes): void {
-            if (str_starts_with(strtolower(trim($query->sql)), 'delete from "oauth_tokens"')) {
+            if (str_starts_with($this->unquotedSql($query->sql), 'delete from oauth_tokens')) {
                 $deletes++;
             }
         });
@@ -499,8 +499,8 @@ class EndSessionsTest extends TestCase
 
         $statements = [];
         DB::listen(function (QueryExecuted $query) use (&$statements): void {
-            if (str_starts_with(strtolower(trim($query->sql)), 'delete from "sessions"')) {
-                $statements[] = strtolower($query->sql);
+            if (str_starts_with($this->unquotedSql($query->sql), 'delete from sessions')) {
+                $statements[] = $this->unquotedSql($query->sql);
             }
         });
 
@@ -790,7 +790,7 @@ class EndSessionsTest extends TestCase
         $statements = 0;
 
         DB::listen(function (QueryExecuted $query) use (&$statements): void {
-            if (str_starts_with(strtolower(trim($query->sql)), 'delete from "sessions"')) {
+            if (str_starts_with($this->unquotedSql($query->sql), 'delete from sessions')) {
                 $statements++;
             }
         });
@@ -875,7 +875,7 @@ class EndSessionsTest extends TestCase
         $statements = 0;
 
         DB::listen(function (QueryExecuted $query) use (&$statements): void {
-            if (str_starts_with(strtolower(trim($query->sql)), 'delete from "sessions"')) {
+            if (str_starts_with($this->unquotedSql($query->sql), 'delete from sessions')) {
                 $statements++;
             }
         });

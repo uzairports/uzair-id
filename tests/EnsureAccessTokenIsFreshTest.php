@@ -547,7 +547,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         $reads = 0;
 
         DB::listen(function (QueryExecuted $query) use (&$reads): void {
-            if (str_contains(strtolower($query->sql), 'from "oauth_tokens"')) {
+            if (str_contains($this->unquotedSql($query->sql), 'from oauth_tokens')) {
                 $reads++;
             }
         });

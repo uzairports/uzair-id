@@ -143,6 +143,19 @@ abstract class TestCase extends Orchestra
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
     }
 
+    /**
+     * A statement as the driver wrote it, with its identifier quoting taken off.
+     *
+     * A listener watching for `delete from "oauth_tokens"` sees nothing on
+     * MySQL, which spells the same statement with backticks, and the counter it
+     * keeps stays at zero — which an assertion reads as work that never
+     * happened rather than as a difference in spelling.
+     */
+    protected function unquotedSql(string $sql): string
+    {
+        return trim(strtolower(str_replace(['`', '"'], '', $sql)));
+    }
+
     protected function setUpDatabase(): void
     {
         Schema::disableForeignKeyConstraints();
