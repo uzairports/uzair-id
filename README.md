@@ -26,6 +26,12 @@ php artisan migrate
 php artisan vendor:publish --tag=uzairid-user-migrations
 ```
 
+> ⚠️ **Внимание: колонка `password` будет удалена!**  
+> Миграция `remove_password_column_from_users_table` (входит в тег `uzairid-user-migrations`) **удаляет колонку `password`** из таблицы `users`. В чистом SSO-сценарии учетные данные хранятся исключительно на стороне провайдера UzAirports ID.  
+> Если ваше приложение использует гибридную схему аутентификации (например, сохраняет локальный вход по паролю для администраторов) или если вы не хотите удалять столбец:  
+> - **Не публикуйте и не запускайте** миграцию удаления `password`;  
+> - Убедитесь, что в таблице `users` колонка `password` объявлена как `nullable`, либо настройте кастомное создание пользователя через `Uzair::resolveUserUsing(...)`, чтобы при создании SSO-пользователей не возникало ошибок отсутствия значения по умолчанию.
+
 Для обновления со старых версий пакета:
 ```bash
 php artisan vendor:publish --tag=uzairid-upgrade-migrations
@@ -79,10 +85,14 @@ php artisan vendor:publish --tag=uzairid-config
 | `redirect` | `UZAIR_CALLBACK_URL` | — | Адрес callback-маршрута |
 | `host` | `UZAIR_HOST` | `https://my.uzairports.com` | Адрес UzAirports ID; меняется для стенда |
 | `revoke_endpoint` | `UZAIR_REVOKE_ENDPOINT` | — | Эндпоинт RFC 7009 для отзыва refresh-токена |
+| `logout_endpoint` | `UZAIR_LOGOUT_ENDPOINT` | `/api/v1/oauth/logout` | Эндпоинт для отзыва access-токена при logout |
+| `user_endpoint` | `UZAIR_USER_ENDPOINT` | `/api/user` | Эндпоинт получения профиля пользователя |
 | `revoke_on_prune` | `UZAIR_REVOKE_ON_PRUNE` | `true` | Отдавать ли гранты SSO при уборке брошенных входов |
+| `revoke_on_single_session` | `UZAIR_REVOKE_ON_SINGLE_SESSION` | `true` | Отзывать ли гранты SSO при завершении других входов через `single_session` |
 | `pkce` | `UZAIR_PKCE` | `true` | Привязывать ли код авторизации к одноразовому verifier |
 | `scopes` | `UZAIR_SCOPES` | — | Запрашиваемые scope через пробел |
 | `refresh_leeway` | `UZAIR_REFRESH_LEEWAY` | `60` | За сколько секунд до истечения обновлять токен |
+| `default_token_ttl` | `UZAIR_DEFAULT_TOKEN_TTL` | `3600` | Fallback TTL токена (сек), если провайдер не вернул `expires_in` |
 | `login_route` | `UZAIR_LOGIN_ROUTE` | `login` | Имя маршрута повторной аутентификации |
 | `redirect_to` | `UZAIR_REDIRECT_TO` | `dashboard` | Маршрут или URL перенаправления после входа |
 | `redirect_on_error` | `UZAIR_REDIRECT_ON_ERROR` | `/` | Куда вернуть пользователя, если вход не удался |
@@ -91,10 +101,13 @@ php artisan vendor:publish --tag=uzairid-config
 | `link_by_email` | `UZAIR_LINK_BY_EMAIL` | `false` | Связывать ли старые локальные аккаунты по email |
 | `routes.prefix` | `UZAIR_ROUTE_PREFIX` | `auth` | Префикс маршрутов пакета |
 | `routes.throttle` | `UZAIR_ROUTE_THROTTLE` | `60,1` | Лимит запросов на SSO-эндпоинты (`попыток,минут`), на браузер |
+| `routes.ip_throttle` | `UZAIR_ROUTE_IP_THROTTLE` | `120,1` | Потолок запросов на адрес (`попыток,минут`) для защиты от ротации cookie |
 | `timeout` | `UZAIR_TIMEOUT` | `10` | Таймаут HTTP-запросов к SSO (сек) |
 | `connect_timeout` | `UZAIR_CONNECT_TIMEOUT` | `5` | Таймаут соединения с SSO (сек) |
+| `revocation_timeout` | `UZAIR_REVOCATION_TIMEOUT` | `3` | Таймаут запросов отзыва токенов (сек) |
 | `revocation_concurrency` | `UZAIR_REVOCATION_CONCURRENCY` | `10` | Сколько грантов отзывается у SSO одновременно; `1` — по одному |
 | `login_cache_ttl` | `UZAIR_LOGIN_CACHE_TTL` | `0` | Сколько секунд `uzair.token` может пропускать запрос по уже найденному входу, не читая строку; `0` — читать всегда |
+| `login_cache_store` | `UZAIR_LOGIN_CACHE_STORE` | — | Имя хранилища кеша для кеширования входов (по умолчанию — системный кеш) |
 | `lock_store` | `UZAIR_LOCK_STORE` | — | Хранилище кеша для atomic lock при обновлении токена |
 
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
