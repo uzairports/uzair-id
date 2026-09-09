@@ -239,7 +239,33 @@ class RefreshAccessToken
             'expires_at' => $expiresIn <= 0
                 ? null
                 : now()->addSeconds($expiresIn),
-        ])->save();
+        ]);
+
+        // The exchange stays outside the transaction. Logout takes this same
+        // row lock before reading the grants it will delete and surrender.
+        try {
+            $saved = $token->getConnection()->transaction(function () use ($token): bool {
+                $stored = $token->newQuery()->whereKey($token->getKey())->lockForUpdate()->first();
+
+                if ($stored === null) {
+                    return false;
+                }
+
+                return $token->save();
+            });
+        } catch (Throwable $exception) {
+            app(EndSessions::class)->surrender($token);
+            UzairTokenRefreshFailed::dispatch($token, $exception);
+
+            throw $exception;
+        }
+
+        if (! $saved) {
+            app(EndSessions::class)->surrender($token);
+            UzairTokenRefreshFailed::dispatch($token);
+
+            return false;
+        }
 
         UzairTokenRefreshed::dispatch($token);
 

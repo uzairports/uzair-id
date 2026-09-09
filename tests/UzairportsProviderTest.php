@@ -5,6 +5,7 @@ namespace Uzairports\Uzairid\Tests;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Handler\MockHandler;
 use GuzzleHttp\HandlerStack;
+use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Http\Request;
 use Laravel\Socialite\Facades\Socialite;
@@ -14,6 +15,61 @@ use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class UzairportsProviderTest extends TestCase
 {
+    public function test_code_exchange_never_forwards_credentials_to_a_redirect(): void
+    {
+        foreach ([301, 302, 303, 307, 308] as $status) {
+            $history = [];
+            $stack = HandlerStack::create(new MockHandler([
+                new Response($status, ['Location' => 'https://other.test/token'], '{"access_token":"redirect-body"}'),
+                new Response(200, [], '{"access_token":"unexpected"}'),
+            ]));
+            $stack->push(Middleware::history($history));
+            $provider = $this->provider(['handler' => $stack, 'allow_redirects' => true]);
+
+            try {
+                $provider->getAccessTokenResponse('authorization-code');
+                $this->fail('A token endpoint redirect must fail the exchange.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame('UzAirports SSO returned an invalid token response.', $exception->getMessage());
+            }
+
+            $this->assertIsArray($history);
+            $this->assertCount(1, $history);
+            $this->assertSame('my.uzairports.com', $history[0]['request']->getUri()->getHost());
+        }
+    }
+
+    public function test_code_exchange_preserves_pkce_and_client_credentials(): void
+    {
+        $request = Request::create('/callback');
+        $request->setLaravelSession(app('session.store'));
+        $request->session()->put('code_verifier', 'test-verifier');
+
+        $stack = HandlerStack::create(new MockHandler([
+            function (RequestInterface $request, array $options): Response {
+                parse_str((string) $request->getBody(), $fields);
+
+                $this->assertSame('POST', $request->getMethod());
+                $this->assertSame('test-client', $fields['client_id']);
+                $this->assertSame('test-secret', $fields['client_secret']);
+                $this->assertSame('authorization-code', $fields['code']);
+                $this->assertSame('test-verifier', $fields['code_verifier']);
+                $this->assertSame('authorization_code', $fields['grant_type']);
+                $this->assertSame(10, $options['timeout']);
+
+                return new Response(200, [], '{"access_token":"access","refresh_token":"refresh","expires_in":3600}');
+            },
+        ]));
+        $provider = new UzairportsProvider($request, 'test-client', 'test-secret', 'https://app.test/callback', ['handler' => $stack]);
+        $provider->enablePKCE();
+
+        $this->assertSame([
+            'access_token' => 'access',
+            'refresh_token' => 'refresh',
+            'expires_in' => 3600,
+        ], $provider->getAccessTokenResponse('authorization-code'));
+    }
+
     public function test_provider_generates_auth_url(): void
     {
         $provider = $this->provider();

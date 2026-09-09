@@ -30,21 +30,25 @@ return new class extends Migration
         }
 
         Schema::table('oauth_tokens', function (Blueprint $table) {
-            $table->index('session_id');
+            $table->index('session_id', 'uzairid_session_upgrade_index');
         });
     }
 
     /**
      * Reverse the migrations.
+     *
+     * The dedicated name identifies an index this upgrade created. Indexes
+     * from the creation migration or an older release remain owned by those
+     * migrations, including when up() skipped an existing custom index.
      */
     public function down(): void
     {
-        if (! $this->hasSessionIndex()) {
+        if (! Schema::hasIndex('oauth_tokens', 'uzairid_session_upgrade_index')) {
             return;
         }
 
         Schema::table('oauth_tokens', function (Blueprint $table) {
-            $table->dropIndex(['session_id']);
+            $table->dropIndex('uzairid_session_upgrade_index');
         });
     }
 
@@ -53,9 +57,9 @@ return new class extends Migration
      *
      * The name is not what is looked for: an installation may have added the
      * index by hand under a name of its own, and adding a second one under
-     * Laravel's would cost a write on every row for nothing.
+     * Laravel's would cost a writing on every row for nothing.
      *
-     * The unique `(user_id, session_id)` pair does not answer here, and must
+     * The unique `(user_id, session_id)` pair does not answer here and must
      * not: it leads with `user_id`, so a query naming only the session cannot
      * use it.
      */

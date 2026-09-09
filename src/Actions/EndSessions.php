@@ -5,10 +5,13 @@ namespace Uzairports\Uzairid\Actions;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
+use Psr\SimpleCache\InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -50,6 +53,7 @@ class EndSessions
      * model instantiation overhead on the bulk path.
      *
      * @return int the number of logins ended
+     * @throws Throwable
      */
     public function __invoke(int|string $userId, ?string $exceptSessionId = null, bool $revoke = true): int
     {
@@ -60,28 +64,42 @@ class EndSessions
             ));
 
         if (! $revoke) {
-            $rawSessionIds = (clone $query)
-                ->whereNotNull('session_id')
-                ->where('session_id', '!=', '')
-                ->pluck('session_id');
+            $rows = $query->getModel()->getConnection()->transaction(function () use ($query): SupportCollection {
+                $rows = (clone $query)->orderBy('id')->lockForUpdate()->toBase()->get(['id', 'session_id']);
+
+                if ($rows->isNotEmpty()) {
+                    (clone $query)->whereKey($rows->pluck('id')->all())->delete();
+                }
+
+                return $rows;
+            });
 
             $sessionIds = [];
 
-            foreach ($rawSessionIds as $rawSessionId) {
+            foreach ($rows->pluck('session_id') as $rawSessionId) {
                 if (is_string($rawSessionId) && $rawSessionId !== '') {
                     $sessionIds[] = $rawSessionId;
                 }
             }
 
-            $deleted = $query->delete();
-
             $this->deleteStoredSessions($userId, $exceptSessionId, $sessionIds);
             $this->forgetResolvedLogins($sessionIds);
 
-            return is_numeric($deleted) ? (int) $deleted : 0;
+            return $rows->count();
         }
 
-        $tokens = $query->get(['id', 'user_id', 'session_id', 'access_token', 'refresh_token']);
+        $tokens = $query->getModel()->getConnection()->transaction(function () use ($query): Collection {
+            $tokens = $query
+                ->orderBy('id')
+                ->lockForUpdate()
+                ->get(['id', 'user_id', 'session_id', 'access_token', 'refresh_token']);
+
+            if ($tokens->isNotEmpty()) {
+                OauthToken::query()->whereKey($tokens->modelKeys())->delete();
+            }
+
+            return $tokens;
+        });
 
         $sessionIds = [];
 
@@ -90,10 +108,6 @@ class EndSessions
             if (is_string($sessionId) && $sessionId !== '') {
                 $sessionIds[] = $sessionId;
             }
-        }
-
-        if ($tokens->isNotEmpty()) {
-            OauthToken::query()->whereKey($tokens->modelKeys())->delete();
         }
 
         $this->deleteStoredSessions($userId, $exceptSessionId, $sessionIds);
@@ -126,7 +140,8 @@ class EndSessions
      * id may belong to different accounts, and the same id would otherwise be
      * deleted from the store as many times as there are accounts holding it.
      *
-     * @param  iterable<array-key, OauthToken>  $tokens
+     * @param iterable<array-key, OauthToken> $tokens
+     * @throws Throwable
      */
     public function endAll(iterable $tokens): void
     {
@@ -136,28 +151,42 @@ class EndSessions
         /** @var array<string, true> $sessionIds */
         $sessionIds = [];
 
-        foreach ($tokens as $token) {
-            $token->delete();
+        try {
+            foreach ($tokens as $token) {
+                $deleted = $token->getConnection()->transaction(function () use ($token): bool {
+                    $stored = $token->newQuery()->whereKey($token->getKey())->lockForUpdate()->first();
 
-            $sessionId = $token->session_id;
+                    if ($stored === null) {
+                        return false;
+                    }
 
-            if (is_string($sessionId) && $sessionId !== '') {
-                $sessionIds[$sessionId] = true;
+                    $token->setRawAttributes($stored->getAttributes(), sync: true);
+
+                    return $token->delete() === true;
+                });
+
+                if (! $deleted) {
+                    continue;
+                }
+
+                $sessionId = $token->session_id;
+
+                if (is_string($sessionId) && $sessionId !== '') {
+                    $sessionIds[$sessionId] = true;
+                }
+
+                $ended[] = $token;
             }
-
-            $ended[] = $token;
+        } finally {
+            if ($ended !== []) {
+                try {
+                    $this->deleteStoredSessionsById(array_keys($sessionIds));
+                    $this->forgetResolvedLogins(array_keys($sessionIds));
+                } finally {
+                    $this->revokeAll($ended);
+                }
+            }
         }
-
-        if ($ended === []) {
-            return;
-        }
-
-        $sessionIds = array_keys($sessionIds);
-
-        $this->deleteStoredSessionsById($sessionIds);
-        $this->forgetResolvedLogins($sessionIds);
-
-        $this->revokeAll($ended);
     }
 
     /**
@@ -167,7 +196,8 @@ class EndSessions
      * session, so a login ended here has to take that answer with it — the
      * device would otherwise keep being let through until the entry lapsed.
      *
-     * @param  array<array-key, string>  $sessionIds
+     * @param array<array-key, string> $sessionIds
+     * @throws InvalidArgumentException
      */
     private function forgetResolvedLogins(array $sessionIds): void
     {
@@ -271,7 +301,20 @@ class EndSessions
             return;
         }
 
-        foreach (array_chunk($grants, $this->revocationConcurrency()) as $chunk) {
+        /** @var list<array{token: OauthToken, access: string|null, refresh: string|null}> $requests */
+        $requests = [];
+
+        foreach ($grants as $grant) {
+            if ($grant['access'] !== null) {
+                $requests[] = ['token' => $grant['token'], 'access' => $grant['access'], 'refresh' => null];
+            }
+
+            if ($grant['refresh'] !== null) {
+                $requests[] = ['token' => $grant['token'], 'access' => null, 'refresh' => $grant['refresh']];
+            }
+        }
+
+        foreach (array_chunk($requests, $this->revocationConcurrency()) as $chunk) {
             $this->settle($provider, $chunk);
         }
     }

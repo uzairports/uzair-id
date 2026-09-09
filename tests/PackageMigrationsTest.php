@@ -17,6 +17,33 @@ abstract class RunnableMigration extends Migration {}
 
 class PackageMigrationsTest extends TestCase
 {
+    public function test_upgrade_rollbacks_preserve_indexes_with_custom_names(): void
+    {
+        foreach (['session_id' => 'index_oauth_tokens_by_session', 'updated_at' => 'index_oauth_tokens_for_pruning'] as $column => $migration) {
+            Schema::table('oauth_tokens', function (Blueprint $table) use ($column): void {
+                $table->dropIndex([$column]);
+                $table->index($column, "custom_{$column}_index");
+            });
+
+            $this->migration($migration)->up();
+            $this->migration($migration)->down();
+
+            $this->assertTrue(Schema::hasIndex('oauth_tokens', "custom_{$column}_index"));
+            $indexes = array_filter(Schema::getIndexes('oauth_tokens'), fn (array $index): bool => $index['columns'] === [$column]);
+            $this->assertCount(1, $indexes);
+        }
+    }
+
+    public function test_upgrade_rollbacks_preserve_indexes_from_the_create_migration(): void
+    {
+        foreach (['session_id' => 'index_oauth_tokens_by_session', 'updated_at' => 'index_oauth_tokens_for_pruning'] as $column => $migration) {
+            $this->migration($migration)->up();
+            $this->migration($migration)->down();
+
+            $this->assertTrue(Schema::hasIndex('oauth_tokens', "oauth_tokens_{$column}_index"));
+        }
+    }
+
     /**
      * @return RunnableMigration
      */
@@ -329,7 +356,7 @@ class PackageMigrationsTest extends TestCase
         $indexBySession->up();
         $this->assertTrue($this->hasIndexOn('oauth_tokens', ['session_id']));
 
-        $indexBySession->down();
+        $this->migration('index_oauth_tokens_by_session')->down();
         $this->assertFalse($this->hasIndexOn('oauth_tokens', ['session_id']));
     }
 
@@ -357,7 +384,7 @@ class PackageMigrationsTest extends TestCase
         $indexForPruning->up();
         $this->assertTrue($this->hasIndexOn('oauth_tokens', ['updated_at']));
 
-        $indexForPruning->down();
+        $this->migration('index_oauth_tokens_for_pruning')->down();
         $this->assertFalse($this->hasIndexOn('oauth_tokens', ['updated_at']));
     }
 

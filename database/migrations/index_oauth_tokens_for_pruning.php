@@ -24,21 +24,24 @@ return new class extends Migration
         }
 
         Schema::table('oauth_tokens', function (Blueprint $table) {
-            $table->index('updated_at');
+            $table->index('updated_at', 'uzairid_pruning_upgrade_index');
         });
     }
 
     /**
      * Reverse the migrations.
+     *
+     * Drop only the index named for this upgrade. A pre-existing index may
+     * belong to the creation migration, an older release, or the application.
      */
     public function down(): void
     {
-        if (! $this->hasPruningIndex()) {
+        if (! Schema::hasIndex('oauth_tokens', 'uzairid_pruning_upgrade_index')) {
             return;
         }
 
         Schema::table('oauth_tokens', function (Blueprint $table) {
-            $table->dropIndex(['updated_at']);
+            $table->dropIndex('uzairid_pruning_upgrade_index');
         });
     }
 
@@ -47,7 +50,7 @@ return new class extends Migration
      *
      * The name is not what is looked for: an installation may have added the
      * index by hand under a name of its own, and adding a second one under
-     * Laravel's would cost a write on every row for nothing.
+     * Laravel's would cost a writing on every row for nothing.
      */
     private function hasPruningIndex(): bool
     {

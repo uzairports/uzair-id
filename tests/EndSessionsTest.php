@@ -14,12 +14,116 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
+use RuntimeException;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class EndSessionsTest extends TestCase
 {
+    public function test_partial_deletion_still_cleans_up_committed_logins(): void
+    {
+        config(['session.driver' => 'database', 'uzairports.login_cache_ttl' => 60]);
+        $user = TestUser::create(['uzair_id' => 'partial-logout']);
+
+        foreach (['first', 'second', 'third'] as $device) {
+            $this->login($user, "{$device}-session", "{$device}-access");
+        }
+
+        $tokens = OauthToken::query()->orderBy('id')->get();
+        foreach ($tokens as $token) {
+            $token->cacheLogin((string) $token->session_id);
+        }
+
+        $failure = new RuntimeException('The second deletion failed.');
+        OauthToken::deleting(function (OauthToken $token) use ($failure): void {
+            if ($token->session_id === 'second-session') {
+                throw $failure;
+            }
+        });
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('first-access')->once()->andReturnUsing(function (): PromiseInterface {
+            $this->assertSame(0, DB::transactionLevel());
+
+            return $this->revoked();
+        });
+        Socialite::shouldReceive('driver')->with('uzairports')->once()->andReturn($provider);
+
+        try {
+            (new EndSessions)->endAll($tokens);
+            $this->fail('The original deletion failure must be propagated.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame($failure, $exception);
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertSame(['second-session', 'third-session'], OauthToken::query()->orderBy('id')->pluck('session_id')->all());
+        $this->assertSame(['second-session', 'third-session'], $this->storedSessionIds());
+        $this->assertNull(OauthToken::cachedLogin('first-session'));
+        $this->assertNotNull(OauthToken::cachedLogin('second-session'));
+    }
+
+    public function test_logout_revokes_the_latest_grants_when_the_caller_holds_an_old_snapshot(): void
+    {
+        $user = TestUser::create(['uzair_id' => 'logout-after-refresh']);
+        $token = $user->tokens()->create([
+            'access_token' => 'old_access',
+            'refresh_token' => 'old_refresh',
+            'session_id' => 'refreshed-session',
+        ]);
+
+        OauthToken::query()->findOrFail($token->id)->forceFill([
+            'access_token' => 'new_access',
+            'refresh_token' => 'new_refresh',
+        ])->save();
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('new_access')->once()->andReturnUsing(function (): PromiseInterface {
+            $this->assertSame(0, DB::transactionLevel());
+
+            return $this->revoked();
+        });
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('new_refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)->end($token);
+
+        $this->assertModelMissing($token);
+    }
+
+    public function test_the_revocation_limit_counts_both_grants_of_each_login(): void
+    {
+        config(['uzairports.revocation_concurrency' => 1]);
+
+        $user = TestUser::create(['uzair_id' => 'two-grants']);
+        $token = $user->tokens()->create([
+            'access_token' => 'access',
+            'refresh_token' => 'refresh',
+            'session_id' => 'two-grants-session',
+        ]);
+
+        $events = [];
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('access')->once()->andReturnUsing(
+            function (string $value) use (&$events): PromiseInterface {
+                return $this->recordedRevocation($value, $events);
+            }
+        );
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('refresh')->once()->andReturnUsing(
+            function (string $value) use (&$events): PromiseInterface {
+                return $this->recordedRevocation($value, $events);
+            }
+        );
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)->end($token);
+
+        $this->assertSame(['sent:access', 'waited:access', 'sent:refresh', 'waited:refresh'], $events);
+        $this->assertModelMissing($token);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

@@ -197,7 +197,8 @@ class OauthToken extends Model
      * how every other bulk path in this package already spends them. The rows
      * are still deleted one apiece, the way the trait deletes them, so anything
      * observing the model hears about each of them; `pruning()` is not called
-     * along the way, because the chunk has already been surrendered.
+     * along the way. The rows are rechecked and deleted under a row lock,
+     * then their grants are surrendered after the transactions have committed.
      *
      * A row that will not delete is reported, and the sweep carries on again as
      * the trait does: one unhappy row must not leave the rest of the backlog
@@ -219,7 +220,7 @@ class OauthToken extends Model
     }
 
     /**
-     * Surrender a chunk's grants, then drop its rows.
+     * Delete still-abandoned logins before surrendering their current grants.
      *
      * The entries the resolved logins were cached under go too. Pruning is the
      * one path that used to leave them — `login_cache_ttl` documents a swept
@@ -227,8 +228,9 @@ class OauthToken extends Model
      * holding every session id it is about to orphan anyway, and dropping them
      * costs one call for the whole chunk.
      *
-     * @param Collection<int, OauthToken> $tokens
+     * @param  Collection<int, OauthToken>  $tokens
      * @return int the number of rows actually dropped
+     *
      * @throws Throwable
      */
     private function pruneChunk(Collection $tokens): int
@@ -237,67 +239,90 @@ class OauthToken extends Model
             return 0;
         }
 
-        if (config('uzairports.revoke_on_prune', true)) {
-            (static::$pruner ??= app(EndSessions::class))->surrenderAll($tokens);
-        }
-
-        $pruned = 0;
+        /** @var list<OauthToken> $pruned */
+        $pruned = [];
 
         /** @var array<string, true> $sessionIds */
         $sessionIds = [];
 
-        foreach ($tokens as $token) {
-            try {
-                $token->delete();
-            } catch (Throwable $exception) {
-                app(ExceptionHandler::class)->report($exception);
+        try {
+            foreach ($tokens as $token) {
+                try {
+                    if (! $token->deleteForPruning(onlyAbandoned: true)) {
+                        continue;
+                    }
+                } catch (Throwable $exception) {
+                    app(ExceptionHandler::class)->report($exception);
 
-                continue;
+                    continue;
+                }
+
+                $pruned[] = $token;
+
+                $sessionId = $token->session_id;
+
+                if (is_string($sessionId) && $sessionId !== '') {
+                    $sessionIds[$sessionId] = true;
+                }
             }
-
-            $pruned++;
-
-            $sessionId = $token->session_id;
-
-            if (is_string($sessionId) && $sessionId !== '') {
-                $sessionIds[$sessionId] = true;
+        } finally {
+            try {
+                static::forgetLogins(array_keys($sessionIds));
+            } finally {
+                if ($pruned !== [] && config('uzairports.revoke_on_prune', true)) {
+                    (static::$pruner ??= app(EndSessions::class))->surrenderAll($pruned);
+                }
             }
         }
 
-        static::forgetLogins(array_keys($sessionIds));
-
-        return $pruned;
+        return count($pruned);
     }
 
     /**
-     * Give the login's grant up before the row goes.
+     * Prune one explicitly selected login and surrender its current grants.
      *
-     * Deleting the row says nothing to UzAirports ID: the refresh token it
-     * held keeps working until the identity provider retires it on its own,
-     * and whoever holds a copy of it has a way into the account long after the
-     * browser that earned it stopped coming back. Every other way a login ends
-     * surrenders the grant; the sweep is the one that would not have.
-     *
-     * A provider that refuses is logged and not raised. The row goes either
-     * way: it names a session the store has already collected, so leaving it
-     * behind would only have it swept again tomorrow.
-     *
-     * This is the hook for a single `prune()` call. The sweep does not come
-     * through here — `pruneAll()` surrenders a whole chunk at once rather than
-     * paying a wait per row — so the two must not both revoke the same grant.
-     *
-     * Either way the calls cost what the provider charges for them. Where the
-     * backlog is real and the grants expire on their own,
-     * `uzairports.revoke_on_prune` turns them off and leaves the sweep to
-     * delete rows and nothing more.
+     * Like the trait's single prune(), this does not apply the sweep's age
+     * filter. The pruning hook runs before deletion, but remote revocation
+     * runs after commit so a concurrent refresh cannot leave new grants behind.
      */
-    protected function pruning(): void
+    public function prune(): bool
     {
-        if (! config('uzairports.revoke_on_prune', true)) {
-            return;
+        if (! $this->deleteForPruning(onlyAbandoned: false)) {
+            return false;
         }
 
-        (static::$pruner ??= app(EndSessions::class))->surrender($this);
+        try {
+            static::forgetLogin($this->session_id);
+        } finally {
+            if (config('uzairports.revoke_on_prune', true)) {
+                (static::$pruner ??= app(EndSessions::class))->surrender($this);
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Re-read and delete under the same row lock used to persist a refresh.
+     */
+    private function deleteForPruning(bool $onlyAbandoned): bool
+    {
+        return $this->getConnection()->transaction(function () use ($onlyAbandoned): bool {
+            $query = $onlyAbandoned ? $this->prunable() : $this->newQuery();
+            $stored = $query->whereKey($this->getKey())->lockForUpdate()->first();
+
+            if ($stored === null) {
+                return false;
+            }
+
+            $this->setRawAttributes($stored->getAttributes(), sync: true);
+
+            if (! $onlyAbandoned) {
+                $this->pruning();
+            }
+
+            return $this->delete() === true;
+        });
     }
 
     /**
@@ -394,10 +419,24 @@ class OauthToken extends Model
             return;
         }
 
-        Cache::put(self::loginCacheKey($sessionId), [
-            'user' => (string) $this->user_id,
-            'expires_at' => $this->expires_at?->getTimestamp(),
-        ], $ttl);
+        // Hold the row until publication finishes, so deletion cannot forget
+        // the entry between checking the login and writing its cached answer.
+        $this->getConnection()->transaction(function () use ($sessionId, $ttl): void {
+            $stored = $this->newQuery()
+                ->whereKey($this->getKey())
+                ->where('session_id', $sessionId)
+                ->lockForUpdate()
+                ->first(['id', 'user_id', 'expires_at']);
+
+            if ($stored === null) {
+                return;
+            }
+
+            Cache::put(self::loginCacheKey($sessionId), [
+                'user' => (string) $stored->user_id,
+                'expires_at' => $stored->expires_at?->getTimestamp(),
+            ], $ttl);
+        });
     }
 
     /**
@@ -430,7 +469,8 @@ class OauthToken extends Model
      * are dropped in one call instead, which is a single command on the stores
      * that offer one and the same loop as before on those that do not.
      *
-     * @param array<array-key, string> $sessionIds
+     * @param  array<array-key, string>  $sessionIds
+     *
      * @throws InvalidArgumentException
      */
     public static function forgetLogins(array $sessionIds): void

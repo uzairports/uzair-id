@@ -3,16 +3,145 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Exception;
+use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Laravel\Socialite\Facades\Socialite;
+use Laravel\Socialite\Two\Token;
 use Mockery;
+use Uzairports\Uzairid\Actions\EndSessions;
+use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class OauthTokenTest extends TestCase
 {
+    public function test_the_sweep_preserves_a_login_refreshed_after_its_chunk_was_read(): void
+    {
+        $user = TestUser::create(['uzair_id' => 'refreshed-during-sweep']);
+        $token = $user->tokens()->create([
+            'access_token' => 'old-access',
+            'refresh_token' => 'old-refresh',
+            'expires_at' => now()->subMinute(),
+            'session_id' => 'active-session',
+        ]);
+        $token->forceFill(['updated_at' => now()->subMinutes(241)])->saveQuietly();
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->with('old-refresh')->once()->andReturn(new Token('new-access', 'new-refresh', 3600, []));
+        $provider->shouldReceive('logoutAsync')->never();
+        $provider->shouldReceive('revokeRefreshTokenAsync')->never();
+        Socialite::shouldReceive('driver')->with('uzairports')->once()->andReturn($provider);
+
+        $refreshed = false;
+        OauthToken::retrieved(function (OauthToken $snapshot) use (&$refreshed, $token): void {
+            if ($refreshed || $snapshot->id !== $token->id) {
+                return;
+            }
+
+            $refreshed = true;
+            $this->assertTrue((new RefreshAccessToken)(OauthToken::query()->findOrFail($token->id)));
+        });
+
+        try {
+            $this->assertSame(0, (new OauthToken)->pruneAll());
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertTrue($refreshed);
+        $this->assertSame('new-refresh', OauthToken::query()->findOrFail($token->id)->refresh_token);
+    }
+
+    public function test_single_pruning_uses_current_grants_and_forgets_the_cached_login(): void
+    {
+        config(['uzairports.login_cache_ttl' => 60]);
+        $user = TestUser::create(['uzair_id' => 'single-prune']);
+        $token = $user->tokens()->create([
+            'access_token' => 'old-access',
+            'refresh_token' => 'old-refresh',
+            'expires_at' => now()->addHour(),
+            'session_id' => 'single-session',
+        ]);
+        $token->cacheLogin('single-session');
+        OauthToken::query()->findOrFail($token->id)->forceFill([
+            'access_token' => 'new-access',
+            'refresh_token' => 'new-refresh',
+        ])->save();
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('new-access')->once()->andReturnUsing(function () use ($token): PromiseInterface {
+            $this->assertSame(0, DB::transactionLevel());
+            $this->assertModelMissing($token);
+            $this->assertNull(OauthToken::cachedLogin('single-session'));
+
+            return $this->revoked();
+        });
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('new-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->once()->andReturn($provider);
+
+        $this->assertTrue($token->prune());
+        $this->assertFalse($token->prune());
+    }
+
+    public function test_a_vetoed_prune_keeps_the_login_and_does_not_revoke_its_grants(): void
+    {
+        $user = TestUser::create(['uzair_id' => 'vetoed-prune']);
+        $token = $user->tokens()->create(['access_token' => 'access', 'refresh_token' => 'refresh']);
+        $token->forceFill(['updated_at' => now()->subMinutes(241)])->saveQuietly();
+        Socialite::shouldReceive('driver')->never();
+        OauthToken::deleting(fn (): bool => false);
+
+        try {
+            $this->assertSame(0, (new OauthToken)->pruneAll());
+            $this->assertFalse($token->prune());
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertModelExists($token);
+    }
+
+    public function test_a_stale_snapshot_cannot_cache_a_login_after_it_was_ended(): void
+    {
+        config(['uzairports.login_cache_ttl' => 10]);
+
+        $user = TestUser::create(['uzair_id' => 'cache-after-logout']);
+        $token = $user->tokens()->create([
+            'access_token' => 'access',
+            'session_id' => 'ended-session',
+            'expires_at' => now()->addHour(),
+        ]);
+        $snapshot = OauthToken::query()->findOrFail($token->id);
+        $token->cacheLogin('ended-session');
+
+        (new EndSessions)($user->id, revoke: false);
+        $snapshot->cacheLogin('ended-session');
+
+        $this->assertNull(OauthToken::cachedLogin('ended-session'));
+        $this->assertModelMissing($snapshot);
+    }
+
+    public function test_caching_a_snapshot_uses_the_current_expiry_and_session(): void
+    {
+        config(['uzairports.login_cache_ttl' => 10]);
+
+        $user = TestUser::create(['uzair_id' => 'cache-new-expiry']);
+        $token = $user->tokens()->create([
+            'access_token' => 'access',
+            'session_id' => 'current-session',
+            'expires_at' => now()->addHour(),
+        ]);
+        OauthToken::query()->findOrFail($token->id)->forceFill(['expires_at' => null])->save();
+
+        $token->cacheLogin('current-session');
+        $token->cacheLogin('unrelated-session');
+
+        $this->assertSame(['user' => (string) $user->id, 'expires_at' => null], OauthToken::cachedLogin('current-session'));
+        $this->assertNull(OauthToken::cachedLogin('unrelated-session'));
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();

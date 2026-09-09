@@ -70,7 +70,25 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         return self::seconds(config('uzairports.guzzle.timeout', config('uzairports.timeout', 10)), 10);
     }
 
-    /** @return array<array-key, mixed> */
+    /** @return array<array-key, mixed>
+     * @throws GuzzleException
+     */
+    public function getAccessTokenResponse($code): array
+    {
+        $response = $this->getHttpClient()->post($this->getTokenUrl(), [
+            RequestOptions::TIMEOUT => self::requestTimeout(),
+            RequestOptions::CONNECT_TIMEOUT => min($this->connectTimeout(), self::requestTimeout()),
+            RequestOptions::ALLOW_REDIRECTS => false,
+            RequestOptions::HEADERS => $this->getTokenHeaders($code),
+            RequestOptions::FORM_PARAMS => $this->getTokenFields($code),
+        ]);
+
+        return $this->decodeTokenResponse($response);
+    }
+
+    /** @return array<array-key, mixed>
+     * @throws GuzzleException
+     */
     protected function getRefreshTokenResponse($refreshToken): array
     {
         $response = $this->getHttpClient()->post($this->getTokenUrl(), [
@@ -86,14 +104,23 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
             ],
         ]);
 
-        $decoded = json_decode((string) $response->getBody(), true);
-
-        if (! is_array($decoded) || ! is_string($decoded['access_token'] ?? null) || trim($decoded['access_token']) === '') {
-            throw new RuntimeException('UzAirports SSO returned an invalid token response.');
-        }
+        $decoded = $this->decodeTokenResponse($response);
 
         $decoded['refresh_token'] = is_string($decoded['refresh_token'] ?? null) ? $decoded['refresh_token'] : '';
         $decoded['expires_in'] = is_numeric($decoded['expires_in'] ?? null) ? (int) $decoded['expires_in'] : 0;
+
+        return $decoded;
+    }
+
+    /** @return array<array-key, mixed> */
+    private function decodeTokenResponse(ResponseInterface $response): array
+    {
+        $decoded = json_decode((string) $response->getBody(), true);
+
+        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300
+            || ! is_array($decoded) || ! is_string($decoded['access_token'] ?? null) || trim($decoded['access_token']) === '') {
+            throw new RuntimeException('UzAirports SSO returned an invalid token response.');
+        }
 
         return $decoded;
     }

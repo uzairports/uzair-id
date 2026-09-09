@@ -3,12 +3,14 @@
 namespace Uzairports\Uzairid\Tests;
 
 use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -17,6 +19,7 @@ use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
 use Mockery;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
+use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Events\UzairTokenRefreshed;
 use Uzairports\Uzairid\Events\UzairTokenRefreshFailed;
@@ -25,6 +28,112 @@ use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class RefreshAccessTokenTest extends TestCase
 {
+    public function test_a_refresh_finishing_after_pruning_surrenders_its_new_grants(): void
+    {
+        $token = $this->expiredToken('pruned-during-refresh');
+        $token->forceFill(['updated_at' => now()->subMinutes(241)])->saveQuietly();
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->with('old_refresh')->once()->andReturnUsing(function (): Token {
+            $this->assertSame(1, (new OauthToken)->pruneAll());
+
+            return new Token('new_access', 'new_refresh', 3600, []);
+        });
+
+        foreach (['old_access', 'new_access'] as $accessToken) {
+            $provider->shouldReceive('logoutAsync')->with($accessToken)->once()->andReturnUsing(function () use ($token): PromiseInterface {
+                $this->assertSame(0, DB::transactionLevel());
+                $this->assertModelMissing($token);
+
+                return $this->revoked();
+            });
+        }
+
+        foreach (['old_refresh', 'new_refresh'] as $refreshToken) {
+            $provider->shouldReceive('revokeRefreshTokenAsync')->with($refreshToken)->once()->andReturn($this->revoked());
+        }
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertFalse((new RefreshAccessToken)($token));
+        $this->assertModelMissing($token);
+    }
+
+    public function test_a_database_failure_after_refresh_surrenders_the_new_grants(): void
+    {
+        $token = $this->expiredToken('failed-refresh-write');
+        Event::fake([UzairTokenRefreshed::class, UzairTokenRefreshFailed::class]);
+        $original = $token->getRawOriginal();
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andReturn(new Token('new-access', 'new-refresh', 3600, []));
+        $provider->shouldReceive('logoutAsync')->with('new-access')->once()->andReturnUsing(function (): PromiseInterface {
+            $this->assertSame(0, DB::transactionLevel());
+
+            return $this->revoked();
+        });
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('new-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        OauthToken::updating(function (): void {
+            DB::statement('update missing_refresh_test_table set id = 1');
+        });
+
+        try {
+            (new RefreshAccessToken)($token);
+            $this->fail('The database failure must remain visible to the caller.');
+        } catch (QueryException $exception) {
+            Event::assertDispatched(UzairTokenRefreshFailed::class, fn (UzairTokenRefreshFailed $event): bool => $event->exception === $exception);
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $stored = OauthToken::query()->findOrFail($token->id);
+        $this->assertSame($original['access_token'], $stored->getRawOriginal('access_token'));
+        $this->assertSame($original['refresh_token'], $stored->getRawOriginal('refresh_token'));
+        Event::assertNotDispatched(UzairTokenRefreshed::class);
+    }
+
+    public function test_a_refresh_finishing_after_logout_surrenders_the_new_grants(): void
+    {
+        $user = TestUser::create(['uzair_id' => 'refresh-during-logout']);
+        $token = $user->tokens()->create([
+            'access_token' => 'old_access',
+            'refresh_token' => 'old_refresh',
+            'expires_at' => now()->subMinute(),
+            'session_id' => 'ending-session',
+        ]);
+
+        Event::fake([UzairTokenRefreshed::class, UzairTokenRefreshFailed::class]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->with('old_refresh')->once()->andReturnUsing(function () use ($token): Token {
+            $this->assertSame(0, DB::transactionLevel());
+            (new EndSessions)->end(OauthToken::query()->findOrFail($token->id));
+
+            return new Token('new_access', 'new_refresh', 3600, []);
+        });
+
+        foreach (['old_access', 'new_access'] as $accessToken) {
+            $provider->shouldReceive('logoutAsync')->with($accessToken)->once()->andReturnUsing(function (): PromiseInterface {
+                $this->assertSame(0, DB::transactionLevel());
+
+                return $this->revoked();
+            });
+        }
+
+        foreach (['old_refresh', 'new_refresh'] as $refreshToken) {
+            $provider->shouldReceive('revokeRefreshTokenAsync')->with($refreshToken)->once()->andReturn($this->revoked());
+        }
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertFalse((new RefreshAccessToken)($token));
+        $this->assertModelMissing($token);
+        Event::assertNotDispatched(UzairTokenRefreshed::class);
+        Event::assertDispatched(UzairTokenRefreshFailed::class);
+    }
+
     protected function tearDown(): void
     {
         Mockery::close();
