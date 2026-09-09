@@ -8,6 +8,19 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     /**
+     * The string key types `user_id` can be shaped like and constrained to.
+     *
+     * A `text` key is left out along with the numeric ones: MySQL will not
+     * index it without a prefix length, and a column that cannot be indexed
+     * cannot be referenced.
+     *
+     * `stringKeyColumn()` narrows to this list and `mirrorColumn()` has an arm
+     * for each member, so the two are named from one place rather than kept in
+     * step by hand.
+     */
+    private const REFERENCEABLE_TYPES = ['uuid', 'char', 'bpchar', 'varchar'];
+
+    /**
      * Run the migrations.
      *
      * `expires_at` is the moment the access token stops being accepted, which is
@@ -82,9 +95,10 @@ return new class extends Migration
      *
      * An account keyed by a string — a UUID, a ULID, an employee number — used
      * to get a bare `varchar(255)` and nothing else, so deleting a person left
-     * their logins standing as rows pointing at an account that is gone. They
-     * are never read again and never cleaned up either: `OauthToken::prunable()`
-     * sweeps by `updated_at`, not by whether the owner still exists.
+     * their logins standing as rows pointing at an account that is gone. The
+     * pruning sweep does reach them eventually, since `OauthToken::prunable()`
+     * goes by `updated_at` and an abandoned row stops being touched — but not
+     * promptly, and only where `model:prune` is scheduled at all.
      *
      * The constraint cannot simply be asked for, because the column has to
      * match the one it references before any driver accepts it — MySQL refuses
@@ -98,6 +112,16 @@ return new class extends Migration
      * exist yet, and a model whose `$keyType` says `string` over a column that
      * is nothing of the sort. Neither could be given a constraint that would
      * hold, and neither is worth failing the migration over.
+     *
+     * What the cascade is NOT is a way to end a login. It deletes underneath
+     * Eloquent: no model events, so nothing observing logouts hears about it,
+     * no `OauthToken::forgetLogin()`, and above all no grant surrendered to the
+     * identity provider — the access and refresh tokens of a deleted account
+     * stay live at UzAirports ID until they expire on their own. It is an
+     * integrity net for rows nobody could use anyway. An application that
+     * deletes users must still end their logins through `EndSessions` first.
+     * This has always been how the integer branch below behaved; the string
+     * branch now behaves the same way rather than leaving the rows behind.
      */
     private function defineUserIdColumn(Blueprint $table): void
     {
@@ -109,8 +133,11 @@ return new class extends Migration
             return;
         }
 
+        // `foreignIdFor()` reads the model's own key rather than assuming the
+        // conventional `id`, which `constrained($table)` would have referenced
+        // whatever the model actually calls its key.
         if ($user->getKeyType() !== 'string') {
-            $table->foreignId('user_id')->constrained($user->getTable())->cascadeOnDelete()->cascadeOnUpdate();
+            $table->foreignIdFor($user, 'user_id')->constrained()->cascadeOnDelete()->cascadeOnUpdate();
 
             return;
         }
@@ -123,7 +150,7 @@ return new class extends Migration
             return;
         }
 
-        $this->mirrorColumn($table, 'user_id', $key);
+        $this->mirrorColumn($table, $key);
 
         $table->foreign('user_id')
             ->references($user->getKeyName())
@@ -151,10 +178,6 @@ return new class extends Migration
     /**
      * The account's key column, if it exists and is one a string may reference.
      *
-     * A `text` key is left out along with the numeric ones: MySQL will not
-     * index it without a prefix length, and a column that cannot be indexed
-     * cannot be referenced.
-     *
      * @return array<string, mixed>|null
      */
     private function stringKeyColumn(Model $user): ?array
@@ -163,32 +186,38 @@ return new class extends Migration
             return null;
         }
 
-        foreach (Schema::getColumns($user->getTable()) as $column) {
-            if (($column['name'] ?? null) !== $user->getKeyName()) {
-                continue;
-            }
+        $key = array_find(
+            Schema::getColumns($user->getTable()),
+            fn (array $column): bool => $column['name'] === $user->getKeyName(),
+        );
 
-            return in_array($this->typeName($column), ['uuid', 'char', 'bpchar', 'varchar'], true)
-                ? $column
-                : null;
+        if ($key === null || ! in_array($this->typeName($key), self::REFERENCEABLE_TYPES, true)) {
+            return null;
         }
 
-        return null;
+        return $key;
     }
 
     /**
-     * Write a column shaped like the one it is about to reference.
+     * Write `user_id` shaped like the column it is about to reference.
+     *
+     * The arms cover `self::REFERENCEABLE_TYPES` and nothing else, which is
+     * what `stringKeyColumn()` has already narrowed the type to.
+     *
+     * Every driver that names a type `char` names its length beside it, so the
+     * fallback width is nominal — it is a UUID's, that being what a fixed-width
+     * key is in practice.
      *
      * @param  array<string, mixed>  $key
      */
-    private function mirrorColumn(Blueprint $table, string $name, array $key): void
+    private function mirrorColumn(Blueprint $table, array $key): void
     {
         $length = $this->length($key);
 
         $column = match ($this->typeName($key)) {
-            'uuid' => $table->uuid($name),
-            'char', 'bpchar' => $table->char($name, $length ?? 36),
-            default => $length === null ? $table->string($name) : $table->string($name, $length),
+            'uuid' => $table->uuid('user_id'),
+            'char', 'bpchar' => $table->char('user_id', $length ?? 36),
+            default => $table->string('user_id', $length),
         };
 
         $collation = $key['collation'] ?? null;

@@ -431,7 +431,7 @@ class PackageMigrationsTest extends TestCase
         $this->assertStringContainsString('varchar', strtolower($userIdCol['type_name']));
         $this->assertFalse($this->hasIndexOn('oauth_tokens', ['user_id']));
         $this->assertTrue($this->hasIndexOn('oauth_tokens', ['user_id', 'session_id']));
-        $this->assertFalse($this->hasForeignKeyOn('oauth_tokens', 'user_id'));
+        $this->assertFalse(Schema::hasForeignKey('oauth_tokens', ['user_id']));
 
         $createTokens->down();
     }
@@ -457,7 +457,7 @@ class PackageMigrationsTest extends TestCase
         $createTokens = $this->migration('create_oauth_tokens_table');
         $createTokens->up();
 
-        $this->assertTrue($this->hasForeignKeyOn('oauth_tokens', 'user_id'));
+        $this->assertTrue(Schema::hasForeignKey('oauth_tokens', ['user_id']));
 
         DB::table('users')->insert([
             'id' => '9f8b1c34-4d5e-4a7b-9c2d-1e3f5a7b9c0d',
@@ -498,7 +498,7 @@ class PackageMigrationsTest extends TestCase
         $createTokens->up();
 
         $this->assertTrue(Schema::hasColumn('oauth_tokens', 'user_id'));
-        $this->assertFalse($this->hasForeignKeyOn('oauth_tokens', 'user_id'));
+        $this->assertFalse(Schema::hasForeignKey('oauth_tokens', ['user_id']));
 
         $createTokens->down();
     }
@@ -513,17 +513,6 @@ class PackageMigrationsTest extends TestCase
             $table->string('name');
             $table->timestamps();
         });
-    }
-
-    private function hasForeignKeyOn(string $table, string $column): bool
-    {
-        foreach (Schema::getForeignKeys($table) as $foreignKey) {
-            if ($foreignKey['columns'] === [$column]) {
-                return true;
-            }
-        }
-
-        return false;
     }
 }
 

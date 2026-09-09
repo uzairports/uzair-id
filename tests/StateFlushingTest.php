@@ -74,12 +74,15 @@ class StateFlushingTest extends TestCase
         $this->assertSame($resolver, Uzair::getUserResolver());
     }
 
+    /**
+     * Testbench closes Mockery itself, and folds the expectation count into the
+     * assertion tally on the way — closing early here would verify the
+     * expectations but leave them uncounted.
+     */
     protected function tearDown(): void
     {
         OauthToken::flushLoginCacheWarnings();
         Uzair::resolveUserUsing(null);
-
-        Mockery::close();
 
         parent::tearDown();
     }

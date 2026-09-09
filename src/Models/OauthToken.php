@@ -439,9 +439,8 @@ class OauthToken extends Model
     /**
      * Let the warnings be said again, for a suite that asserts on them.
      *
-     * "Once per process" means once per worker under Octane, which is days
-     * rather than one request — so `Uzair::flushState()` reaches this between
-     * requests there, and a store misconfigured by a deploy is still reported.
+     * Reached between requests on a long-lived runtime through
+     * `Uzair::flushState()`, which is where the reason is written down.
      */
     public static function flushLoginCacheWarnings(): void
     {
