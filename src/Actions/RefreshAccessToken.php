@@ -8,6 +8,7 @@ use Illuminate\Cache\Repository;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
@@ -32,9 +33,22 @@ class RefreshAccessToken
      *
      * Returns false when the SSO server refuses the exchange, in which case the
      * user has to authenticate again.
+     *
+     * An identity provider that has just failed to answer is left alone for a
+     * moment first — see `providerIsUnreachable()`. That check comes before the
+     * lock, because the waiting is the thing being spared: a request that would
+     * only queue behind an exchange running out its own timeout is answered
+     * from what is stored, or told to come back, without holding a worker for
+     * either.
+     *
+     * @throws Throwable
      */
     public function __invoke(OauthToken $token, int $leeway = 0): bool
     {
+        if ($this->providerIsUnreachable()) {
+            return $this->answerWithoutCalling($token, $leeway);
+        }
+
         $store = $this->lockStore();
 
         if ($store === null) {
@@ -50,14 +64,263 @@ class RefreshAccessToken
 
             return $refreshed;
         } catch (LockTimeoutException) {
-            $adopted = $this->reload($token, $leeway);
+            return $this->answerWithoutCalling($token, $leeway);
+        }
+    }
 
-            if ($adopted !== null) {
-                return $adopted;
+    /**
+     * Answer the caller from the row alone, without spending the refresh token.
+     *
+     * Both callers arrive here having decided not to make the exchange — one
+     * waited out the request already making it, the other found the identity
+     * provider not answering — and what is stored decides between the three
+     * things that can be said. Somebody else may have renewed the login in the
+     *  meantime or ended it; only where neither happened is the caller told to
+     * come back.
+     *
+     * The 503 is deliberate, and so is what it is not. Answering `false` would
+     * send the middleware on to end the login, which is to say that a provider
+     * briefly unreachable would sign every one of its users out — and they
+     * could not sign back in either, because signing in needs the same
+     * provider. A grant that was never refused is kept.
+     *
+     * @throws ServiceUnavailableHttpException when the login is still due a renewal
+     */
+    private function answerWithoutCalling(OauthToken $token, int $leeway): bool
+    {
+        $adopted = $this->reload($token, $leeway);
+
+        if ($adopted !== null) {
+            return $adopted;
+        }
+
+        throw $this->temporarilyUnavailable();
+    }
+
+    /**
+     * The entry saying the identity provider is being left alone.
+     */
+    private const string PROVIDER_FAILURE_KEY = 'uzairid:provider-unreachable';
+
+    /**
+     * The entry counting the failures that have not yet added up to an outage.
+     */
+    private const string PROVIDER_FAILURE_COUNT_KEY = 'uzairid:provider-failures';
+
+    /**
+     * Whether the identity provider is being left alone after a recent failure.
+     *
+     * Every renewal is its own lock and its own exchange, so nothing here
+     * queues behind anything else: when the identity provider stops answering,
+     * every request holding an expiring token pays the full request timeout on
+     * its own before being told to come back, and one arriving behind a renewal
+     * already running pays the lock wait on top. Those waits are held in
+     * workers. There are far fewer workers than there are requests during a
+     * wave of expiry — so an identity provider that is merely unreachable
+     * took the whole application down with it, including every page that never
+     * needed a token.
+     *
+     * Enough failures in a row therefore stand for the ones that would have
+     * followed them. For `provider_cooldown` seconds afterward, the exchange is
+     * not attempted at all, and the requests that would have queued are
+     * answered from the row immediately — many of them by adopting a login
+     * somebody else renewed just before the outage began.
+     *
+     * It takes `provider_failure_threshold` of them, not one. A single refusal
+     * to answer is an ordinary thing — a dropped connection, a rate limit, a
+     * response that arrived malformed — and it costs one request one timeout.
+     * Standing every one of those up as an outage would be the worse bargain by
+     * far: the whole application would stop renewing logins for a cooldown
+     * every time the identity provider hiccuped, which is a self-inflicted
+     * version of the failure this is here to prevent. An exchange that succeeds
+     * clears the count, so blips never accumulate into one.
+     *
+     * There is no half-open probe: the entry simply lapses, traffic reaches the
+     * provider again, and the first request to fail writes it back. That is why
+     * the cooldown wants to be several times the request timeout — the window
+     * in which traffic flows is one timeout long, so a cooldown shorter than
+     * that spares almost nothing. The default is 30 seconds against a
+     * 10-second timeout.
+     *
+     * The store is the one the lock is taken in, because this is the same
+     * concern: what the processes serving the application do about one identity
+     * provider. A store held in the memory of one process is worth having here
+     * even so — unlike a lock, which guards nothing unless every process sees
+     * it, this only ever spares work, and a process sparing its own is a real
+     * saving. Nothing is said about such a store because nothing is wrong with
+     * it.
+     */
+    private function providerIsUnreachable(): bool
+    {
+        if (self::providerCooldown() === 0) {
+            return false;
+        }
+
+        try {
+            return $this->breakerCache()?->has(self::PROVIDER_FAILURE_KEY) === true;
+        } catch (Throwable) {
+            // A renewal is never refused over a cache setting. A store that
+            // cannot be read simply has nothing to say about the provider.
+            return false;
+        }
+    }
+
+    /**
+     * Count one failure and leave the provider alone once they add up.
+     *
+     * Only a provider that did not answer is counted. One that refused the
+     * grant answered perfectly well — that login is over, and the next request
+     * has to reach the provider to start a new one.
+     *
+     * The count is given the cooldown's own lifetime, so failures spread wider
+     * apart than that never meet. `add()` before `increment()` is what puts a
+     * lifetime on it completely: incrementing a key that is not there creates one
+     * that outlives every window on some stores.
+     */
+    private function recordProviderFailure(): void
+    {
+        $cooldown = self::providerCooldown();
+
+        if ($cooldown === 0) {
+            return;
+        }
+
+        try {
+            $cache = $this->breakerCache();
+
+            if ($cache === null) {
+                return;
             }
 
-            throw $this->temporarilyUnavailable();
+            $threshold = self::providerFailureThreshold();
+
+            if ($threshold > 1) {
+                $cache->add(self::PROVIDER_FAILURE_COUNT_KEY, 0, $cooldown);
+
+                if ((int) $cache->increment(self::PROVIDER_FAILURE_COUNT_KEY) < $threshold) {
+                    return;
+                }
+            }
+
+            $cache->put(self::PROVIDER_FAILURE_KEY, true, $cooldown);
+        } catch (Throwable) {
+            // Nothing here is worth failing a renewal over either: without the
+            //  entry, the next request simply makes the call this one made.
         }
+    }
+
+    /**
+     * Take back what has been counted against the identity provider.
+     *
+     * An exchange that succeeded is the whole answer to the question the count
+     * was asking, so the failures behind it are dropped rather than left to
+     * lapse: a provider that fails once an hour must never reach the threshold,
+     * however, long it stays up in between.
+     */
+    private function forgetProviderFailures(): void
+    {
+        if (self::providerCooldown() === 0) {
+            return;
+        }
+
+        try {
+            $cache = $this->breakerCache();
+
+            $cache?->forget(self::PROVIDER_FAILURE_COUNT_KEY);
+            $cache?->forget(self::PROVIDER_FAILURE_KEY);
+        } catch (Throwable) {
+            // A store that will not answer has nothing recorded in it either.
+        }
+    }
+
+    /**
+     * How many failures within a cooldown make an outage.
+     *
+     * One is allowed and means the first failure stands for the outage.
+     */
+    private static function providerFailureThreshold(): int
+    {
+        $configured = config('uzairports.provider_failure_threshold', 5);
+
+        return max(is_numeric($configured) ? (int) $configured : 5, 1);
+    }
+
+    /**
+     * Let the identity provider be called again at once.
+     *
+     * The entry lapses on its own, so this is for an operator who has just
+     * fixed the provider and for a suite that asserts on the cooldown.
+     */
+    public static function forgetProviderFailure(): void
+    {
+        try {
+            $cache = (new self)->breakerCache();
+
+            $cache?->forget(self::PROVIDER_FAILURE_COUNT_KEY);
+            $cache?->forget(self::PROVIDER_FAILURE_KEY);
+        } catch (Throwable) {
+            // Nothing to forget in a store that will not answer.
+        }
+    }
+
+    /**
+     * How long the identity provider is left alone after it fails to answer.
+     *
+     * Zero switches it off, which is the behavior of calling the provider on
+     * every renewal, however, it answered the last one.
+     */
+    private static function providerCooldown(): int
+    {
+        $configured = config('uzairports.provider_cooldown', 30);
+
+        return max(is_numeric($configured) ? (int) $configured : 30, 0);
+    }
+
+    /**
+     * What `lock_store` names, resolved once for the life of this action.
+     *
+     * The lock and the note about the identity provider are the same concern
+     * and live in the same store. One renewal asks for it up to three times
+     * — before the lock, for the lock, and again if the exchange fails.
+     * Resolving a store is inexpensive but not free, and it is the same store every
+     * time, so it is asked for once.
+     *
+     * The type is what the facade promises rather than what it returns: a host
+     * application is free to bind something else, and both readers below check
+     * what they were actually handed before using it.
+     */
+    private mixed $configuredStore = null;
+
+    private bool $storeWasResolved = false;
+
+    private function configuredStore(): mixed
+    {
+        if (! $this->storeWasResolved) {
+            $configured = config('uzairports.lock_store');
+
+            $this->configuredStore = is_string($configured) && $configured !== ''
+                ? Cache::store($configured)
+                : Cache::store();
+
+            $this->storeWasResolved = true;
+        }
+
+        return $this->configuredStore;
+    }
+
+    /**
+     * The store the note about the identity provider is kept in.
+     *
+     * Null where what `lock_store` names cannot hold an entry at all — a bare
+     * lock provider, or whatever else a host application has bound. The
+     * cooldown is given up rather than insisted on; see `providerIsUnreachable()`
+     * for why nothing here is worth refusing a renewal over.
+     */
+    private function breakerCache(): ?CacheRepository
+    {
+        $repository = $this->configuredStore();
+
+        return $repository instanceof CacheRepository ? $repository : null;
     }
 
     /**
@@ -85,11 +348,7 @@ class RefreshAccessToken
      */
     private function lockStore(): ?LockProvider
     {
-        $configured = config('uzairports.lock_store');
-
-        $repository = is_string($configured) && $configured !== ''
-            ? Cache::store($configured)
-            : Cache::store();
+        $repository = $this->configuredStore();
 
         // A lock is taken in the store, not in the repository wrapping it. A
         // repository that is itself a lock provider is accepted as one.
@@ -179,6 +438,8 @@ class RefreshAccessToken
      * here would answer the browser with a 500 on every request instead of
      * sending it back through SSO, which is what a login that cannot renew
      * itself is owed.
+     *
+     * @throws Throwable
      */
     private function exchange(OauthToken $token, int $leeway): bool
     {
@@ -196,11 +457,12 @@ class RefreshAccessToken
             return false;
         }
 
-        try {
-            /** @var UzairportsProvider $provider */
-            $provider = Socialite::driver('uzairports');
+        $provider = $this->provider($token);
 
+        try {
             $refreshed = $provider->refreshToken($refreshToken);
+
+            $this->forgetProviderFailures();
         } catch (Throwable $e) {
             Log::warning('Failed to refresh UzAirports access token.', [
                 'user_id' => $token->user_id,
@@ -214,6 +476,8 @@ class RefreshAccessToken
             if ($this->grantWasRejected($e)) {
                 return false;
             }
+
+            $this->recordProviderFailure();
 
             throw $this->temporarilyUnavailable();
         }
@@ -271,6 +535,59 @@ class RefreshAccessToken
         UzairTokenRefreshed::dispatch($token);
 
         return true;
+    }
+
+    /**
+     * The driver this exchange is made through.
+     *
+     * `Socialite::driver('uzairports')` hands back whatever is registered under
+     * that name, and a host application is free to register something else —
+     * the annotation that used to stand here promised a type nobody checked.
+     * What arrived instead reached `refreshToken()` and raised an `Error`,
+     * which the exchange caught as an ordinary failure: the login was left
+     * being renewed on every request, answered 503 every time, and the log said
+     * the identity provider had failed to refresh a token it was never asked
+     * about. `EndSessions::revokeAll()` already refuses a driver of the wrong
+     * type by name; this says the same thing at the other end.
+     *
+     * A 503 rather than `false`, for the reason `answerWithoutCalling()` gives:
+     * ending the login over this would sign every user out of an application
+     * that cannot sign them back in until somebody fixes the registration.
+     *
+     * The provider is not recorded as unreachable. It was never called, and a
+     * cooldown would only postpone the log line an operator needs to read.
+     *
+     * @throws ServiceUnavailableHttpException when no usable driver is registered
+     */
+    private function provider(OauthToken $token): UzairportsProvider
+    {
+        try {
+            $provider = Socialite::driver('uzairports');
+        } catch (Throwable $exception) {
+            $this->refuseTheDriver($token, $exception::class);
+        }
+
+        if (! $provider instanceof UzairportsProvider) {
+            $this->refuseTheDriver($token, get_debug_type($provider));
+        }
+
+        return $provider;
+    }
+
+    /**
+     * Say which driver was found where this package's was expected.
+     */
+    private function refuseTheDriver(OauthToken $token, string $found): never
+    {
+        Log::warning('The [uzairports] Socialite driver cannot renew an UzAirports login.', [
+            'user_id' => $token->user_id,
+            'expected' => UzairportsProvider::class,
+            'found' => $found,
+        ]);
+
+        UzairTokenRefreshFailed::dispatch($token);
+
+        throw $this->temporarilyUnavailable();
     }
 
     /**

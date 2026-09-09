@@ -291,6 +291,55 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Identity Provider Cooldown
+    |--------------------------------------------------------------------------
+    |
+    | How many seconds the token exchange is left unattempted after the identity
+    | provider fails to answer one.
+    |
+    | Without it, an unreachable provider costs every request holding an
+    | expiring token the full `timeout` above before it is answered, and those
+    | waits are held in the application's workers — of which there are far fewer
+    | than there are requests during a wave of expiries. A provider that is
+    | merely unreachable then takes the whole application down with it, pages
+    | that never needed a token included.
+    |
+    | Enough failures stand for the ones behind them instead: for this long the
+    | provider is left alone, and those requests are answered from what is
+    | stored — by adopting a login another process renewed, or by a 503 that
+    | costs nothing. Nobody is signed out over it.
+    |
+    | The entry lapses rather than being probed, so traffic reaches the provider
+    | again for one `timeout` in every cooldown. Set it to several times that
+    | timeout, or a shorter value spares little; zero calls the provider on
+    | every renewal however it answered the last one.
+    |
+    */
+
+    'provider_cooldown' => (int) env('UZAIR_PROVIDER_COOLDOWN', 30),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Identity Provider Failure Threshold
+    |--------------------------------------------------------------------------
+    |
+    | How many failures within one cooldown are an outage rather than a hiccup.
+    |
+    | A single dropped connection, rate limit or malformed response costs one
+    | request one timeout, and happens to healthy providers. Standing each of
+    | them up as an outage would stop the whole application renewing logins for
+    | a cooldown every time one occurred — the very failure the cooldown exists
+    | to prevent, self-inflicted.
+    |
+    | An exchange that succeeds clears the count, so failures spread apart never
+    | add up. Set it to 1 to leave the provider alone after the first one.
+    |
+    */
+
+    'provider_failure_threshold' => (int) env('UZAIR_PROVIDER_FAILURE_THRESHOLD', 5),
+
+    /*
+    |--------------------------------------------------------------------------
     | Revocation Concurrency
     |--------------------------------------------------------------------------
     |

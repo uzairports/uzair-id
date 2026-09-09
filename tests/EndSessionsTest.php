@@ -957,6 +957,72 @@ class EndSessionsTest extends TestCase
         return $found;
     }
 
+    /**
+     * An observer hears about every login the revoking path ends.
+     *
+     * They used to go in one statement, which is an Eloquent builder delete and
+     * fires nothing — so an application auditing logouts through an observer
+     * saw every ending except the ones `single_session` made, which are the
+     * ones nobody asked for and so the ones most worth hearing about.
+     * `endAll()` and the pruning sweep have always deleted one apiece for
+     * exactly this reason.
+     */
+    public function test_the_revoked_logins_are_deleted_one_apiece_so_observers_hear_them(): void
+    {
+        $user = TestUser::create(['uzair_id' => '7020']);
+        $this->login($user, 'phone-session', 'phone_token');
+        $this->login($user, 'desktop-session', 'desktop_token');
+
+        /** @var list<string> $observed */
+        $observed = [];
+
+        OauthToken::deleted(function (OauthToken $token) use (&$observed): void {
+            $observed[] = (string) $token->session_id;
+        });
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('phone_token')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('logoutAsync')->with('desktop_token')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        try {
+            $this->assertSame(2, (new EndSessions)($user->id));
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertSame(['phone-session', 'desktop-session'], $observed);
+    }
+
+    /**
+     * A login an observer refuses to delete keeps its grant.
+     *
+     * The row is still there to spend it, so handing the grant back would leave
+     * a live login pointing at a token the identity provider no longer honors.
+     */
+    public function test_a_login_an_observer_refuses_is_neither_dropped_nor_surrendered(): void
+    {
+        $user = TestUser::create(['uzair_id' => '7021']);
+        $this->login($user, 'phone-session', 'phone_token');
+        $this->login($user, 'desktop-session', 'desktop_token');
+
+        OauthToken::deleting(
+            fn (OauthToken $token): ?bool => $token->session_id === 'desktop-session' ? false : null
+        );
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('phone_token')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        try {
+            $this->assertSame(1, (new EndSessions)($user->id));
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertSame(['desktop-session'], OauthToken::query()->pluck('session_id')->all());
+    }
+
     private function login(TestUser $user, string $sessionId, string $accessToken): void
     {
         $user->tokens()->create([

@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request;
@@ -18,6 +19,7 @@ use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
 use Mockery;
+use stdClass;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
@@ -568,6 +570,254 @@ class RefreshAccessTokenTest extends TestCase
         $this->assertSame('new_access', $stored->access_token);
         $this->assertNotNull($stored->expires_at);
         $this->assertEqualsWithDelta(7200, now()->diffInSeconds($stored->expires_at), 5);
+    }
+
+    /**
+     * An identity provider that stopped answering is not asked again at once.
+     *
+     * Every renewal is its own lock and its own exchange, so nothing queues:
+     * each request holding an expiring token paid the full request timeout on
+     * its own before being told to come back, and those waits are held in
+     * workers. There are far fewer workers than requests during a wave of
+     * expiries, so an identity provider that was merely unreachable took the
+     * whole application down with it.
+     */
+    public function test_a_provider_that_did_not_answer_is_left_alone_by_the_next_renewal(): void
+    {
+        $this->tripOnTheFirstFailure();
+
+        $first = $this->expiredToken('cooldown-first');
+        $second = $this->expiredToken('cooldown-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow($this->unreachable());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($first));
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($second));
+
+        // Neither login was ended over an outage that refused nothing.
+        $this->assertModelExists($first);
+        $this->assertModelExists($second);
+    }
+
+    /**
+     * One failure is a hiccup, not an outage.
+     *
+     * A dropped connection, a rate limit, a response that arrived malformed —
+     * these happen to healthy identity providers and cost one request one
+     * timeout. Leaving the provider alone over each of them would stop the
+     * application renewing logins for a cooldown every time one occurred.
+     */
+    public function test_a_single_failure_does_not_leave_the_provider_alone(): void
+    {
+        RefreshAccessToken::forgetProviderFailure();
+
+        $first = $this->expiredToken('one-failure-first');
+        $second = $this->expiredToken('one-failure-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow($this->unreachable());
+        $provider->shouldReceive('refreshToken')->once()->andReturn(new Token('new_access', 'new_refresh', 3600, []));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($first));
+        $this->assertTrue((new RefreshAccessToken)($second));
+    }
+
+    /**
+     * A success takes back what was counted, so blips never add up.
+     */
+    public function test_a_successful_exchange_forgets_the_failures_before_it(): void
+    {
+        RefreshAccessToken::forgetProviderFailure();
+        config()->set('uzairports.provider_failure_threshold', 2);
+
+        $first = $this->expiredToken('forgotten-failure-first');
+        $second = $this->expiredToken('forgotten-failure-second');
+        $third = $this->expiredToken('forgotten-failure-third');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow($this->unreachable());
+        $provider->shouldReceive('refreshToken')->once()->andReturn(new Token('new_access', 'new_refresh', 3600, []));
+        $provider->shouldReceive('refreshToken')->once()->andThrow($this->unreachable());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($first));
+        $this->assertTrue((new RefreshAccessToken)($second));
+
+        // The failure before the success is forgotten, so this one is the
+        // first of its window rather than the second.
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($third));
+        $this->assertModelExists($third);
+    }
+
+    /**
+     * A refusal is not an outage: the provider answered, and answered clearly.
+     *
+     * Recording it would leave every other login unable to reach the provider
+     * because one of them was over.
+     */
+    public function test_a_refused_grant_does_not_leave_the_provider_alone(): void
+    {
+        RefreshAccessToken::forgetProviderFailure();
+
+        $first = $this->expiredToken('refusal-first');
+        $second = $this->expiredToken('refusal-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')
+            ->twice()
+            ->andThrow(new RequestException(
+                'Rejected grant',
+                new Request('POST', 'https://sso.test/oauth/token'),
+                new Response(400, [], '{"error":"invalid_grant"}'),
+            ));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertFalse((new RefreshAccessToken)($first));
+        $this->assertFalse((new RefreshAccessToken)($second));
+    }
+
+    /**
+     * The cooldown answers from the row, so a login renewed just before the
+     * outage is adopted rather than refused.
+     */
+    public function test_a_login_renewed_elsewhere_is_adopted_while_the_provider_is_left_alone(): void
+    {
+        $this->tripOnTheFirstFailure();
+
+        $failing = $this->expiredToken('cooldown-adopt-first');
+        $token = $this->expiredToken('cooldown-adopt-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow($this->unreachable());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($failing));
+
+        $this->winnerStores($token, 'winner_access', 'winner_refresh');
+
+        $this->assertTrue((new RefreshAccessToken)($token));
+        $this->assertSame('winner_access', $token->access_token);
+    }
+
+    /**
+     * A login ended elsewhere is still ended during the cooldown.
+     *
+     * The 503 is for a login that is still due a renewal; a row that is gone
+     * has to reach the middleware as the refusal it is, outage or no outage.
+     */
+    public function test_a_login_ended_elsewhere_is_refused_while_the_provider_is_left_alone(): void
+    {
+        $this->tripOnTheFirstFailure();
+
+        $failing = $this->expiredToken('cooldown-gone-first');
+        $token = $this->expiredToken('cooldown-gone-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow($this->unreachable());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($failing));
+
+        OauthToken::query()->whereKey($token->getKey())->delete();
+
+        $this->assertFalse((new RefreshAccessToken)($token));
+    }
+
+    public function test_a_cooldown_of_zero_calls_the_provider_on_every_renewal(): void
+    {
+        RefreshAccessToken::forgetProviderFailure();
+        config()->set('uzairports.provider_cooldown', 0);
+
+        $first = $this->expiredToken('no-cooldown-first');
+        $second = $this->expiredToken('no-cooldown-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->twice()->andThrow($this->unreachable());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($first));
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($second));
+    }
+
+    /**
+     * A driver of the wrong type is named, and nobody is signed out over it.
+     *
+     * `Socialite::driver('uzairports')` hands back whatever is registered under
+     * that name. The annotation that used to stand in for a check promised a
+     * type nobody verified: what arrived instead reached `refreshToken()` and
+     * raised an `Error` the exchange caught as an ordinary failure, so the log
+     * said the identity provider had refused a token it was never asked about.
+     */
+    public function test_a_driver_of_the_wrong_type_refuses_the_renewal_without_ending_the_login(): void
+    {
+        RefreshAccessToken::forgetProviderFailure();
+        Event::fake([UzairTokenRefreshFailed::class]);
+
+        $token = $this->expiredToken('wrong-driver');
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn(new stdClass);
+
+        Log::shouldReceive('warning')->once()->withArgs(
+            fn (string $message, array $context): bool => str_contains($message, 'cannot renew')
+                && $context['found'] === 'stdClass'
+                && $context['expected'] === UzairportsProvider::class
+        );
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($token));
+
+        // A misconfiguration must not sign anybody out: the application it
+        // would send them back to cannot sign them in either.
+        $this->assertModelExists($token);
+        Event::assertDispatched(UzairTokenRefreshFailed::class);
+    }
+
+    /**
+     * Ask for the first failure to be enough, for a test about the cooldown
+     * rather than about how many failures reach it.
+     */
+    private function tripOnTheFirstFailure(): void
+    {
+        RefreshAccessToken::forgetProviderFailure();
+        config()->set('uzairports.provider_failure_threshold', 1);
+    }
+
+    /**
+     * An identity provider that never answered the exchange.
+     */
+    private function unreachable(): ConnectException
+    {
+        return new ConnectException(
+            'Connection timed out',
+            new Request('POST', 'https://sso.test/oauth/token'),
+        );
+    }
+
+    /**
+     * Assert the renewal was refused as temporarily unavailable.
+     *
+     * @param  callable(): bool  $renew
+     */
+    private function assertUnavailable(callable $renew): void
+    {
+        try {
+            $renew();
+        } catch (ServiceUnavailableHttpException) {
+            $this->addToAssertionCount(1);
+
+            return;
+        }
+
+        $this->fail('The renewal was expected to be refused as temporarily unavailable.');
     }
 
     private function expiredToken(string $uzairId, ?string $refreshToken = 'old_refresh'): OauthToken

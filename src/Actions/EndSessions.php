@@ -5,7 +5,6 @@ namespace Uzairports\Uzairid\Actions;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
@@ -47,10 +46,24 @@ class EndSessions
      * promise that its grants stop being honored at UzAirports ID before they
      * expire on their own.
      *
-     * The rows go in one statement rather than one apiece. When revocation is
-     * declined, rows are deleted directly by query and session IDs are plucked
-     * without hydrating Eloquent models or decrypting credentials, eliminating
-     * model instantiation overhead on the bulk path.
+     * On the revoking path the rows are deleted one apiece, the way `endAll()`
+     * and the pruning sweep delete them, so anything observing the model hears
+     * about every login that ends here. It used to be one statement for all of
+     * them, which is an Eloquent builder delete and fires nothing: an
+     * application auditing logouts through an observer saw every ending except
+     * the ones `single_session` made, which are the ones nobody asked for and
+     * so the ones most worth hearing about. The models are hydrated for their
+     * grants anyway, so what this costs is a statement per row inside the one
+     * transaction already holding them all locked.
+     *
+     * A row a `deleting` observer refuses is left standing, and its grant is
+     * not surrendered — the login is still there to spend it.
+     *
+     * When revocation is declined, there are no models at all: the rows go in
+     * one statement, and the session ids are plucked without hydrating Eloquent
+     * or decrypting a credential. That is the whole point of asking for that
+     * path, and it is the one ending in this package that model observers do
+     * not hear about.
      *
      * @return int the number of logins ended
      *
@@ -89,17 +102,18 @@ class EndSessions
             return $rows->count();
         }
 
-        $tokens = $query->getModel()->getConnection()->transaction(function () use ($query): Collection {
-            $tokens = $query
+        $tokens = $query->getModel()->getConnection()->transaction(function () use ($query): SupportCollection {
+            $locked = $query
                 ->orderBy('id')
                 ->lockForUpdate()
                 ->get(['id', 'user_id', 'session_id', 'access_token', 'refresh_token']);
 
-            if ($tokens->isNotEmpty()) {
-                OauthToken::query()->whereKey($tokens->modelKeys())->delete();
-            }
-
-            return $tokens;
+            // Deleted one apiece so the model's own events fire, and only what
+            // actually went is carried out of the transaction: a row an
+            // observer refused still holds its grant.
+            return $locked
+                ->filter(fn (OauthToken $token): bool => $token->delete() === true)
+                ->values();
         });
 
         $sessionIds = [];
