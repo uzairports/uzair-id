@@ -31,10 +31,19 @@ return new class extends Migration
      * `ip_address` and `user_agent` are what a person recognizes their own
      * device by when they are shown the list of their logins.
      *
-     * `updated_at` is indexed because it is the one column the package reads
-     * without a `user_id` beside it: `OauthToken::prunable()` sweeps the whole
-     * table by it. Every other query names the account, and the unique pair
-     * already covers those.
+     * Two columns are indexed on their own, because they are the ones the
+     * package reads without a `user_id` beside them — and the unique pair,
+     * whose leading column is `user_id`, cannot serve a query that does not
+     * name the account:
+     *
+     * - `updated_at`, which `OauthToken::prunable()` sweeps the whole table by;
+     * - `session_id`, which the callback looks a login up by when the browser
+     *   in front of it signs in again. The row it is after may belong to
+     *   another account — that is the whole point of the lookup — so the query
+     *   cannot be scoped, and without the index every sign-in reads the table
+     *   end to end.
+     *
+     * Every other query names the account, and the unique pair covers those.
      */
     public function up(): void
     {
@@ -67,6 +76,7 @@ return new class extends Migration
 
             $table->unique(['user_id', 'session_id']);
             $table->index('updated_at');
+            $table->index('session_id');
         });
     }
 

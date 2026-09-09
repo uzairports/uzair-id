@@ -283,6 +283,56 @@ class PackageMigrationsTest extends TestCase
         $this->assertTrue($this->hasIndexOn('oauth_tokens', ['updated_at']));
     }
 
+    /**
+     * The callback looks a login up by session id alone — the row may belong to
+     * another account — so the unique pair, which leads with `user_id`, cannot
+     * serve it.
+     */
+    #[Test]
+    public function test_created_oauth_tokens_are_indexed_by_session(): void
+    {
+        $this->createStandardUsersTable();
+
+        $this->migration('add_uzair_id_to_users_table')->up();
+        $this->migration('create_oauth_tokens_table')->up();
+
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['session_id']));
+    }
+
+    #[Test]
+    public function test_the_upgrade_migration_indexes_a_table_created_before_the_session_index_existed(): void
+    {
+        Schema::dropIfExists('oauth_tokens');
+
+        Schema::create('oauth_tokens', function (Blueprint $table): void {
+            $table->id();
+            $table->foreignId('user_id');
+            $table->text('access_token');
+            $table->string('session_id')->nullable();
+            $table->timestamps();
+
+            // The pair the create migration has carried all along. It leads
+            // with `user_id`, so it must not be mistaken for the index a
+            // session-only lookup needs.
+            $table->unique(['user_id', 'session_id']);
+        });
+
+        $indexBySession = $this->migration('index_oauth_tokens_by_session');
+
+        $this->assertFalse($this->hasIndexOn('oauth_tokens', ['session_id']));
+
+        $indexBySession->up();
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['session_id']));
+
+        // Idempotency: an installation that already carries the index — from
+        // the create migration or by hand — is left alone.
+        $indexBySession->up();
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['session_id']));
+
+        $indexBySession->down();
+        $this->assertFalse($this->hasIndexOn('oauth_tokens', ['session_id']));
+    }
+
     #[Test]
     public function test_the_upgrade_migration_indexes_a_table_created_before_the_index_existed(): void
     {

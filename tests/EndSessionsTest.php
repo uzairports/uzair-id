@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Exception;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\DB;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
@@ -291,6 +292,62 @@ class EndSessionsTest extends TestCase
         $this->assertSame(1, $ended);
         $this->assertSame(['desktop-session'], OauthToken::query()->pluck('session_id')->all());
         $this->assertSame(['desktop-session'], $this->storedSessionIds());
+    }
+
+    /**
+     * The account may hold any number of logins, and this runs inside a request
+     * somebody is waiting on — under `single_session`, inside the callback
+     * itself. Dropping the rows one at a time paid a round-trip apiece for work
+     * one statement does, and where revocation is declined that was the whole
+     * cost of the call.
+     */
+    public function test_the_rows_are_dropped_in_one_statement(): void
+    {
+        $user = TestUser::create(['uzair_id' => '7012']);
+        $this->login($user, 'phone-session', 'phone_token');
+        $this->login($user, 'desktop-session', 'desktop_token');
+        $this->login($user, 'tablet-session', 'tablet_token');
+
+        Socialite::shouldReceive('driver')->never();
+
+        $deletes = 0;
+        DB::listen(function (QueryExecuted $query) use (&$deletes): void {
+            if (str_starts_with(strtolower(trim($query->sql)), 'delete from "oauth_tokens"')) {
+                $deletes++;
+            }
+        });
+
+        $ended = (new EndSessions)($user->id, revoke: false);
+
+        $this->assertSame(3, $ended);
+        $this->assertSame(1, $deletes);
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
+     * An account holding nothing still has its stored sessions cleared: the
+     * rows are what the middleware reads, but a session the store is still
+     * serving is a device that never reaches it.
+     */
+    public function test_an_account_without_logins_still_loses_its_stored_sessions(): void
+    {
+        config(['session.driver' => 'database']);
+
+        $user = TestUser::create(['uzair_id' => '7013']);
+
+        DB::table('sessions')->insert([
+            'id' => 'orphan-session',
+            'user_id' => $user->id,
+            'payload' => '',
+            'last_activity' => now()->getTimestamp(),
+        ]);
+
+        Socialite::shouldReceive('driver')->never();
+
+        $ended = (new EndSessions)($user->id);
+
+        $this->assertSame(0, $ended);
+        $this->assertSame([], $this->storedSessionIds());
     }
 
     private function login(TestUser $user, string $sessionId, string $accessToken): void

@@ -94,6 +94,7 @@ abstract class TestCase extends Orchestra
 
             $table->unique(['user_id', 'session_id']);
             $table->index('updated_at');
+            $table->index('session_id');
         });
 
         Schema::create('sessions', function (Blueprint $table) {

@@ -39,6 +39,12 @@ class EndSessions
      * grants stop being honored at UzAirports ID before they expire on their
      * own.
      *
+     * The rows go in one statement rather than one apiece. This is the bulk
+     * path — the account may hold any number of logins — and where the caller
+     * has declined revocation the deletes were the whole cost of the call, paid
+     * a round-trip at a time inside a request somebody is waiting on. The
+     * models are already in hand, so nothing is read twice to do it.
+     *
      * @return int the number of logins ended
      */
     public function __invoke(int|string $userId, ?string $exceptSessionId = null, bool $revoke = true): int
@@ -57,8 +63,10 @@ class EndSessions
             if (is_string($sessionId) && $sessionId !== '') {
                 $sessionIds[] = $sessionId;
             }
+        }
 
-            $token->delete();
+        if ($tokens->isNotEmpty()) {
+            OauthToken::query()->whereKey($tokens->modelKeys())->delete();
         }
 
         $this->deleteStoredSessions($userId, $exceptSessionId, $sessionIds);
