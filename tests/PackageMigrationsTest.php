@@ -417,7 +417,10 @@ class PackageMigrationsTest extends TestCase
         $columns = Schema::getColumns('oauth_tokens');
         $userIdCol = collect($columns)->firstWhere('name', 'user_id');
         $this->assertNotNull($userIdCol);
-        $this->assertStringContainsString('varchar', strtolower($userIdCol['type']));
+        // `type_name`, not `type`: Postgres spells the full type `character
+        // varying(255)`, where MySQL and SQLite say `varchar`. The name behind
+        // it is `varchar` on all three.
+        $this->assertStringContainsString('varchar', strtolower($userIdCol['type_name']));
         $this->assertFalse($this->hasIndexOn('oauth_tokens', ['user_id']));
         $this->assertTrue($this->hasIndexOn('oauth_tokens', ['user_id', 'session_id']));
 
