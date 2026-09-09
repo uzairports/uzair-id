@@ -7,6 +7,7 @@ use GuzzleHttp\Promise\PromiseInterface;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
 use Mockery;
@@ -142,8 +143,99 @@ class OauthTokenTest extends TestCase
         $this->assertNull(OauthToken::cachedLogin('unrelated-session'));
     }
 
+    /**
+     * The entries answer for a row only where the setting points them.
+     *
+     * They used to go wherever the application caches, with no way to move them
+     * on their own — so an application caching in something its processes do not
+     * share had no way to make ending a login take effect in all of them short
+     * of moving its whole cache.
+     */
+    public function test_the_entries_are_kept_in_the_configured_store(): void
+    {
+        config([
+            'uzairports.login_cache_ttl' => 10,
+            'cache.stores.shared' => ['driver' => 'array'],
+            'cache.stores.elsewhere' => ['driver' => 'array'],
+            'uzairports.login_cache_store' => 'shared',
+        ]);
+
+        $user = TestUser::create(['uzair_id' => 'login-cache-store']);
+        $token = $user->tokens()->create([
+            'access_token' => 'access',
+            'session_id' => 'stored-session',
+            'expires_at' => now()->addHour(),
+        ]);
+
+        $token->cacheLogin('stored-session');
+
+        $this->assertNotNull(OauthToken::cachedLogin('stored-session'));
+
+        config(['uzairports.login_cache_store' => 'elsewhere']);
+
+        $this->assertNull(OauthToken::cachedLogin('stored-session'));
+    }
+
+    /**
+     * An entry nobody else can read is not an entry.
+     *
+     * `login_cache_store` is null by default, so whatever the application caches
+     * in is what an ended login has to be forgotten from. A store held in the
+     * memory of one process is never read back by another, so the lifetime buys
+     * none of the reads it was set for and a login ended in one process is
+     * forgotten nowhere else. Nothing is refused over it — an entry nobody can
+     * find behaves exactly like reading the row — and it is said once, not on
+     * every request that finds it.
+     */
+    public function test_a_login_cache_held_in_one_process_is_reported_once(): void
+    {
+        OauthToken::flushLoginCacheWarnings();
+
+        config(['uzairports.login_cache_ttl' => 10, 'cache.default' => 'array']);
+
+        Log::shouldReceive('warning')->once()->with(Mockery::pattern('/memory of one process/'));
+
+        $user = TestUser::create(['uzair_id' => 'login-cache-in-one-process']);
+        $token = $user->tokens()->create([
+            'access_token' => 'access',
+            'session_id' => 'reported-session',
+            'expires_at' => now()->addHour(),
+        ]);
+
+        // Nothing is refused over it. The entry is written, read and forgotten
+        // exactly as it would be in a store every process shares — it is only
+        // that no other process would have seen any of it.
+        $token->cacheLogin('reported-session');
+
+        $this->assertNotNull(OauthToken::cachedLogin('reported-session'));
+
+        OauthToken::forgetLogin('reported-session');
+
+        $this->assertNull(OauthToken::cachedLogin('reported-session'));
+    }
+
+    /**
+     * Zero is the default, and at zero there are no entries to be kept anywhere
+     * — so the store is never resolved and there is nothing to report about it.
+     */
+    public function test_nothing_is_said_about_the_login_cache_while_the_lifetime_is_zero(): void
+    {
+        OauthToken::flushLoginCacheWarnings();
+
+        config(['uzairports.login_cache_ttl' => 0, 'cache.default' => 'array']);
+
+        Log::shouldReceive('warning')->never();
+
+        $this->assertNull(OauthToken::cachedLogin('a-session'));
+
+        OauthToken::forgetLogin('a-session');
+        OauthToken::forgetLogins(['a-session']);
+    }
+
     protected function tearDown(): void
     {
+        OauthToken::flushLoginCacheWarnings();
+
         Mockery::close();
 
         parent::tearDown();

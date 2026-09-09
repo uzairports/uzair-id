@@ -2,6 +2,9 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Psr7\Request as GuzzleRequest;
+use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Session\Session as SessionContract;
 use Illuminate\Database\Events\QueryExecuted;
@@ -35,6 +38,8 @@ class EnsureAccessTokenIsFreshTest extends TestCase
 
     public function test_throws_authentication_exception_without_session_crash(): void
     {
+        $this->acceptsRevocations();
+
         $user = TestUser::create(['uzair_id' => '4002']);
         $user->tokens()->create([
             'access_token' => 'expired_token',
@@ -152,6 +157,8 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     {
         config(['uzairports.login_route' => 'route-that-does-not-exist']);
 
+        $this->acceptsRevocations();
+
         $user = TestUser::create(['uzair_id' => '4003']);
         $user->tokens()->create([
             'access_token' => 'expired_token',
@@ -202,6 +209,8 @@ class EnsureAccessTokenIsFreshTest extends TestCase
 
     public function test_ending_one_device_leaves_the_others_alone(): void
     {
+        $this->acceptsRevocations();
+
         $user = TestUser::create(['uzair_id' => '4006']);
 
         $session = $this->startedSession();
@@ -228,6 +237,82 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         }
 
         $this->assertSame(['the-other-devices-session'], $user->tokens()->pluck('session_id')->all());
+    }
+
+    /**
+     * A login the middleware ends is a login like any other, and its grants go
+     * back to the identity provider.
+     *
+     * The row used to be deleted here and nothing else. What the exchange was
+     * refused is the refresh token; the access token beside it is good for up
+     * to `refresh_leeway` more seconds, and once the row was gone nothing was
+     * left pointing at either of them to ever surrender them.
+     */
+    public function test_a_login_that_can_no_longer_be_renewed_hands_its_grants_back(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4017']);
+
+        $session = $this->startedSession();
+
+        $token = $user->tokens()->create([
+            'access_token' => 'the_access_token',
+            'refresh_token' => 'the_refresh_token',
+            'expires_at' => now()->subMinute(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow(new RequestException(
+            'Rejected grant',
+            new GuzzleRequest('POST', 'https://sso.test/oauth/token'),
+            new GuzzleResponse(400, [], '{"error":"invalid_grant"}'),
+        ));
+        $provider->shouldReceive('logoutAsync')->with('the_access_token')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('the_refresh_token')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        try {
+            $this->handle($this->sessionRequest($user, $session));
+
+            $this->fail('A login that cannot be renewed should have been refused.');
+        } catch (AuthenticationException) {
+            //
+        }
+
+        $this->assertModelMissing($token);
+    }
+
+    /**
+     * A row another request has already dropped has no grants left to hand
+     * back, and must not be revoked from the snapshot still held here.
+     */
+    public function test_a_login_already_gone_is_not_revoked_from_a_stale_snapshot(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4018']);
+
+        $session = $this->startedSession();
+
+        $token = $user->tokens()->create([
+            'access_token' => 'the_access_token',
+            'refresh_token' => null,
+            'expires_at' => now()->subMinute(),
+            'session_id' => $session->getId(),
+        ]);
+
+        // Gone by the time the refusal reaches the surrender, which is what a
+        // second request signing this device out looks like from here.
+        OauthToken::query()->whereKey($token->getKey())->delete();
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->never();
+        $provider->shouldReceive('revokeRefreshTokenAsync')->never();
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->expectException(AuthenticationException::class);
+
+        $this->handle($this->sessionRequest($user, $session));
     }
 
     /**
@@ -430,6 +515,8 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     {
         config(['uzairports.login_cache_ttl' => 10]);
 
+        $this->acceptsRevocations();
+
         $user = TestUser::create(['uzair_id' => '4016']);
 
         $session = $this->startedSession();
@@ -472,7 +559,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
 
     private function handle(Request $request): Response
     {
-        return (new EnsureAccessTokenIsFresh(new RefreshAccessToken))
+        return (new EnsureAccessTokenIsFresh(new RefreshAccessToken, new EndSessions))
             ->handle($request, fn () => response('OK'));
     }
 

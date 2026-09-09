@@ -140,7 +140,8 @@ class UzairAuthController
      * Sign one of the account's logins out, named by its row.
      *
      * This is what a list of "your devices" needs: ending one of them without
-     * touching the browser doing the ending. Naming the login by row id is safe     * . The lookup is scoped to the account — a row belonging to somebody
+     * touching the browser doing the ending. Naming the login by row id is
+     * safe: the lookup is scoped to the account — a row belonging to somebody
      * else is not refused but simply not found, so the endpoint cannot be used
      * to learn which ids exist.
      *

@@ -10,11 +10,14 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Schema;
+use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\SocialiteServiceProvider;
+use Mockery;
 use Orchestra\Testbench\TestCase as Orchestra;
 use Uzairports\Uzairid\Concerns\HasUzairToken;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Providers\UzairServiceProvider;
+use Uzairports\Uzairid\Socialite\UzairportsProvider;
 use Uzairports\Uzairid\Uzair;
 
 abstract class TestCase extends Orchestra
@@ -85,6 +88,23 @@ abstract class TestCase extends Orchestra
     protected function revoked(): PromiseInterface
     {
         return Create::promiseFor(new Response(200));
+    }
+
+    /**
+     * Stand in for an identity provider that accepts whatever it is handed.
+     *
+     * Every path that ends a login surrenders its grants, so a test that ends
+     * one while asserting on something else still has to answer for the call —
+     * left unanswered it resolves the real driver and leaves the suite for the
+     * identity provider itself.
+     */
+    protected function acceptsRevocations(): void
+    {
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->andReturnUsing(fn (): PromiseInterface => $this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->andReturnUsing(fn (): PromiseInterface => $this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
     }
 
     protected function setUpDatabase(): void

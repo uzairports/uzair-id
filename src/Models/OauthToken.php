@@ -2,6 +2,9 @@
 
 namespace Uzairports\Uzairid\Models;
 
+use Illuminate\Cache\ArrayStore;
+use Illuminate\Cache\Repository;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Debug\ExceptionHandler;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
@@ -379,6 +382,83 @@ class OauthToken extends Model
     }
 
     /**
+     * The store the resolved logins are kept in.
+     *
+     * `login_cache_store` is null by default, so whatever the application
+     * caches in is what an ended login has to be forgotten from. That is good
+     * enough only while every process serving the application reads the same
+     * store: `forgetLogin()` cannot reach across two that do not share, so a
+     * device signed out through one of them keeps being let through by the rest
+     * until the entry lapses. The setting exists so the entries can be pointed
+     * at a shared store without moving what the application caches in.
+     *
+     * A store held in the memory of one process is the case that can be seen
+     * from here, and it is worth saying: nothing it writes is ever read back,
+     * so the lifetime buys none of the reads it was set for, and nothing it
+     * forgets is forgotten anywhere else. Nothing is refused over it — an entry
+     * nobody can find behaves exactly like the default of reading the row — and
+     * it is said once per process, because this sits on the hot path.
+     *
+     * A store that is shared but not in memory — Redis, Memcached, the database
+     * — cannot be told apart from one that is not by looking at it, so `file`
+     * across several servers is left to the operator and to the note on
+     * `login_cache_store` in the published configuration.
+     */
+    private static function loginCache(): CacheRepository
+    {
+        $configured = config('uzairports.login_cache_store');
+
+        $repository = is_string($configured) && $configured !== ''
+            ? Cache::store($configured)
+            : Cache::store();
+
+        // What the entries live in is the store, not the repository wrapping
+        // it, and only a repository can be asked for one.
+        $store = $repository instanceof Repository ? $repository->getStore() : null;
+
+        if ($store instanceof ArrayStore) {
+            self::warnAboutTheLoginCache(
+                'The cache store behind [uzairports.login_cache_store] lives in the memory of one process, so a resolved UzAirports login is never read back by another process and a login ended in one keeps being let through by the rest until its entry lapses. Point it at a store every process shares.'
+            );
+        }
+
+        return $repository;
+    }
+
+    /**
+     * What has already been said about the login cache in this process.
+     *
+     * @var array<string, true>
+     */
+    private static array $reportedAboutTheLoginCache = [];
+
+    /**
+     * Let the warnings be said again, for a suite that asserts on them.
+     */
+    public static function flushLoginCacheWarnings(): void
+    {
+        self::$reportedAboutTheLoginCache = [];
+    }
+
+    /**
+     * Say a thing about the login cache once, however many requests notice it.
+     *
+     * This is read on every request the middleware lets through, and a
+     * misconfigured store stays misconfigured — so the line is worth writing
+     * once and worth nothing repeated on every request that finds it.
+     */
+    private static function warnAboutTheLoginCache(string $message): void
+    {
+        if (isset(self::$reportedAboutTheLoginCache[$message])) {
+            return;
+        }
+
+        self::$reportedAboutTheLoginCache[$message] = true;
+
+        Log::warning($message);
+    }
+
+    /**
      * What was last resolved for a session if it may still be used.
      *
      * The account is carried alongside the expiry because a session id is not
@@ -394,7 +474,7 @@ class OauthToken extends Model
             return null;
         }
 
-        $cached = Cache::get(self::loginCacheKey($sessionId));
+        $cached = self::loginCache()->get(self::loginCacheKey($sessionId));
 
         if (! is_array($cached) || ! is_string($cached['user'] ?? null)) {
             return null;
@@ -432,7 +512,7 @@ class OauthToken extends Model
                 return;
             }
 
-            Cache::put(self::loginCacheKey($sessionId), [
+            self::loginCache()->put(self::loginCacheKey($sessionId), [
                 'user' => (string) $stored->user_id,
                 'expires_at' => $stored->expires_at?->getTimestamp(),
             ], $ttl);
@@ -457,7 +537,7 @@ class OauthToken extends Model
             return;
         }
 
-        Cache::forget(self::loginCacheKey($sessionId));
+        self::loginCache()->forget(self::loginCacheKey($sessionId));
     }
 
     /**
@@ -491,7 +571,7 @@ class OauthToken extends Model
             return;
         }
 
-        Cache::deleteMultiple($keys);
+        self::loginCache()->deleteMultiple($keys);
     }
 
     /**

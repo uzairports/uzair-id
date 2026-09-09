@@ -11,12 +11,16 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Symfony\Component\HttpFoundation\Response;
+use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Models\OauthToken;
 
 class EnsureAccessTokenIsFresh
 {
-    public function __construct(private RefreshAccessToken $refreshAccessToken) {}
+    public function __construct(
+        private RefreshAccessToken $refreshAccessToken,
+        private EndSessions $endSessions,
+    ) {}
 
     /**
      * Refresh this session's UzAirports access token before it expires and
@@ -85,7 +89,16 @@ class EnsureAccessTokenIsFresh
         // refusal. It used to be somebody else's, and dropping it would have
         // signed that device out over a call it never made; `tokenFor()` no
         // longer hands out a browser's login to a request without a session.
-        $token->delete();
+        //
+        // It goes the way every other ending in this package goes, rather than
+        // by deleting the row here. What the exchange was refused is the
+        // refresh token; the access token beside it is good for up to the
+        // leeway this renewal was started within, and dropping the row alone
+        // left that much of a live grant behind with nothing left pointing at
+        // it to ever surrender it. `end()` hands both back, and a row another
+        // request has already deleted is found to be gone rather than revoked
+        // on a stale snapshot.
+        $this->endSessions->end($token);
 
         $this->endSession($request);
 

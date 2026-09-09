@@ -206,6 +206,7 @@ class RefreshAccessToken
                 'user_id' => $token->user_id,
                 'exception_class' => $e::class,
                 'http_status' => $e instanceof RequestException ? $e->getResponse()?->getStatusCode() : null,
+                'oauth_error' => $this->oauthError($e),
             ]);
 
             UzairTokenRefreshFailed::dispatch($token, $e);
@@ -301,6 +302,43 @@ class RefreshAccessToken
     private function lockKey(OauthToken $token): string
     {
         return "uzairid:refresh-access-token:{$token->id}";
+    }
+
+    /**
+     * The OAuth error code the identity provider refused the exchange with.
+     *
+     * The status alone does not say what went wrong. A refusal arrives as a 400
+     * whether the grant is no longer honored — the login has to be made again —
+     * or the request itself was wrong, which is a misconfiguration nobody can
+     * act on without being told: same status, opposite remedies. RFC 6749 names
+     * the difference in one field of the body, and it is the field an operator
+     * reads the log for.
+     *
+     * Only the code is recorded. `error_description` is prose the provider
+     * writes and may repeat the request back, which is a place a credential can
+     * end up; the code is a fixed word from the specification and is not.
+     */
+    private function oauthError(Throwable $exception): ?string
+    {
+        if (! $exception instanceof RequestException) {
+            return null;
+        }
+
+        $response = $exception->getResponse();
+
+        if ($response === null) {
+            return null;
+        }
+
+        $body = json_decode((string) $response->getBody(), true);
+
+        if (! is_array($body)) {
+            return null;
+        }
+
+        $error = $body['error'] ?? null;
+
+        return is_string($error) && $error !== '' ? $error : null;
     }
 
     private function grantWasRejected(Throwable $exception): bool

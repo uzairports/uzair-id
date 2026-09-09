@@ -330,9 +330,39 @@ return [
     | the read off a busy page — and leave it at zero if a login must never
     | outlive its row by even that much.
     |
+    | Above zero this rests on `login_cache_store` below being a store every
+    | process shares.
+    |
     */
 
     'login_cache_ttl' => (int) env('UZAIR_LOGIN_CACHE_TTL', 0),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Resolved Login Cache Store
+    |--------------------------------------------------------------------------
+    |
+    | The cache store the resolved logins are kept in. When null, the
+    | application's default cache store is used.
+    |
+    | It has to be a store every process serving this application reads, for the
+    | same reason `lock_store` does: ending a login forgets its entry, and a
+    | process that cannot see that entry keeps letting the device through until
+    | the lifetime above lapses. `redis`, `memcached` and `database` are shared;
+    | `array` is held in the memory of one process, and `file` is shared on one
+    | server but not between several, so on more than one machine a device
+    | signed out on one of them stays signed in on the others.
+    |
+    | A store that is provably not shared is reported in the log once. Nothing
+    | is refused over it — an entry nobody can find behaves exactly like
+    | `login_cache_ttl` being zero.
+    |
+    | This is where to point the entries when the application caches in
+    | something unshared but a store every process reads is available.
+    |
+    */
+
+    'login_cache_store' => env('UZAIR_LOGIN_CACHE_STORE'),
 
     /*
     |--------------------------------------------------------------------------

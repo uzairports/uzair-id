@@ -223,6 +223,67 @@ class RefreshAccessTokenTest extends TestCase
         Event::assertDispatched(UzairTokenRefreshFailed::class);
     }
 
+    /**
+     * A refusal has to say which refusal it was.
+     *
+     * The status alone does not: a grant the identity provider no longer
+     * honors and a request it could not read both arrive as a 400, and the
+     * remedies are opposite — the first means the login has to be made again,
+     * the second is a misconfiguration. The log used to carry only the status,
+     * so neither could be told from it.
+     */
+    public function test_the_refusal_records_the_oauth_error_code(): void
+    {
+        $token = $this->expiredToken('3015');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')
+            ->once()
+            ->andThrow(new RequestException(
+                'Rejected grant',
+                new Request('POST', 'https://sso.test/oauth/token'),
+                new Response(400, [], '{"error":"invalid_grant","error_description":"The refresh token is invalid."}'),
+            ));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $message, array $context): bool => $context['http_status'] === 400
+                && $context['oauth_error'] === 'invalid_grant'
+                // The description is prose the provider writes and may repeat
+                // the request back, so it stays out of the log.
+                && ! array_key_exists('error_description', $context));
+
+        $this->assertFalse((new RefreshAccessToken)($token));
+    }
+
+    /**
+     * A refusal carrying no readable body is still a refusal, and must not
+     * invent a code it was never given.
+     */
+    public function test_a_refusal_without_a_body_records_no_oauth_error(): void
+    {
+        $token = $this->expiredToken('3016');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')
+            ->once()
+            ->andThrow(new RequestException(
+                'Bad gateway',
+                new Request('POST', 'https://sso.test/oauth/token'),
+                new Response(401, [], '<html>the proxy in front of it</html>'),
+            ));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $message, array $context): bool => $context['oauth_error'] === null);
+
+        $this->assertFalse((new RefreshAccessToken)($token));
+    }
+
     public function test_a_token_another_process_already_renewed_is_adopted_instead_of_spent_again(): void
     {
         $token = $this->expiredToken('3003');
