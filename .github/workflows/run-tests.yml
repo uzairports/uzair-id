@@ -13,11 +13,11 @@ jobs:
       mysql:
         image: mysql:8.0
         env:
-          MYSQL_ALLOW_EMPTY_PASSWORD: yes
+          MYSQL_ROOT_PASSWORD: password
           MYSQL_DATABASE: test
         ports:
           - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
+        options: --health-cmd="mysqladmin ping -uroot -ppassword" --health-interval=10s --health-timeout=5s --health-retries=3
       postgres:
         image: postgres:16
         env:
@@ -105,7 +105,13 @@ jobs:
           DB_PORT: ${{ matrix.database == 'mysql' && 3306 || 5432 }}
           DB_DATABASE: test
           DB_USERNAME: ${{ matrix.database == 'mysql' && 'root' || 'postgres' }}
-          DB_PASSWORD: ${{ matrix.database == 'mysql' && '' || 'password' }}
+          # Both servers are started with the same password rather than giving
+          # MySQL an empty one: `a && '' || b` cannot express an empty string in
+          # a workflow expression, because `''` is falsy and the whole thing
+          # falls through to `b`. The mysql job then sent `password` to a root
+          # account that had none, and every test died on `Access denied for
+          # user 'root'`.
+          DB_PASSWORD: password
 
       - name: Execute tests with coverage
         if: matrix.stability == 'prefer-stable' && matrix.database == 'sqlite'
