@@ -121,6 +121,7 @@ class EndSessions
 
     /**
      * Refuse the login locally before submitting remote revocation.
+     *
      * @throws Throwable
      */
     public function end(OauthToken $token): void
