@@ -53,6 +53,7 @@ class EndSessions
      * model instantiation overhead on the bulk path.
      *
      * @return int the number of logins ended
+     *
      * @throws Throwable
      */
     public function __invoke(int|string $userId, ?string $exceptSessionId = null, bool $revoke = true): int
@@ -120,6 +121,7 @@ class EndSessions
 
     /**
      * Refuse the login locally before submitting remote revocation.
+     * @throws Throwable
      */
     public function end(OauthToken $token): void
     {
@@ -140,7 +142,8 @@ class EndSessions
      * id may belong to different accounts, and the same id would otherwise be
      * deleted from the store as many times as there are accounts holding it.
      *
-     * @param iterable<array-key, OauthToken> $tokens
+     * @param  iterable<array-key, OauthToken>  $tokens
+     *
      * @throws Throwable
      */
     public function endAll(iterable $tokens): void
@@ -196,7 +199,8 @@ class EndSessions
      * session, so a login ended here has to take that answer with it — the
      * device would otherwise keep being let through until the entry lapsed.
      *
-     * @param array<array-key, string> $sessionIds
+     * @param  array<array-key, string>  $sessionIds
+     *
      * @throws InvalidArgumentException
      */
     private function forgetResolvedLogins(array $sessionIds): void
@@ -235,7 +239,7 @@ class EndSessions
     }
 
     /**
-     * Hand every grant back at once, and wait for the answers together.
+     * Hand every grant back at once and wait for the answers together.
      *
      * Each revocation carries the provider's revocation timeout, and there are
      * up to two per login. Waited on one at a time they add up along both axes:
@@ -249,7 +253,7 @@ class EndSessions
      * sweep of an account with an unusual number of logins does not open an
      * unbounded number of sockets at once.
      *
-     * A token that will not open is nothing this can hand over, and the model
+     * A token that will not open is anything this can hand over, and the model
      * has already recorded why — so a login holding only unreadable values is
      * ended locally, and the identity provider is asked for nothing. An account
      * holding no readable grant at all does not even resolve the driver.
