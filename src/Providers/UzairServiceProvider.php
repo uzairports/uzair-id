@@ -9,6 +9,7 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Socialite\Contracts\Factory;
+use Laravel\Socialite\SocialiteManager;
 use Uzairports\Uzairid\Console\Commands\PruneCommand;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -57,36 +58,16 @@ class UzairServiceProvider extends ServiceProvider
     /**
      * Bootstrap services.
      *
+     * Only what a request may actually need is done here. The driver is
+     * registered against a Socialite manager built when something asks
+     * for one, and the publishing groups are declared where publishing can be
+     * asked for — a request that never signs anybody in pays for neither.
+     *
      * @throws BindingResolutionException
      */
     public function boot(): void
     {
-        $socialite = $this->app->make(Factory::class);
-
-        // Socialite rebinds the closure to the manager, so `$this` inside it is
-        // no longer this provider. The configuration step is captured up front
-        // as a bound callable rather than reached for through `$this`.
-        $configureProvider = $this->configureProvider(...);
-        $seconds = $this->seconds(...);
-
-        $socialite->extend('uzairports', function ($app) use ($socialite, $configureProvider, $seconds) {
-            /** @var array<string, mixed> $config */
-            $config = $app['config']['uzairports'] ?? [];
-
-            $guzzle = (array) ($config['guzzle'] ?? []);
-            $config['guzzle'] = array_merge($guzzle, [
-                'timeout' => $seconds($guzzle['timeout'] ?? $config['timeout'] ?? null, 10),
-                'connect_timeout' => $seconds($guzzle['connect_timeout'] ?? $config['connect_timeout'] ?? null, 5),
-            ]);
-
-            /** @var UzairportsProvider $provider */
-            $provider = $socialite->buildProvider(
-                UzairportsProvider::class,
-                $config
-            );
-
-            return $configureProvider($provider, $config);
-        });
+        $this->registerSocialiteDriver();
 
         $this->app->make(Router::class)->aliasMiddleware('uzair.token', EnsureAccessTokenIsFresh::class);
 
@@ -94,6 +75,63 @@ class UzairServiceProvider extends ServiceProvider
 
         $this->loadTranslationsFrom($this->langPath(), 'uzairid');
 
+        if ($this->app->runningInConsole()) {
+            $this->registerPublishing();
+
+            $this->commands([
+                PruneCommand::class,
+            ]);
+        }
+    }
+
+    /**
+     * Teach Socialite about the `uzairports` driver, once someone wants one.
+     *
+     * Resolving the manager here would build it on every request the host
+     * application serves, including the overwhelming majority that never reach
+     * an OAuth endpoint. The registration is deferred to the moment a manager
+     * is actually built instead, and `callAfterResolving()` covers the case
+     * where another provider has already built one before this one booted.
+     */
+    private function registerSocialiteDriver(): void
+    {
+        // Socialite rebinds the closure to the manager, so `$this` inside it is
+        // no longer this provider. The configuration step is captured up front
+        // as a bound callable rather than reached for through `$this`.
+        $configureProvider = $this->configureProvider(...);
+        $seconds = $this->seconds(...);
+
+        $this->callAfterResolving(Factory::class, function (SocialiteManager $socialite) use ($configureProvider, $seconds): void {
+            $socialite->extend('uzairports', function ($app) use ($socialite, $configureProvider, $seconds) {
+                /** @var array<string, mixed> $config */
+                $config = $app['config']['uzairports'] ?? [];
+
+                $guzzle = (array) ($config['guzzle'] ?? []);
+                $config['guzzle'] = array_merge($guzzle, [
+                    'timeout' => $seconds($guzzle['timeout'] ?? $config['timeout'] ?? null, 10),
+                    'connect_timeout' => $seconds($guzzle['connect_timeout'] ?? $config['connect_timeout'] ?? null, 5),
+                ]);
+
+                /** @var UzairportsProvider $provider */
+                $provider = $socialite->buildProvider(
+                    UzairportsProvider::class,
+                    $config
+                );
+
+                return $configureProvider($provider, $config);
+            });
+        });
+    }
+
+    /**
+     * Declare what `vendor:publish` may copy out of the package.
+     *
+     * Every group here builds its destination paths eagerly — four of them time
+     * stamp a migration filename apiece — and none of it can be asked for
+     * outside the console, so it is declared there and nowhere else.
+     */
+    private function registerPublishing(): void
+    {
         $this->publishes([
             $this->configPath() => config_path('uzairports.php'),
         ], 'uzairid-config');
@@ -120,12 +158,6 @@ class UzairServiceProvider extends ServiceProvider
             __DIR__.'/../../database/migrations/index_oauth_tokens_for_pruning.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_for_pruning.php'),
             __DIR__.'/../../database/migrations/index_oauth_tokens_by_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_by_session.php'),
         ], 'uzairid-upgrade-migrations');
-
-        if ($this->app->runningInConsole()) {
-            $this->commands([
-                PruneCommand::class,
-            ]);
-        }
     }
 
     /**

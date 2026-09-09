@@ -234,6 +234,11 @@ class UzairAuthController
      * — so without this, running the flow twice in one browser would
      * leave the first row behind, pointing at a session nobody can reach and
      * holding a grant nobody gave up.
+     *
+     * There may be more than one row: the id names a session, not an account,
+     * and a shared computer or a second identity leaves several. They are ended
+     * together rather than one after the next, so the browser waiting on this
+     * callback pays one revocation wait instead of one apiece.
      */
     private function endPreviousLogin(EndSessions $endSessions, OauthToken $token, ?string $previousSessionId): void
     {
@@ -241,10 +246,9 @@ class UzairAuthController
             return;
         }
 
-        OauthToken::query()
-            ->where('session_id', $previousSessionId)
-            ->get()
-            ->each(fn (OauthToken $stale) => $endSessions->end($stale));
+        $endSessions->endAll(
+            OauthToken::query()->where('session_id', $previousSessionId)->get()
+        );
     }
 
     /**

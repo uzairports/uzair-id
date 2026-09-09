@@ -621,6 +621,167 @@ class EndSessionsTest extends TestCase
     }
 
     /**
+     * A caller holding several rows — the callback ending what a browser was
+     * signed in as before it signed in again — used to hand them to `end()` one
+     * at a time, and each settled its own revocations. None of those calls
+     * decides any of the others, so `endAll()` puts them all on the wire and
+     * waits once, the same way ending an account's logins does.
+     */
+    public function test_named_logins_are_ended_together_rather_than_one_after_the_next(): void
+    {
+        $user = TestUser::create(['uzair_id' => '7023']);
+        $this->login($user, 'phone-session', 'phone_token');
+
+        $other = TestUser::create(['uzair_id' => '7024']);
+        $this->login($other, 'desktop-session', 'desktop_token');
+
+        $events = [];
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->times(2)->andReturnUsing(
+            function (string $token) use (&$events): PromiseInterface {
+                return $this->recordedRevocation($token, $events);
+            }
+        );
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)->endAll(OauthToken::query()->get());
+
+        $this->assertSame(0, OauthToken::query()->count());
+        $this->assertSame(2, $this->occurrencesOf('sent', $events));
+        $this->assertLessThan(
+            $this->firstIndexOf('waited', $events),
+            $this->lastIndexOf('sent', $events),
+            'Every grant must be on the wire before the first answer is waited on.'
+        );
+    }
+
+    /**
+     * A session id names a session, not an account: a shared computer leaves one
+     * row per identity signed in on it, all naming the same session. Ending them
+     * must ask the store to drop that session once rather than once per row.
+     */
+    public function test_a_session_named_by_more_than_one_login_is_dropped_once(): void
+    {
+        config(['session.driver' => 'database']);
+
+        $first = TestUser::create(['uzair_id' => '7025']);
+        $second = TestUser::create(['uzair_id' => '7026']);
+
+        foreach ([$first, $second] as $index => $account) {
+            $account->tokens()->create([
+                'access_token' => "shared_token_{$index}",
+                'session_id' => 'the-shared-session',
+            ]);
+        }
+
+        DB::table('sessions')->insert([
+            'id' => 'the-shared-session',
+            'user_id' => $first->id,
+            'payload' => '',
+            'last_activity' => now()->getTimestamp(),
+        ]);
+
+        $statements = 0;
+
+        DB::listen(function (QueryExecuted $query) use (&$statements): void {
+            if (str_starts_with(strtolower(trim($query->sql)), 'delete from "sessions"')) {
+                $statements++;
+            }
+        });
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->times(2)->andReturnUsing(fn (): PromiseInterface => $this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)->endAll(OauthToken::query()->get());
+
+        $this->assertSame(1, $statements);
+        $this->assertSame(0, DB::table('sessions')->count());
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
+     * `endAll()` is what `end()` is now spelled in terms of, so the single-login
+     * path has to keep doing all three things a sign-out means.
+     */
+    public function test_ending_one_named_login_still_drops_its_row_session_and_grant(): void
+    {
+        config(['session.driver' => 'database']);
+
+        $user = TestUser::create(['uzair_id' => '7027']);
+        $this->login($user, 'phone-session', 'phone_token');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('phone_token')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $token = OauthToken::query()->firstOrFail();
+
+        (new EndSessions)->end($token);
+
+        $this->assertSame(0, OauthToken::query()->count());
+        $this->assertSame([], $this->storedSessionIds());
+    }
+
+    /**
+     * The entries stand for the rows, so ending an account's logins has to take
+     * every one of them with it — dropped in a single call now, which must
+     * still leave nothing behind.
+     */
+    public function test_ending_an_accounts_logins_forgets_every_resolved_entry(): void
+    {
+        config(['uzairports.login_cache_ttl' => 10]);
+
+        $user = TestUser::create(['uzair_id' => '7028']);
+        $this->login($user, 'phone-session', 'phone_token');
+        $this->login($user, 'desktop-session', 'desktop_token');
+
+        foreach (OauthToken::query()->get() as $token) {
+            $token->cacheLogin((string) $token->session_id);
+        }
+
+        $this->assertNotNull(OauthToken::cachedLogin('phone-session'));
+        $this->assertNotNull(OauthToken::cachedLogin('desktop-session'));
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->times(2)->andReturnUsing(fn (): PromiseInterface => $this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)($user->id);
+
+        $this->assertNull(OauthToken::cachedLogin('phone-session'));
+        $this->assertNull(OauthToken::cachedLogin('desktop-session'));
+    }
+
+    /**
+     * Handed nothing, `endAll()` must ask the store and the identity provider
+     * for nothing at all — not a delete against `sessions`, not a driver.
+     */
+    public function test_ending_no_logins_touches_neither_the_store_nor_the_provider(): void
+    {
+        config(['session.driver' => 'database']);
+
+        Socialite::shouldReceive('driver')->never();
+
+        $statements = 0;
+
+        DB::listen(function (QueryExecuted $query) use (&$statements): void {
+            if (str_starts_with(strtolower(trim($query->sql)), 'delete from "sessions"')) {
+                $statements++;
+            }
+        });
+
+        (new EndSessions)->endAll([]);
+
+        $this->assertSame(0, $statements);
+    }
+
+    /**
      * A revocation that is not answered until it is waited on, recording when it
      * was sent and when the answer was asked for.
      *

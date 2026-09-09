@@ -109,14 +109,55 @@ class EndSessions
      */
     public function end(OauthToken $token): void
     {
-        $token->delete();
+        $this->endAll([$token]);
+    }
 
-        if ($token->session_id !== null) {
-            $this->deleteStoredSessionById($token->session_id);
-            OauthToken::forgetLogin($token->session_id);
+    /**
+     * End several named logins, paying one wait for all of their grants.
+     *
+     * `end()` in a loop would settle each login's revocations on its own, so a
+     * caller holding a handful of rows waited out one batch after the next when
+     * none of those calls decides any of the others. Here the rows go first —
+     * each by its own delete, so anything observing the model still hears about
+     * it — and every grant they held is handed back together.
+     *
+     * The sessions they named are dropped in one statement rather than one
+     * apiece, and a session named twice is dropped once: rows found by session
+     * id may belong to different accounts, and the same id would otherwise be
+     * deleted from the store as many times as there are accounts holding it.
+     *
+     * @param  iterable<array-key, OauthToken>  $tokens
+     */
+    public function endAll(iterable $tokens): void
+    {
+        /** @var list<OauthToken> $ended */
+        $ended = [];
+
+        /** @var array<string, true> $sessionIds */
+        $sessionIds = [];
+
+        foreach ($tokens as $token) {
+            $token->delete();
+
+            $sessionId = $token->session_id;
+
+            if (is_string($sessionId) && $sessionId !== '') {
+                $sessionIds[$sessionId] = true;
+            }
+
+            $ended[] = $token;
         }
 
-        $this->revoke($token);
+        if ($ended === []) {
+            return;
+        }
+
+        $sessionIds = array_keys($sessionIds);
+
+        $this->deleteStoredSessionsById($sessionIds);
+        $this->forgetResolvedLogins($sessionIds);
+
+        $this->revokeAll($ended);
     }
 
     /**
@@ -130,13 +171,7 @@ class EndSessions
      */
     private function forgetResolvedLogins(array $sessionIds): void
     {
-        if (OauthToken::loginCacheTtl() === 0) {
-            return;
-        }
-
-        foreach ($sessionIds as $sessionId) {
-            OauthToken::forgetLogin($sessionId);
-        }
+        OauthToken::forgetLogins($sessionIds);
     }
 
     /**
@@ -348,14 +383,19 @@ class EndSessions
         ]);
     }
 
-    private function deleteStoredSessionById(string $sessionId): void
+    /**
+     * Drop the named sessions from the session store.
+     *
+     * @param  array<array-key, string>  $sessionIds
+     */
+    private function deleteStoredSessionsById(array $sessionIds): void
     {
-        if (config('session.driver') !== 'database') {
+        if ($sessionIds === [] || config('session.driver') !== 'database') {
             return;
         }
 
         try {
-            $this->storedSessions()->where('id', $sessionId)->delete();
+            $this->storedSessions()->whereIn('id', array_values($sessionIds))->delete();
         } catch (Throwable $e) {
             Log::warning('Failed to delete the stored session of an UzAirports user.', [
                 'exception_class' => $e::class,

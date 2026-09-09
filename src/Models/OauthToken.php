@@ -326,10 +326,42 @@ class OauthToken extends Model
     }
 
     /**
-     * The entry a session's login is kept under.
+     * Stop several sessions' entries answering for rows that are no longer there.
+     *
+     * Ending an account's logins forgets one entry per login, and a store that
+     * is not the local process — which is the only kind a deployment running
+     * more than one worker can use here — charges a round-trip for each. They
+     * are dropped in one call instead, which is a single command on the stores
+     * that offer one and the same loop as before on those that do not.
+     *
+     * @param  array<array-key, string>  $sessionIds
+     */
+    public static function forgetLogins(array $sessionIds): void
+    {
+        if (self::loginCacheTtl() === 0) {
+            return;
+        }
+
+        $keys = [];
+
+        foreach ($sessionIds as $sessionId) {
+            if ($sessionId !== '') {
+                $keys[] = self::loginCacheKey($sessionId);
+            }
+        }
+
+        if ($keys === []) {
+            return;
+        }
+
+        Cache::deleteMultiple($keys);
+    }
+
+    /**
+     * The entry of a session's login is kept under.
      *
      * The session id is hashed rather than spelled out: it is the credential
-     * the browser holds, and a cache store is a place keys are routinely listed
+     * the browser holds, and a cache store is a place where keys are routinely listed
      * and dumped.
      */
     private static function loginCacheKey(string $sessionId): string
