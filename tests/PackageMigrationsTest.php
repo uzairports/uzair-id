@@ -402,6 +402,14 @@ class PackageMigrationsTest extends TestCase
         return false;
     }
 
+    /**
+     * A model whose `$keyType` says `string` over a column that is nothing of
+     * the sort — the users table here is the standard one, keyed by a bigint.
+     * The column is written as a string because that is what the model asked
+     * for, and no foreign key is attempted: one spelled against a bigint would
+     * be refused by the driver, and the migration is not worth failing over a
+     * model that misdescribes its own table.
+     */
     #[Test]
     public function test_create_oauth_tokens_supports_string_user_key(): void
     {
@@ -423,8 +431,99 @@ class PackageMigrationsTest extends TestCase
         $this->assertStringContainsString('varchar', strtolower($userIdCol['type_name']));
         $this->assertFalse($this->hasIndexOn('oauth_tokens', ['user_id']));
         $this->assertTrue($this->hasIndexOn('oauth_tokens', ['user_id', 'session_id']));
+        $this->assertFalse($this->hasForeignKeyOn('oauth_tokens', 'user_id'));
 
         $createTokens->down();
+    }
+
+    /**
+     * An account keyed by a UUID used to get a bare `varchar(255)` and no
+     * constraint at all, so deleting a person left their logins standing as
+     * rows pointing at an account that is gone — never read again, and never
+     * swept up either, since `prunable()` goes by `updated_at`.
+     *
+     * The column is mirrored off the key it references, which is the only way
+     * the constraint is accepted: MySQL spells a UUID key `char(36)` and
+     * refuses a `varchar(255)` against it, Postgres spells it `uuid` and
+     * refuses the same.
+     */
+    #[Test]
+    public function test_create_oauth_tokens_constrains_a_uuid_user_key(): void
+    {
+        $this->createUuidUsersTable();
+
+        config()->set('auth.providers.users.model', StringKeyUser::class);
+
+        $createTokens = $this->migration('create_oauth_tokens_table');
+        $createTokens->up();
+
+        $this->assertTrue($this->hasForeignKeyOn('oauth_tokens', 'user_id'));
+
+        DB::table('users')->insert([
+            'id' => '9f8b1c34-4d5e-4a7b-9c2d-1e3f5a7b9c0d',
+            'name' => 'Alisher',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('oauth_tokens')->insert([
+            'user_id' => '9f8b1c34-4d5e-4a7b-9c2d-1e3f5a7b9c0d',
+            'access_token' => 'access_tok_123',
+            'session_id' => 'session-1',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        DB::table('users')->where('id', '9f8b1c34-4d5e-4a7b-9c2d-1e3f5a7b9c0d')->delete();
+
+        $this->assertSame(0, DB::table('oauth_tokens')->count());
+
+        $createTokens->down();
+    }
+
+    /**
+     * The users table is published by the application and need not be there
+     * when this migration runs. Nothing can be referenced then, so the column
+     * is written unconstrained rather than the migration failing over it.
+     */
+    #[Test]
+    public function test_create_oauth_tokens_leaves_user_id_unconstrained_without_a_users_table(): void
+    {
+        Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('users');
+
+        config()->set('auth.providers.users.model', StringKeyUser::class);
+
+        $createTokens = $this->migration('create_oauth_tokens_table');
+        $createTokens->up();
+
+        $this->assertTrue(Schema::hasColumn('oauth_tokens', 'user_id'));
+        $this->assertFalse($this->hasForeignKeyOn('oauth_tokens', 'user_id'));
+
+        $createTokens->down();
+    }
+
+    private function createUuidUsersTable(): void
+    {
+        Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('users');
+
+        Schema::create('users', function (Blueprint $table): void {
+            $table->uuid('id')->primary();
+            $table->string('name');
+            $table->timestamps();
+        });
+    }
+
+    private function hasForeignKeyOn(string $table, string $column): bool
+    {
+        foreach (Schema::getForeignKeys($table) as $foreignKey) {
+            if ($foreignKey['columns'] === [$column]) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 

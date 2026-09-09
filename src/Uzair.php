@@ -5,7 +5,9 @@ namespace Uzairports\Uzairid;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Route;
 use Laravel\Socialite\Two\User as SocialiteUser;
+use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
+use Uzairports\Uzairid\Models\OauthToken;
 
 class Uzair
 {
@@ -30,6 +32,36 @@ class Uzair
     public static function getUserResolver(): ?callable
     {
         return static::$userResolver;
+    }
+
+    /**
+     * Drop the static state that must not outlive the request that filled it.
+     *
+     * Under PHP-FPM the process ends with the response and takes it along;
+     * under a long-lived worker — Octane, FrankenPHP — the same worker serves
+     * the next request with everything the last one left behind. Three fields
+     * are affected:
+     *
+     * - `OauthToken::$pruner`, an action resolved out of the container, which
+     *   after a rebind is holding dependencies the application has replaced;
+     * - the two registers behind the once-per-process warnings about the login
+     *   cache and the lock store, which otherwise stay marked for the life of
+     *   the worker — so a store misconfigured after a deploy is reported once
+     *   in days rather than once per boot.
+     *
+     * The user resolver is deliberately not among them. It is registered once
+     * while the application boots, the way a route or a binding is, and a
+     * worker that dropped it would serve every later request without it.
+     *
+     * `UzairServiceProvider` calls this on Octane's terminating events. An
+     * application on another long-lived runtime should call it wherever that
+     * runtime says a request is over.
+     */
+    public static function flushState(): void
+    {
+        OauthToken::flushPruner();
+        OauthToken::flushLoginCacheWarnings();
+        RefreshAccessToken::flushLockStoreWarnings();
     }
 
     /**

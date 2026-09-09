@@ -178,7 +178,11 @@ class OauthToken extends Model
     protected static ?EndSessions $pruner = null;
 
     /**
-     * Flush the cached pruner instance between sweeps or tests.
+     * Flush the cached pruner instance between sweeps, requests or tests.
+     *
+     * Reached on every Octane request through `Uzair::flushState()`, so a
+     * worker never hands the next request an action built out of a container
+     * the application has since rebound.
      */
     public static function flushPruner(): void
     {
@@ -434,6 +438,10 @@ class OauthToken extends Model
 
     /**
      * Let the warnings be said again, for a suite that asserts on them.
+     *
+     * "Once per process" means once per worker under Octane, which is days
+     * rather than one request — so `Uzair::flushState()` reaches this between
+     * requests there, and a store misconfigured by a deploy is still reported.
      */
     public static function flushLoginCacheWarnings(): void
     {

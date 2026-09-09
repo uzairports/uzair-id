@@ -380,6 +380,10 @@ class RefreshAccessToken
 
     /**
      * Let the warnings be said again, for a suite that asserts on them.
+     *
+     * "Once per process" means once per worker under Octane, which is days
+     * rather than one request — so `Uzair::flushState()` reaches this between
+     * requests there, and a store misconfigured by a deploy is still reported.
      */
     public static function flushLockStoreWarnings(): void
     {

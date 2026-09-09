@@ -6,6 +6,7 @@ use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Router;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Laravel\Socialite\Contracts\Factory;
@@ -14,9 +15,20 @@ use Symfony\Component\HttpFoundation\Response;
 use Uzairports\Uzairid\Console\Commands\PruneCommand;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
+use Uzairports\Uzairid\Uzair;
 
 class UzairServiceProvider extends ServiceProvider
 {
+    /**
+     * The interface behind every one of Octane's terminating events.
+     *
+     * Named as a string rather than imported: `laravel/octane` is not a
+     * dependency of this package, and the interface is absent on every runtime
+     * that is not Octane. A listener is registered under a name, so it need
+     * not be.
+     */
+    private const OCTANE_OPERATION_TERMINATED = 'Laravel\Octane\Contracts\OperationTerminated';
+
     /**
      * Register services.
      *
@@ -74,6 +86,8 @@ class UzairServiceProvider extends ServiceProvider
 
         $this->registerRateLimiter();
 
+        $this->registerStateFlushing();
+
         $this->loadTranslationsFrom($this->langPath(), 'uzairid');
 
         if ($this->app->runningInConsole()) {
@@ -121,6 +135,37 @@ class UzairServiceProvider extends ServiceProvider
 
                 return $configureProvider($provider, $config);
             });
+        });
+    }
+
+    /**
+     * Have the package's per-request static state dropped between requests.
+     *
+     * Under PHP-FPM there is nothing to do: the process ends with the response.
+     * Under Octane the worker is reused, so a pruner resolved out of a
+     * container that has since been rebound would be handed to the next
+     * request, and the once-per-process warnings about the login cache and the
+     * lock store would stay marked for the life of the worker.
+     *
+     * `OperationTerminated` is the interface all of Octane's terminating events
+     * implement, so requests, tasks and ticks are covered by the one listener —
+     * Laravel's dispatcher matches an object event against the interfaces it
+     * implements as readily as against its class.
+     *
+     * The listener is registered whether or not Octane is installed. Nothing
+     * else dispatches an event implementing that interface, so on every other
+     * runtime this is one entry in the dispatcher's array that never fires —
+     * cheaper than the `interface_exists()` call it would take to avoid it, and
+     * it leaves the wiring testable without adding Octane as a dependency.
+     *
+     * What the listener calls is public, so an application on another
+     * long-lived runtime can reach `Uzair::flushState()` from wherever that
+     * runtime says a request is over.
+     */
+    private function registerStateFlushing(): void
+    {
+        Event::listen(self::OCTANE_OPERATION_TERMINATED, static function (): void {
+            Uzair::flushState();
         });
     }
 
