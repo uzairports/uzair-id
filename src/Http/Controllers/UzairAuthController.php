@@ -90,7 +90,11 @@ class UzairAuthController
         $this->endPreviousLogin($endSessions, $token, $previousSessionId);
 
         if (config('uzairports.single_session', false)) {
-            $endSessions($this->accountKey($user), $token->session_id);
+            $endSessions(
+                $this->accountKey($user),
+                $token->session_id,
+                revoke: (bool) config('uzairports.revoke_on_single_session', true),
+            );
         }
 
         UzairAuthenticated::dispatch($user, $uzairUser, $token);

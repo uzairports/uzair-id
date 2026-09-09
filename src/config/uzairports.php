@@ -187,13 +187,41 @@ return [
     |
     | Whether signing in ends every other login the account holds, leaving only
     | the browser that just authenticated. Off by default: an account is
-    | normally allowed a phone and a desktop at once, and users who want the
-    | rest gone have the "sign-out everywhere" endpoint to say so. Turn it on
-    | only where concurrent use is something you have to prevent.
+    | normally allowed a phone and a desktop at once, and a user who wants one
+    | of the others gone ends it from the list of their own logins, through
+    | `uzair.logoutDevice`. Turn it on only where concurrent use is something
+    | you have to prevent.
+    |
+    | It is not free: every login being ended is surrendered to the identity
+    | provider in turn, inside the callback the browser is waiting on, so an
+    | account signed in on several devices pays a revocation round-trip for
+    | each of them before it is let in. `revoke_on_single_session` below is
+    | where that bill is refused.
     |
     */
 
     'single_session' => (bool) env('UZAIR_SINGLE_SESSION', false),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Revoke Grants When a Sign-In Ends the Others
+    |--------------------------------------------------------------------------
+    |
+    | Whether `single_session` gives each login's grant up at the identity
+    | provider before letting the new one in. On by default, because a grant
+    | nobody surrendered keeps being honoured: whoever holds a copy of that
+    | refresh token has a way into the account until it expires on its own.
+    |
+    | The cost falls on the one request a user is actually waiting on, and it
+    | grows with the number of devices the account is signed in on — an account
+    | on a dozen of them waits out a dozen revocation timeouts before it sees
+    | the dashboard. Turn it off where that wait is real: the logins still end
+    | here — rows dropped, sessions deleted, `uzair.token` refusing them on
+    | their next request — and only the remote surrender is given up.
+    |
+    */
+
+    'revoke_on_single_session' => (bool) env('UZAIR_REVOKE_ON_SINGLE_SESSION', true),
 
     /*
     |--------------------------------------------------------------------------

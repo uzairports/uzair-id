@@ -150,6 +150,51 @@ class UzairAuthControllerTest extends TestCase
         $this->assertSame(0, DB::table('sessions')->where('id', 'the-first-devices-session')->count());
     }
 
+    /**
+     * Signing in pays a revocation round-trip for every login it ends, in the
+     * one request a user is actually waiting on. `revoke_on_single_session`
+     * refuses that bill: the other logins still end here, and only the remote
+     * surrender is given up.
+     */
+    public function test_single_session_ends_the_other_logins_without_revoking_them_when_declined(): void
+    {
+        config([
+            'uzairports.single_session' => true,
+            'uzairports.revoke_on_single_session' => false,
+            'session.driver' => 'database',
+        ]);
+
+        $user = TestUser::create(['uzair_id' => '5006', 'name' => 'Exclusive']);
+        $user->tokens()->create([
+            'access_token' => 'the_first_devices_token',
+            'session_id' => 'the-first-devices-session',
+        ]);
+
+        DB::table('sessions')->insert([
+            'id' => 'the-first-devices-session',
+            'user_id' => $user->getKey(),
+            'payload' => '',
+            'last_activity' => now()->getTimestamp(),
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andReturn(SocialiteUser::fake([
+            'id' => '5006',
+            'name' => 'Exclusive',
+            'token' => 'the_second_devices_token',
+        ]));
+        $provider->shouldNotReceive('logout');
+        $provider->shouldNotReceive('revokeRefreshToken');
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $this->assertSame(1, $user->tokens()->count());
+        $this->assertSame('the_second_devices_token', $user->tokens()->firstOrFail()->access_token);
+        $this->assertSame(0, DB::table('sessions')->where('id', 'the-first-devices-session')->count());
+    }
+
     public function test_a_failed_handshake_leaves_no_session_and_no_rows_behind(): void
     {
         $provider = Mockery::mock(UzairportsProvider::class);

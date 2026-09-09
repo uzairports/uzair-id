@@ -27,7 +27,9 @@ jobs:
         with:
           php-version: ${{ matrix.php }}
           extensions: dom, curl, libxml, mbstring, zip, pdo, sqlite, pdo_sqlite, bcmath, soap, intl, gd, exif, iconv
-          coverage: none
+          # pcov rather than xdebug: it only measures which lines ran, which is
+          # all the report needs, and costs a fraction of the run time.
+          coverage: pcov
 
       - name: Setup problem matchers
         run: |
@@ -46,4 +48,4 @@ jobs:
         run: vendor/bin/phpstan analyse --no-progress
 
       - name: Execute tests
-        run: vendor/bin/pest
+        run: vendor/bin/pest --coverage

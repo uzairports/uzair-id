@@ -30,9 +30,18 @@ class EndSessions
      *
      * Pass `$exceptSessionId` to keep the browser in front of you signed in.
      *
+     * `$revoke` is the one part of this that costs a round-trip, and it costs
+     * one per login: the identity provider is told about each grant in turn,
+     * and there is no telling in advance how many an account holds. Where that
+     * wait is being paid by a browser — signing in under `single_session` — it
+     * can be given up. The first two steps still happen, so the account is
+     * signed out here either way; what is surrendered is the promise that its
+     * grants stop being honoured at UzAirports ID before they expire on their
+     * own.
+     *
      * @return int the number of logins ended
      */
-    public function __invoke(int|string $userId, ?string $exceptSessionId = null): int
+    public function __invoke(int|string $userId, ?string $exceptSessionId = null, bool $revoke = true): int
     {
         $tokens = OauthToken::query()
             ->where('user_id', $userId)
@@ -47,8 +56,10 @@ class EndSessions
 
         $this->deleteStoredSessions($userId, $exceptSessionId);
 
-        foreach ($tokens as $token) {
-            $this->revoke($token);
+        if ($revoke) {
+            foreach ($tokens as $token) {
+                $this->revoke($token);
+            }
         }
 
         return $tokens->count();

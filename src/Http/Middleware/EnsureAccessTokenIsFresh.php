@@ -25,8 +25,9 @@ class EnsureAccessTokenIsFresh
      * A login belongs to one browser session, so the pair looks up the token:
      * another device's row is none of this request's business. When the
      * refresh token is no longer accepted, or the login was ended elsewhere —
-     * signed out on this device from another, or through "sign out everywhere"
-     * — the session is dropped and an authentication failure raised, so the
+     * signed out on this device from another, or dropped by
+     * `uzairports.single_session` when the account signed in again — the
+     * session is dropped and an authentication failure raised, so the
      * request is answered the way the application answers any other
      * unauthenticated one: a redirect back through SSO for a browser, a 401 for
      * an API client.

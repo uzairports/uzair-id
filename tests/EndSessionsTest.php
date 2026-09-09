@@ -218,6 +218,49 @@ class EndSessionsTest extends TestCase
         $this->assertSame(['device-two-session'], $this->storedSessionIds());
     }
 
+    /**
+     * The remote surrender is the only part of ending a login that costs a
+     * round-trip, and it is the only part that can be given up. What signs the
+     * device out here — the row and the stored session — goes either way.
+     */
+    public function test_logins_end_without_a_remote_call_when_revocation_is_declined(): void
+    {
+        config(['session.driver' => 'database']);
+
+        $user = TestUser::create(['uzair_id' => '7010']);
+        $this->login($user, 'phone-session', 'phone_token');
+        $this->login($user, 'desktop-session', 'desktop_token');
+
+        Socialite::shouldReceive('driver')->never();
+
+        $ended = (new EndSessions)($user->id, revoke: false);
+
+        $this->assertSame(2, $ended);
+        $this->assertSame(0, OauthToken::query()->count());
+        $this->assertSame([], $this->storedSessionIds());
+    }
+
+    /**
+     * Declining revocation must not become "spare that login": the browser the
+     * caller asked to keep is still the only one left standing.
+     */
+    public function test_declining_revocation_still_spares_the_named_session(): void
+    {
+        config(['session.driver' => 'database']);
+
+        $user = TestUser::create(['uzair_id' => '7011']);
+        $this->login($user, 'phone-session', 'phone_token');
+        $this->login($user, 'desktop-session', 'desktop_token');
+
+        Socialite::shouldReceive('driver')->never();
+
+        $ended = (new EndSessions)($user->id, 'desktop-session', revoke: false);
+
+        $this->assertSame(1, $ended);
+        $this->assertSame(['desktop-session'], OauthToken::query()->pluck('session_id')->all());
+        $this->assertSame(['desktop-session'], $this->storedSessionIds());
+    }
+
     private function login(TestUser $user, string $sessionId, string $accessToken): void
     {
         $user->tokens()->create([
