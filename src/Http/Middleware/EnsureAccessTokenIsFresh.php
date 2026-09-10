@@ -122,10 +122,9 @@ class EnsureAccessTokenIsFresh
      * through it was the least of it: the request went on to keep that login
      * alive on every call, so an abandoned browser's row never aged into
      * `prunable()` and the grant behind it was never surrendered, and it spent
-     * that browser's rotating refresh token to renew a token the caller has no
-     * supported way to read — `HasUzairToken::currentToken()` answers null
-     * without a session. A request that names no browser now neither reads nor
-     * writes a login belonging to one.
+     * that browser's rotating refresh token to renew a token the caller had no
+     * supported way to read. A request that names no browser now neither reads
+     * nor writes a login belonging to one.
      *
      * The unique pair does not collapse several null session ids, so the most
      * recent of them is taken.
@@ -135,21 +134,22 @@ class EnsureAccessTokenIsFresh
      * request, but nothing guarantees it, and the request in hand is the one
      * whose session this decision is about.
      *
-     * What is found is handed to a user model carrying `HasUzairToken`, so that
-     * anything downstream asking the user for its login — a controller, a view —
-     * reads what was looked up here instead of repeating the query.
+     * What is found is handed to a user model carrying `HasUzairToken`,
+     * whichever kind of request it was, so that anything downstream asking the
+     * user for its login — a controller, a view — reads what was looked up here
+     * instead of repeating the query. The sessionless branch used to skip that
+     * hand-off, which left an API client's controller unable to reach a token
+     * this method had just resolved for it.
      */
     private function tokenFor(Request $request, Authenticatable $user): ?OauthToken
     {
         $tokens = OauthToken::query()->where('user_id', $user->getAuthIdentifier());
 
-        if (! $request->hasSession()) {
-            return $tokens->whereNull('session_id')->latest('id')->first();
-        }
+        $sessionId = $request->hasSession() ? $request->session()->getId() : null;
 
-        $sessionId = $request->session()->getId();
-
-        $token = $tokens->where('session_id', $sessionId)->first();
+        $token = $sessionId === null
+            ? $tokens->whereNull('session_id')->latest('id')->first()
+            : $tokens->where('session_id', $sessionId)->first();
 
         if (method_exists($user, 'rememberCurrentToken')) {
             $user->rememberCurrentToken($token, $sessionId);

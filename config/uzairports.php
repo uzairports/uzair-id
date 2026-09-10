@@ -136,10 +136,18 @@ return [
     | Default Token TTL
     |--------------------------------------------------------------------------
     |
-    | When the identity provider does not return an `expires_in` parameter in
-    | the token refresh response, this value (in seconds) is used as fallback
-    | TTL so that the token is not continuously treated as expired on every
-    | subsequent request.
+    | When the identity provider does not return an `expires_in` parameter — or
+    | returns a zero — this value (in seconds) stands in for it, so that the
+    | token is not treated as expired on every subsequent request.
+    |
+    | It applies wherever a token is stored: the code exchange that opens a
+    | session and the refresh that renews one. Sign-in used to leave the expiry
+    | unknown instead, which the middleware reads as expired, so the first
+    | request after every sign-in spent the refresh token on an exchange that
+    | arrived at this same value.
+    |
+    | Zero, or anything that is not a number, leaves the expiry unknown. The
+    | token is then renewed on next use rather than trusted for a guess.
     |
     */
 

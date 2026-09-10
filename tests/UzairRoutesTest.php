@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Illuminate\Routing\Route as RegisteredRoute;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Uzair;
@@ -107,6 +108,38 @@ class UzairRoutesTest extends TestCase
         config(['uzairports.login_route' => 'a.route.nobody.registered']);
 
         $this->assertSame(url('/'), Uzair::loginUrl());
+    }
+
+    /**
+     * Two routes may carry one name and Laravel says nothing. Whichever loses
+     * does so silently, and both outcomes look like a bug somewhere else: a
+     * guest thrown into SSO instead of seeing the form, or a "sign in through
+     * SSO" button that leads back to the page it is on.
+     */
+    public function test_a_name_taken_by_another_route_is_reported(): void
+    {
+        Route::get('the-applications-own-form', fn (): string => 'form')->name('login');
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $message, array $context): bool => str_contains($message, '[login]')
+                && $context['sign_in_uri'] === 'sso/redirect'
+                && $context['also_named'] === ['the-applications-own-form']);
+
+        Uzair::routes(['prefix' => 'sso']);
+    }
+
+    /**
+     * Whose route answers to the name is the question, not whether it is the
+     * one object just registered — an application registering the endpoints
+     * twice, under two prefixes, is doing nothing wrong and must hear nothing.
+     */
+    public function test_a_name_held_by_this_packages_own_redirect_is_not_reported(): void
+    {
+        Log::shouldReceive('warning')->never();
+
+        Uzair::routes(['prefix' => 'sso']);
+        Uzair::routes(['prefix' => 'identity']);
     }
 
     public function test_every_endpoint_is_registered(): void

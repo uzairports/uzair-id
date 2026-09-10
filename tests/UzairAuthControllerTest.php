@@ -351,6 +351,72 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
+     * A provider that says nothing about how long its token lives used to have
+     * every sign-in followed by a token exchange on the browser's very next
+     * request: the expiry was stored unknown, and the middleware reads that as
+     * expired. The exchange spends the rotating refresh token to arrive at the
+     * same fallback the refresh path has always applied.
+     */
+    public function test_a_login_with_no_stated_expiry_takes_the_configured_fallback(): void
+    {
+        config(['uzairports.default_token_ttl' => 1800]);
+
+        $this->fakeIdentity([
+            'id' => '5033',
+            'name' => 'Undated',
+            'token' => 'access_token_value',
+            'expiresIn' => null,
+        ]);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $token = OauthToken::query()->firstOrFail();
+
+        $this->assertNotNull($token->expires_at);
+        $this->assertEqualsWithDelta(1800, now()->diffInSeconds($token->expires_at), 5);
+        $this->assertFalse($token->hasExpired());
+    }
+
+    /**
+     * Zero is no answer either, and casting it gave an expiry of this instant.
+     */
+    public function test_a_login_with_a_zero_expiry_takes_the_configured_fallback(): void
+    {
+        config(['uzairports.default_token_ttl' => 1800]);
+
+        $this->fakeIdentity([
+            'id' => '5034',
+            'name' => 'Zeroed',
+            'token' => 'access_token_value',
+            'expiresIn' => 0,
+        ]);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $this->assertFalse(OauthToken::query()->firstOrFail()->hasExpired());
+    }
+
+    /**
+     * A fallback of zero means there is nothing to stand in with, and an
+     * unknown expiry is the honest answer — the token is renewed on next use.
+     */
+    public function test_a_fallback_of_zero_leaves_the_expiry_unknown(): void
+    {
+        config(['uzairports.default_token_ttl' => 0]);
+
+        $this->fakeIdentity([
+            'id' => '5035',
+            'name' => 'Unknowable',
+            'token' => 'access_token_value',
+            'expiresIn' => null,
+        ]);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $this->assertNull(OauthToken::query()->firstOrFail()->expires_at);
+    }
+
+    /**
      * A standard Laravel `users` table refuses an SSO sign-in twice over —
      * `password` is `NOT NULL` with no default, and `email` is unique against a
      * provider that neither promises an address nor keeps them apart. The

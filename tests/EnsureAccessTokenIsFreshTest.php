@@ -401,6 +401,57 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     }
 
     /**
+     * A login that names no session belongs to the caller that names none
+     * either, and the middleware validates the request on it. Asking the user
+     * for it afterwards used to answer null: the trait refused to hand out a
+     * login without a session, which was the right answer only while such a
+     * request was being lent somebody else's browser row.
+     */
+    public function test_a_request_without_a_session_can_read_the_login_it_was_let_through_on(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4021']);
+
+        $token = $user->tokens()->create([
+            'access_token' => 'the_api_clients_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => null,
+        ]);
+
+        $request = $this->statelessRequest($user);
+
+        app()->instance('request', $request);
+        $request->setUserResolver(fn () => $user);
+
+        $this->handle($request);
+
+        // The middleware already resolved it, so asking again must cost nothing
+        // — the row is taken away before the question.
+        DB::table('oauth_tokens')->delete();
+
+        $this->assertTrue($token->is($user->currentToken()));
+        $this->assertSame('the_api_clients_token', $user->getUzairAccessToken());
+    }
+
+    /**
+     * The same account asked outside a request that resolved anything still
+     * finds its sessionless login, rather than being told it has none.
+     */
+    public function test_a_sessionless_login_is_found_without_the_middleware_having_run(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4022']);
+
+        $user->tokens()->create([
+            'access_token' => 'the_console_commands_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => null,
+        ]);
+
+        app()->instance('request', $this->statelessRequest($user));
+
+        $this->assertSame('the_console_commands_token', $user->getUzairAccessToken());
+    }
+
+    /**
      * Off by default: the row is read on every request, which is the only
      * setting under which a login ended anywhere is refused on the very next
      * one.

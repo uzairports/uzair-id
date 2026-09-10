@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Http\Controllers;
 
 use Carbon\CarbonInterface;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
@@ -28,6 +29,7 @@ use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Uzair;
 
 /**
  * The endpoints behind `Uzair::routes()`.
@@ -168,12 +170,31 @@ class UzairAuthController
      * Ending the login this request is running on is signing yourself out, and
      * is handed to `logout()` so the session goes with it, rather than leaving
      * the browser authenticated against a row that no longer exists.
+     *
+     * A caller who is not signed in is told so, rather than told the row was
+     * not found. The blanket 404 is there to keep an account from learning
+     * which row ids exist, and that is about somebody signed in probing
+     * somebody else's — a guest learns nothing from a 401 it did not already
+     * know, and an API client whose session lapsed learns from a 404 only that
+     * something is missing, not that it has to authenticate again. `logout()`
+     * beside this has always answered a guest rather than refusing one.
+     *
+     * @throws AuthenticationException when nobody is signed in
+     * @throws NotFoundHttpException when the account holds no such login
      */
     public function logoutDevice(Request $request, EndSessions $endSessions, int|string $token): JsonResponse|RedirectResponse
     {
         $user = Auth::user();
 
-        $login = $user === null ? null : OauthToken::query()
+        if ($user === null) {
+            throw new AuthenticationException(
+                __('uzairid::messages.session_ended'),
+                [],
+                Uzair::loginUrl(),
+            );
+        }
+
+        $login = OauthToken::query()
             ->where('user_id', $user->getAuthIdentifier())
             ->whereKey($token)
             ->first();
@@ -626,18 +647,37 @@ class UzairAuthController
     /**
      * Resolve the moment the issued access token stops being accepted.
      *
-     * The identity provider does not have to say how long the token lives.
-     * Unknown expiry is stored as null, which the refresh middleware treats as
-     * expired, so the token is renewed on the next request rather than used
-     * until it is refused.
+     * The identity provider does not have to say how long the token lives, and
+     * `uzairports.default_token_ttl` is what stands in when it does not. This
+     * used to store null instead and leave the renewal to the middleware, which
+     * reads an unknown expiry as expired — so a provider that never sends
+     * `expires_in` had every sign-in followed immediately by a token exchange,
+     * on the first request the browser made. That exchange spends the rotating
+     * refresh token, and it lands on the same fallback anyway, because
+     * `RefreshAccessToken` has always applied it: one round trip and one
+     * rotation to arrive at the value that could have been written here.
+     *
+     * Zero is treated as no answer rather than as an expiry of now, which is
+     * what casting it gave: `addSeconds(0)` is this instant, and the middleware
+     * reads it as expired on the very next request.
+     *
+     * A fallback that is itself zero or not a number leaves the expiry unknown,
+     * which is the older behaviour and still the honest one — there is nothing
+     * left to write.
      */
     private function expiresAt(SocialiteUser $uzairUser): ?CarbonInterface
     {
-        if ($uzairUser->expiresIn === null) {
-            return null;
+        // Cast rather than tested: Socialite types `expiresIn` as an int, and
+        // an identity provider that sends no `expires_in` leaves it null all
+        // the same. Null casts to zero, which is the answer either way.
+        $expiresIn = (int) $uzairUser->expiresIn;
+
+        if ($expiresIn <= 0) {
+            $fallback = config('uzairports.default_token_ttl', 3600);
+            $expiresIn = is_numeric($fallback) && (int) $fallback > 0 ? (int) $fallback : 0;
         }
 
-        return now()->addSeconds((int) $uzairUser->expiresIn);
+        return $expiresIn <= 0 ? null : now()->addSeconds($expiresIn);
     }
 
     /**
