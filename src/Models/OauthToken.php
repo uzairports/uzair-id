@@ -184,7 +184,13 @@ class OauthToken extends Model
      * Pruning runs through Laravel's `model:prune` command, which the host
      * application has to schedule for the rows to actually go.
      *
-     * @return Builder<OauthToken>
+     * The projection is covariant because `Builder`'s model parameter is not,
+     * and larastan has told two different stories about what `newQuery()`
+     * hands back — `Builder<OauthToken>` in 3.11, `Builder<static>` in 3.12,
+     * both of which the matrix analyses. Either satisfies a covariant
+     * projection; neither satisfies the other written out invariantly.
+     *
+     * @return Builder<covariant OauthToken>
      */
     public function prunable(): Builder
     {
