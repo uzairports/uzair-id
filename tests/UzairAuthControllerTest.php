@@ -5,12 +5,14 @@ namespace Uzairports\Uzairid\Tests;
 use Exception;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\InvalidStateException;
@@ -346,6 +348,51 @@ class UzairAuthControllerTest extends TestCase
 
         $this->assertGuest();
         $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
+     * A standard Laravel `users` table refuses an SSO sign-in twice over —
+     * `password` is `NOT NULL` with no default, and `email` is unique against a
+     * provider that neither promises an address nor keeps them apart. The
+     * handshake's own handler writes the exception class and nothing else, so
+     * the integrator was left with a working OAuth flow that refused every new
+     * account and no line connecting it to a column.
+     */
+    public function test_a_users_table_that_refuses_the_write_says_which_column_refused_it(): void
+    {
+        Schema::table('users', function (Blueprint $table): void {
+            $table->string('password');
+        });
+
+        $complaint = null;
+
+        Log::shouldReceive('warning')->andReturnNull();
+        Log::shouldReceive('error')
+            ->atLeast()
+            ->once()
+            ->withArgs(function (string $message, array $context) use (&$complaint): bool {
+                $complaint ??= $context;
+
+                return true;
+            });
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andReturn(SocialiteUser::fake([
+            'id' => '5032',
+            'name' => 'Newcomer',
+            'token' => 'access_token_value',
+        ]));
+        $provider->shouldReceive('logoutAsync')->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->get(route('uzair.callback'))->assertRedirect(url('/'));
+
+        $this->assertIsArray($complaint);
+        $this->assertSame('users', $complaint['accounts_table']);
+        $this->assertContains('password', $complaint['columns_needing_a_value']);
+        $this->assertStringContainsString('uzairid-user-migrations', $complaint['remedy']);
     }
 
     /**

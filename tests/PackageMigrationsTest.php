@@ -350,6 +350,61 @@ class PackageMigrationsTest extends TestCase
     }
 
     /**
+     * The table and the key were spelled `users` and `id`. An application that
+     * keeps its accounts elsewhere had this migration reach for a table it does
+     * not have, and on MySQL a model keyed by anything but `id` failed it
+     * outright: `after()` is emitted into the statement, and naming a column
+     * that is not there is error 1054.
+     */
+    #[Test]
+    public function test_the_uzair_id_column_follows_the_configured_model(): void
+    {
+        Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('members');
+        Schema::dropIfExists('users');
+
+        Schema::create('members', function (Blueprint $table): void {
+            $table->uuid('member_key')->primary();
+            $table->string('name');
+            $table->timestamps();
+        });
+
+        config()->set('auth.providers.users.model', MemberWithItsOwnTable::class);
+
+        $addUzairId = $this->migration('add_uzair_id_to_users_table');
+        $addUzairId->up();
+
+        $this->assertTrue(Schema::hasColumn('members', 'uzair_id'));
+        $this->assertTrue($this->hasIndexOn('members', ['uzair_id']));
+
+        // Idempotency: a table that already carries the column is left alone.
+        $addUzairId->up();
+
+        $addUzairId->down();
+        $this->assertFalse(Schema::hasColumn('members', 'uzair_id'));
+
+        Schema::dropIfExists('members');
+    }
+
+    /**
+     * The accounts table belongs to the host application and need not be there
+     * when this runs. There is no column to add to a table that does not exist,
+     * and reaching for one used to fail the migration.
+     */
+    #[Test]
+    public function test_adding_the_uzair_id_column_survives_a_missing_accounts_table(): void
+    {
+        Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('users');
+
+        config()->set('auth.providers.users.model', StringKeyUser::class);
+
+        $this->migration('add_uzair_id_to_users_table')->up();
+
+        $this->assertFalse(Schema::hasTable('users'));
+    }
+
+    /**
      * `OauthToken::prunable()` sweeps the table by `updated_at` alone — the one
      * query the package makes without a `user_id` beside it, and so the only
      * one the unique pair does not already serve.
@@ -576,4 +631,20 @@ class StringKeyUser extends Model
     protected $table = 'users';
 
     protected $keyType = 'string';
+}
+
+/**
+ * An account model that keeps its rows somewhere other than `users` and calls
+ * its key something other than `id` — both of which the migrations used to
+ * assume.
+ */
+class MemberWithItsOwnTable extends Model
+{
+    protected $table = 'members';
+
+    protected $primaryKey = 'member_key';
+
+    protected $keyType = 'string';
+
+    public $incrementing = false;
 }

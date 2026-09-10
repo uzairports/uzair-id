@@ -5,6 +5,7 @@ namespace Uzairports\Uzairid\Http\Controllers;
 use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
@@ -13,6 +14,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\InvalidStateException;
@@ -368,6 +370,11 @@ class UzairAuthController
      * work is simply done again — the second attempt finds the row the winner
      * wrote and updates it.
      *
+     * A refusal that is not that race is not something the retry can help with,
+     * and both of the ones an integrator actually meets come from the accounts
+     * table still being shaped for local passwords — see
+     * `refuseTheAccountWrite()`, which is what says so.
+     *
      * @return Authenticatable&Model
      *
      * @throws Throwable
@@ -377,8 +384,131 @@ class UzairAuthController
         try {
             return $this->writeAccount($uzairUser, $resolveUser);
         } catch (UniqueConstraintViolationException) {
-            return $this->writeAccount($uzairUser, $resolveUser);
+            // Another callback inserted the account first. Its transaction is
+            // rolled back by now, so the work is done again below.
+        } catch (QueryException $exception) {
+            $this->refuseTheAccountWrite($exception);
         }
+
+        try {
+            return $this->writeAccount($uzairUser, $resolveUser);
+        } catch (QueryException $exception) {
+            $this->refuseTheAccountWrite($exception);
+        }
+    }
+
+    /**
+     * Say what about the accounts table refused the write, then hand it on.
+     *
+     * The database refusing this write is what a standard Laravel `users` table
+     * does to an SSO sign-in, and there are two of them. `password` is `NOT
+     * NULL` with no default, and nothing here has a password to write. `email`
+     * is unique and `NOT NULL`, while the identity provider does not promise an
+     * address at all and lets two accounts share one — so the first person
+     * whose address already exists locally cannot sign in, and neither can the
+     * second holder of a shared one. The package publishes
+     * `remove_password_column_from_users_table` and
+     * `relax_email_column_on_users_table` for exactly this, under the
+     * `uzairid-user-migrations` tag.
+     *
+     * What used to happen when they were skipped is why this exists at all: the
+     * failure went to the handshake's own handler, which writes the exception
+     * class and nothing else, and the browser was sent back with
+     * "authentication failed". Nothing connected either to a column, and the
+     * integrator had a working OAuth flow that refused every new account.
+     *
+     * The table is read rather than the driver's message parsed. Three drivers
+     * word these two refusals five different ways; the schema says the same
+     * thing on all of them, and says it about this application's own table.
+     *
+     * Nothing here may raise. A diagnosis that fails must not replace the
+     * failure it was diagnosing, so the original exception goes on either way.
+     *
+     * @throws QueryException always
+     */
+    private function refuseTheAccountWrite(QueryException $exception): never
+    {
+        Log::error('The account behind an UzAirports identity could not be written.', [
+            'exception_class' => $exception::class,
+            ...$this->accountsTableComplaints(),
+        ]);
+
+        throw $exception;
+    }
+
+    /**
+     * What about the accounts table would refuse a write this package makes.
+     *
+     * @return array<string, mixed>
+     */
+    private function accountsTableComplaints(): array
+    {
+        try {
+            $table = $this->accountsTable();
+
+            if ($table === null) {
+                return [];
+            }
+
+            return [
+                'accounts_table' => $table,
+                'email_is_unique' => Schema::hasIndex($table, ['email'], 'unique'),
+                'columns_needing_a_value' => $this->columnsNeedingAValue($table),
+                'remedy' => 'php artisan vendor:publish --tag=uzairid-user-migrations',
+            ];
+        } catch (Throwable) {
+            return [];
+        }
+    }
+
+    /**
+     * The columns a new account cannot be written without.
+     *
+     * A column that forbids null, has no default and is not filled in by the
+     * database itself has to come from whoever inserts the row — and the
+     * package fills in only the three it knows about. `password` is the one
+     * this finds on a standard installation, and naming it is the whole point:
+     * an application on a hybrid scheme keeps the column and makes it nullable,
+     * one on SSO alone drops it, and neither can tell which it needs to do from
+     * a log line reading `QueryException`.
+     *
+     * @return list<string>
+     */
+    private function columnsNeedingAValue(string $table): array
+    {
+        $written = ['uzair_id', 'name', 'email', 'created_at', 'updated_at'];
+
+        $needed = [];
+
+        foreach (Schema::getColumns($table) as $column) {
+            $name = (string) $column['name'];
+
+            if (in_array($name, $written, true) || ($column['auto_increment'] ?? false) === true) {
+                continue;
+            }
+
+            if (($column['nullable'] ?? true) === false && ($column['default'] ?? null) === null) {
+                $needed[] = $name;
+            }
+        }
+
+        return $needed;
+    }
+
+    /**
+     * The table the host application keeps its accounts in.
+     */
+    private function accountsTable(): ?string
+    {
+        $model = config('auth.providers.users.model');
+
+        if (! is_string($model) || ! class_exists($model)) {
+            return null;
+        }
+
+        $user = new $model;
+
+        return $user instanceof Model ? $user->getTable() : null;
     }
 
     /**
