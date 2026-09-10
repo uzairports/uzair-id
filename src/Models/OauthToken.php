@@ -216,7 +216,7 @@ class OauthToken extends Model
     protected static ?EndSessions $pruner = null;
 
     /**
-     * Flush the cached pruner instance between sweeps, requests or tests.
+     * Flush the cached pruner instance between sweeps, requests, or tests.
      *
      * Reached on every Octane request through `Uzair::flushState()`, so a
      * worker never hands the next request an action built out of a container
@@ -267,7 +267,7 @@ class OauthToken extends Model
     /**
      * Delete still-abandoned logins before surrendering their current grants.
      *
-     * The entries the resolved logins were cached under go too. Pruning is the
+     * The entries the resolved logins were cached undergo too. Pruning is the
      * one path that used to leave them — `login_cache_ttl` documents a swept
      * row as exactly what the entry's lifetime covers — but the sweep is
      * holding every session id it is about to orphan anyway, and dropping them
@@ -328,7 +328,7 @@ class OauthToken extends Model
      *
      * Like the trait's single prune(), this does not apply the sweep's age
      * filter. The pruning hook runs before deletion, but remote revocation
-     * runs after commit so a concurrent refresh cannot leave new grants behind.
+     * runs after commit, so a concurrent refresh cannot leave new grants behind.
      */
     public function prune(): bool
     {
@@ -511,11 +511,11 @@ class OauthToken extends Model
      * before must not answer for whoever holds it now, and the caller compares
      * the two before trusting it.
      *
-     * A store that will not answer has nothing to say about the login, so the
+     * A store that will not answer has anything to say about the login, so the
      * row is read instead — which is what `login_cache_ttl` being zero does on
-     * every request anyway. Left to itself the failure came out of the
+     * every request anyway. Left to itself, the failure came out of the
      * middleware, and a cache outage answered every authenticated request with
-     * a 500: an optimisation nobody asked for taking the application down.
+     * a 500: an optimization nobody asked for taking the application down.
      *
      * @return array{user: string, expires_at: int|null}|null
      */
@@ -555,7 +555,9 @@ class OauthToken extends Model
      *
      * Only the writing is caught. The read around it is this application's own
      * database, and a failure there is not something to swallow on the way to
-     * an optimisation.
+     * an optimization.
+     *
+     * @throws Throwable
      */
     public function cacheLogin(string $sessionId): void
     {
@@ -568,7 +570,7 @@ class OauthToken extends Model
         // Hold the row until publication finishes, so deletion cannot forget
         // the entry between checking the login and writing its cached answer.
         //
-        // Shared rather than exclusive. All this needs is that a delete cannot
+        // Shared rather than exclusive. All this needs is that a deleted cannot
         // commit in between, and a shared lock blocks one — it wants the row
         // exclusively. What it does not block is another request of the same
         // account publishing at the same moment, which is the common case and
@@ -680,7 +682,7 @@ class OauthToken extends Model
     /**
      * Say that the login cache would not answer, once per process.
      *
-     * A store that is down is down for every request, and the line is worth
+     * A store that is down for every request, and the line is worth
      * writing once and worth nothing repeated on each of them — the same
      * bargain `warnAboutTheLoginCache()` already makes for a misconfigured
      * store, and the same one `flushLoginCacheWarnings()` undoes for a test.

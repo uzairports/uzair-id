@@ -10,7 +10,7 @@ return new class extends Migration
     /**
      * Run the migrations.
      *
-     * The identity provider does not guarantee an e-mail address at all, and the
+     * The identity provider does not guarantee an e-mail address at all. The
      * same address may be reused by more than one account, so the constraints
      * Laravel ships on `users.email` no longer hold once accounts are identified
      * by their SSO id.

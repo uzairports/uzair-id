@@ -45,11 +45,12 @@ class Uzair
      * are affected:
      *
      * - `OauthToken::$pruner`, an action resolved out of the container, which
-     *   after a rebind is holding dependencies the application has replaced;
-     * - the two registers behind the once-per-process warnings about the login
-     *   cache and the lock store, which otherwise stay marked for the life of
-     *   the worker — so a store misconfigured after a deploy is reported once
-     *   in days rather than once per boot.
+     *   after a rebinding is holding dependencies the application has replaced;
+     * - The three registers behind the once-per-process warnings about the
+     *   login cache, the lock store, and an unregistered login route, which
+     *   otherwise stays marked for the life of the worker — so a setting
+     *   misconfigured after a deployment is reported once in days rather than once
+     *   per boot.
      *
      * The user resolver is deliberately not among them. It is registered once
      * while the application boots, the way a route or a binding is, and a
@@ -64,6 +65,7 @@ class Uzair
         OauthToken::flushPruner();
         OauthToken::flushLoginCacheWarnings();
         RefreshAccessToken::flushLockStoreWarnings();
+        self::flushLoginRouteWarnings();
     }
 
     /**
@@ -81,8 +83,20 @@ class Uzair
      *
      * So the name is resolved here instead, and a template asks for the URL
      * rather than for a name. A setting naming no registered route answers with
-     * the site root, the way the middleware's own fallback does: a broken
-     * sign-in link is worth less than the 500 that `route()` would raise.
+     * the site root: a broken sign-in link is worth less than the 500 that
+     * `route()` would raise at the one moment somebody is trying to sign in.
+     *
+     * This is the only place the setting is turned into a URL. `uzair.token`
+     * resolved it a second time for the redirect it hands an
+     * `AuthenticationException`, which is the same three lines and the same
+     * fallback — and a second copy of a decision is a second place for it to
+     * drift.
+     *
+     * A name that resolves to nothing is worth a line in the log, since what
+     * follows is a user quietly landing on the site root instead of signing in.
+     * It is said once per process: the setting is misconfigured for as long as
+     * it is misconfigured, and a template calling this on every page would
+     * otherwise write the line on every request.
      */
     public static function loginUrl(): string
     {
@@ -92,7 +106,35 @@ class Uzair
             $route = 'login';
         }
 
-        return Route::has($route) ? route($route) : url('/');
+        if (Route::has($route)) {
+            return route($route);
+        }
+
+        if (! isset(self::$reportedAboutTheLoginRoute[$route])) {
+            self::$reportedAboutTheLoginRoute[$route] = true;
+
+            Log::warning("The route [{$route}] configured as [uzairports.login_route] is not registered, so anyone sent to sign in lands on the site root instead.");
+        }
+
+        return url('/');
+    }
+
+    /**
+     * The login route names already reported as unregistered in this process.
+     *
+     * @var array<string, true>
+     */
+    protected static array $reportedAboutTheLoginRoute = [];
+
+    /**
+     * Let the warning be said again, for a suite that asserts on it.
+     *
+     * Reached between requests on a long-lived runtime through `flushState()`,
+     * which is where the reason is written down.
+     */
+    public static function flushLoginRouteWarnings(): void
+    {
+        self::$reportedAboutTheLoginRoute = [];
     }
 
     /**
@@ -168,9 +210,9 @@ class Uzair
     /**
      * Say so if something else ends up answering to the sign-in route's name.
      *
-     * Two routes may carry one name and Laravel says nothing about it: the name
+     * Two routes may carry one name, and Laravel says nothing about it: the name
      * list simply keeps whichever was registered last. An application with its
-     * own `login` — Breeze, Jetstream, Fortify, a hand-written form — and
+     * own `login` — Breeze, Jetstream, Fortify, a handwritten form — and
      * `login_route` left at the default therefore has one of two things happen
      * silently, and both look like a bug somewhere else entirely. If this
      * package wins, a guest opening the application's sign-in page is thrown
@@ -184,14 +226,14 @@ class Uzair
      * catch the applications that registered theirs first.
      *
      * What is asked is whether anything else carries the name at all, not which
-     * of them the name list happens to hold. Either way round is a problem and
+     * of them the name list happens to hold. Either way round is a problem, and
      * only one of them is visible from the name list: whoever registered last
      * holds it, so asking "is it mine?" would report the application's route
      * winning and say nothing when this package's route wins — which is the
      * half that throws a guest into SSO instead of showing them the form.
      *
      * Routes registered by this package are not counted against each other. An
-     * application registering the endpoints twice, under two prefixes, is doing
+     * application registering the endpoints twice, under two prefixes is doing
      * nothing wrong and must hear nothing.
      *
      * Nothing is refused over it. Which route should hold the name is the
@@ -225,7 +267,7 @@ class Uzair
     }
 
     /**
-     * Whether a route is a sign-in redirect this package registered.
+     * Whether a route is a sign-in redirect, this package registered.
      *
      * @param  class-string  $controller
      */

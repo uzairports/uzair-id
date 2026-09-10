@@ -74,15 +74,15 @@ class ResolveUserFromSocialite
     }
 
     /**
-     * Say that the profile write did not happen, and hand back what is stored.
+     * Say that the profile writing did not happen and hand back what is stored.
      *
      * `save()` answers false rather than raising when a `saving` listener
-     * refuses the write, and that answer was being dropped. The account behind
+     * refuses the writing, and that answer was being dropped. The account behind
      * the identity is still the right one — it is found by `uzair_id`, or it
      * has just been linked by a statement of its own that model events do not
      * reach — so the sign-in is not refused over this. What was lost is a name
      * and an address the identity provider reported, and a host application
-     * that refuses the write is asking for exactly that.
+     * that refuses the writing is asking for exactly that.
      *
      * An account that is not in the database at all is a different matter and
      * is not settled here: `UzairAuthController::writeAccount()` refuses to
@@ -91,7 +91,7 @@ class ResolveUserFromSocialite
      *
      * The attributes are put back to what is stored. Filled and unsaved, they
      * would have `Auth::login()` and every listener behind it read a name this
-     * request did not write and the next one will not find.
+     * request did not write, and the next one will not find.
      */
     private function reportRefusedProfile(Model $user): void
     {
@@ -113,7 +113,7 @@ class ResolveUserFromSocialite
      * nobody has linked is exactly the kind another identity may be linking at
      * the same moment. Both would see `uzair_id` empty, both would write, and
      * the unique index cannot refuse either of them — it is one row, written
-     * twice, so the second write is an ordinary update. Two people would then
+     * twice, so the second writing is an ordinary update. Two people would then
      * be signed in to one local account, which is the worst outcome this action
      * has: the whole reason `uzair_id` is the only identifier trusted here is
      * that an address is not proof of who owns it.

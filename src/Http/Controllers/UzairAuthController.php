@@ -61,6 +61,8 @@ class UzairAuthController
      * session is invalidated, the grants the handshake was already issued are
      * handed back — see `surrenderIssuedGrants()` — and the user is sent back
      * with the reason.
+     *
+     * @throws Throwable
      */
     public function callback(
         Request $request,
@@ -104,12 +106,12 @@ class UzairAuthController
 
         $this->endPreviousLogin($endSessions, $token, $previousSessionId);
 
-        // Two callbacks for one account finishing at the same moment each write
-        // their own row and then end "the others", which by then includes the
+        // Two callbacks for one account finishing at the same moment each writes
+        // their own row and then ends "the others", which by then includes the
         // row the other one just wrote: both logins can go, and both browsers
         // are sent back through SSO on their next request. That is left
         // unserialized on purpose. Closing it means holding a lock on the
-        // account across the write and the sweep — on the sign-in path, for
+        // account across the writing and the sweep — on the sign-in path, for
         // every sign-in — to buy an outcome that differs from the intended one
         // only in which of two simultaneous logins survives. `single_session`
         // promises that one login stands at a time, and ending both keeps that
@@ -134,6 +136,8 @@ class UzairAuthController
      * The token is dropped whether the identity provider accepted the
      * revocation: a provider that cannot be reached must not be able to keep a
      * user signed in here.
+     *
+     * @throws Throwable
      */
     public function logout(Request $request, EndSessions $endSessions): JsonResponse|RedirectResponse
     {
@@ -173,7 +177,7 @@ class UzairAuthController
      *
      * A caller who is not signed in is told so, rather than told the row was
      * not found. The blanket 404 is there to keep an account from learning
-     * which row ids exist, and that is about somebody signed in probing
+     * which row ids exist. That is about somebody signed in probing
      * somebody else's — a guest learns nothing from a 401 it did not already
      * know, and an API client whose session lapsed learns from a 404 only that
      * something is missing, not that it has to authenticate again. `logout()`
@@ -181,6 +185,7 @@ class UzairAuthController
      *
      * @throws AuthenticationException when nobody is signed in
      * @throws NotFoundHttpException when the account holds no such login
+     * @throws Throwable
      */
     public function logoutDevice(Request $request, EndSessions $endSessions, int|string $token): JsonResponse|RedirectResponse
     {
@@ -251,11 +256,11 @@ class UzairAuthController
      * is answered, and what it says about grants no row points at.
      *
      * This covers the failures from `Auth::login()` onward. A profile request
-     * that fails is the other half, and never reaches here — `user()` throws
+     * that fails is the other half and never reaches here — `user()` throws
      * before it can hand a user back, so there is nothing to read the grants
      * off. The driver surrenders those itself, where they are still in hand.
      *
-     * Nothing raises out of here. The caller is in the middle of answering a
+     * Nothing rises out of here. The caller is in the middle of answering a
      * failure and must go on to sign the browser out and report the original
      * exception, which is the one worth reading; `EndSessions` already reports
      * a revocation that would not go through.
@@ -391,8 +396,8 @@ class UzairAuthController
      * work is simply done again — the second attempt finds the row the winner
      * wrote and updates it.
      *
-     * A refusal that is not that race is not something the retry can help with,
-     * and both of the ones an integrator actually meets come from the accounts
+     * A refusal that is not that race is not something the retry can help with.
+     * Both of the ones an integrator actually meets come from the account
      * table still being shaped for local passwords — see
      * `refuseTheAccountWrite()`, which is what says so.
      *
@@ -419,9 +424,9 @@ class UzairAuthController
     }
 
     /**
-     * Say what about the accounts table refused the write, then hand it on.
+     * Say what about the account table refused the writing, then hand it on.
      *
-     * The database refusing this write is what a standard Laravel `users` table
+     * The database refusing this writing is what a standard Laravel `users` table
      * does to an SSO sign-in, and there are two of them. `password` is `NOT
      * NULL` with no default, and nothing here has a password to write. `email`
      * is unique and `NOT NULL`, while the identity provider does not promise an
@@ -440,7 +445,7 @@ class UzairAuthController
      *
      * The table is read rather than the driver's message parsed. Three drivers
      * word these two refusals five different ways; the schema says the same
-     * thing on all of them, and says it about this application's own table.
+     * thing on all of them and says it about this application's own table.
      *
      * Nothing here may raise. A diagnosis that fails must not replace the
      * failure it was diagnosing, so the original exception goes on either way.
@@ -458,7 +463,7 @@ class UzairAuthController
     }
 
     /**
-     * What about the accounts table would refuse a write this package makes.
+     * What about the account table would refuse a writing this package makes.
      *
      * @return array<string, mixed>
      */
@@ -485,12 +490,12 @@ class UzairAuthController
     /**
      * The columns a new account cannot be written without.
      *
-     * A column that forbids null, has no default and is not filled in by the
+     * A column that forbids null, has no default, and is not filled in by the
      * database itself has to come from whoever inserts the row — and the
      * package fills in only the three it knows about. `password` is the one
      * this finds on a standard installation, and naming it is the whole point:
      * an application on a hybrid scheme keeps the column and makes it nullable,
-     * one on SSO alone drops it, and neither can tell which it needs to do from
+     * one on SSO alone drops it, and neither can tell what it needs to do from
      * a log line reading `QueryException`.
      *
      * @return list<string>
@@ -549,7 +554,7 @@ class UzairAuthController
 
             // The account has to be in the database to be signed in, and
             // `save()` answers false rather than raising when a listener
-            // refuses the write. Left unasked, `Auth::login()` would fire the
+            // refuses the writing. Left unasked, `Auth::login()` would fire the
             // `Login` event naming a model with no key, and the login row
             // written next would carry a null `user_id` into the foreign key.
             if (! $user->exists) {
@@ -559,7 +564,7 @@ class UzairAuthController
             // `single_session` ends the account's other logins once this one is
             // written and names them by whatever `getAuthIdentifier()` hands
             // back. A key that names no row is asked for here, before the
-            // browser is signed in, rather than where it is spent: raised on
+            // browser is signed in, rather than where it is spent: rose on
             // the far side, the account would already be written and signed in,
             // and a handshake that worked would end in a 500.
             if (config('uzairports.single_session', false)) {
@@ -593,12 +598,12 @@ class UzairAuthController
     }
 
     /**
-     * Write the login row, refusing the handshake if the write did not happen.
+     * Write the login row, refusing the handshake if the writing did not happen.
      *
      * `save()` answers false rather than raising when a `saving` or `creating`
      * listener returns false, and that answer used to be dropped. The handshake
      * then carried on as though it had succeeded: the browser stayed signed in
-     * against a row that was never written — or, where the row already existed,
+     * against a row never written — or, where the row already existed,
      * one still holding the grants of the previous login — the freshly issued
      * grants were never handed back, `UzairAuthenticated` was dispatched naming
      * a model that does not exist, and under `single_session` the sweep that
@@ -606,7 +611,7 @@ class UzairAuthController
      * not been recorded. The browser was then refused by `uzair.token` on its
      * very next request and sent back to sign in again, which is a loop.
      *
-     * A listener that refuses the write is saying this login must not be
+     * A listener that refuses to write is saying this login must not be
      * recorded, and the only coherent answer is not to sign the browser in.
      * Raising puts it through the same cleanup as any other failed handshake:
      * the session is dropped and the grants are surrendered. It is the same
@@ -650,7 +655,7 @@ class UzairAuthController
      * The identity provider does not have to say how long the token lives, and
      * `uzairports.default_token_ttl` is what stands in when it does not. This
      * used to store null instead and leave the renewal to the middleware, which
-     * reads an unknown expiry as expired — so a provider that never sends
+     * reads unknown expiry as expired — so a provider that never sends
      * `expires_in` had every sign-in followed immediately by a token exchange,
      * on the first request the browser made. That exchange spends the rotating
      * refresh token, and it lands on the same fallback anyway, because
@@ -661,8 +666,8 @@ class UzairAuthController
      * what casting it gave: `addSeconds(0)` is this instant, and the middleware
      * reads it as expired on the very next request.
      *
-     * A fallback that is itself zero or not a number leaves the expiry unknown,
-     * which is the older behaviour and still the honest one — there is nothing
+     * A fallback that is itself zero or not a number of leaves the expiry unknown,
+     * which is the older behavior and still the honest one — there is nothing
      * left to write.
      */
     private function expiresAt(SocialiteUser $uzairUser): ?CarbonInterface

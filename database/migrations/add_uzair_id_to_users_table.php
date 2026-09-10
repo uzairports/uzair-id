@@ -68,7 +68,7 @@ return new class extends Migration
      *
      * Null where there is nothing to alter: the table is the application's to
      * publish, and a migration that runs before it exists has no column to add
-     * to it. Laravel's own `users` stands in wherever the configured model
+     * to it. Laravel's own `users` stand in wherever the configured model
      * cannot be read, which is what this migration always assumed.
      */
     private function accountsTable(): ?string
@@ -81,10 +81,10 @@ return new class extends Migration
     }
 
     /**
-     * The column the SSO id is written beside, where there is one to name.
+     * The column the SSO id is written besides, where there is one to name.
      *
-     * Position is cosmetic and MySQL is the only driver given it, but naming a
-     * column that is not there is not cosmetic at all: MySQL refuses the whole
+     * Position is cosmetic, and MySQL is the only driver given it, but naming a
+     * column that is not there is no cosmetic at all: MySQL refuses the whole
      * statement. So the key is asked for by name and then checked, and a table
      * whose key this migration cannot find simply gets the column appended.
      */

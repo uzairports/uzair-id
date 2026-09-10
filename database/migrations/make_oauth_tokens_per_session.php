@@ -11,7 +11,7 @@ return new class extends Migration
      * The name this upgrade gives the pair it puts in place of `unique(user_id)`.
      *
      * It identifies work this migration did. Laravel's conventional name would
-     * not: the create migration has spelled the same pair for several releases,
+     * not: the creation migration has spelled the same pair for several releases,
      * and an index cannot be asked which migration wrote it.
      */
     private const string UPGRADE_UNIQUE = 'uzairid_session_pair_upgrade_unique';
@@ -22,7 +22,7 @@ return new class extends Migration
      * A row stops being "the account's token" and becomes "one login": the same
      * account may hold several at once, one per browser session, each with the
      * grant that browser was issued. What has to be unique is therefore the
-     * pair, not the user.
+     * pair, not the user?
      *
      * Rows that predate the change name no session and cannot be told apart
      * once the pair becomes the identity, so they are dropped: what they hold
@@ -30,7 +30,7 @@ return new class extends Migration
      * owner signs in again.
      *
      * Every step is guarded — an installation created after this release
-     * already has the shape from the create migration.
+     * already has the shape from the creation migration.
      *
      * The pair is given a name of this upgrade's own rather than Laravel's
      * conventional one, and that name is the whole of what `down()` goes by.
@@ -61,11 +61,11 @@ return new class extends Migration
     /**
      * Reverse the migrations, but only where they were the ones applied.
      *
-     * `up()` skips a table that already has the shape, and this has to skip the
+     * `up()` skips a table that already has the shape. This has to skip the
      * same tables — otherwise a migration that changed nothing rolls back by
      * dropping two columns and replacing the pair with `unique(user_id)`, which
      * is not a rollback but a downgrade of a table this migration never touched.
-     * On an installation created after the release it was the whole of what
+     * On an installation created after the release, it was the whole of what
      * `migrate:rollback` did to `oauth_tokens`: `ip_address` and `user_agent`
      * gone with the device list they hold, and every account back to one login.
      *

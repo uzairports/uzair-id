@@ -13,7 +13,7 @@ return new class extends Migration
      * looks it up by the session id it had before the handshake regenerated it.
      * That row may belong to another account — a shared computer, a second
      * identity — so the lookup cannot be scoped to the account, which is what
-     * makes it the one write path the unique pair does not serve: the pair
+     * makes it the one writing path the unique pair does not serve: the pair
      * leads with `user_id`, and an index cannot be entered halfway.
      *
      * Left as it was, every sign-in read `oauth_tokens` end to end. The table
@@ -21,7 +21,7 @@ return new class extends Migration
      * signed in — worst at exactly the hour they are all signing in.
      *
      * Installations created after this release already have the index from the
-     * create migration, so it is added only where it is missing.
+     * creation migration, so it is added only where it is missing.
      */
     public function up(): void
     {

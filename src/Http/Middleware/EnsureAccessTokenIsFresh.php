@@ -8,18 +8,18 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Route;
 use Symfony\Component\HttpFoundation\Response;
+use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Uzair;
 
 class EnsureAccessTokenIsFresh
 {
     public function __construct(
-        private RefreshAccessToken $refreshAccessToken,
-        private EndSessions $endSessions,
+        private readonly RefreshAccessToken $refreshAccessToken,
+        private readonly EndSessions $endSessions,
     ) {}
 
     /**
@@ -36,9 +36,10 @@ class EnsureAccessTokenIsFresh
      * unauthenticated one: a redirect back through SSO for a browser, a 401 for
      * an API client.
      *
-     * @param  Closure(Request): Response  $next
+     * @param Closure(Request): Response $next
      *
      * @throws AuthenticationException when the session can no longer be renewed
+     * @throws Throwable
      */
     public function handle(Request $request, Closure $next): Response
     {
@@ -66,7 +67,7 @@ class EnsureAccessTokenIsFresh
             throw new AuthenticationException(
                 __('uzairid::messages.session_ended'),
                 [],
-                $this->loginUrl(),
+                Uzair::loginUrl(),
             );
         }
 
@@ -105,7 +106,7 @@ class EnsureAccessTokenIsFresh
         throw new AuthenticationException(
             __('uzairid::messages.session_expired'),
             [],
-            $this->loginUrl(),
+            Uzair::loginUrl(),
         );
     }
 
@@ -163,17 +164,17 @@ class EnsureAccessTokenIsFresh
      *
      * Every request through this middleware reads `oauth_tokens` to ask two
      * questions of one row — is the login still there, and is its token still
-     * good — and for a browser clicking around an application the answer is the
+     * good — and for a browser clicking around an application, the answer is the
      * same on almost all of them. `uzairports.login_cache_ttl` lets the answer
-     * stand for a few seconds so those requests cost nothing, and it is zero by
-     * default, which is the behaviour of reading the row every time.
+     * stand for a few seconds, so those requests cost nothing, and it is zero by
+     * default, which is the behavior of reading the row every time.
      *
      * What the entry cannot be trusted for is who it belongs to. A session id
      * is not proof of an account — the browser holding it now may not be the
      * one it was written for — so the account is compared before the entry is
      * used, and a mismatch falls through to the row.
      *
-     * An unknown expiry is not freshness: `expiresWithin()` treats it as
+     * Unknown expiry is not freshness: `expiresWithin()` treats it as
      * expired, so a login stored without one is renewed rather than let past.
      */
     private function alreadyResolvedAsFresh(Request $request, Authenticatable $user, int $leeway): bool
@@ -202,6 +203,8 @@ class EnsureAccessTokenIsFresh
 
     /**
      * Let the login just resolved answer for the next few requests.
+     *
+     * @throws Throwable
      */
     private function rememberResolved(Request $request, OauthToken $token): void
     {
@@ -249,30 +252,5 @@ class EnsureAccessTokenIsFresh
         $leeway = config('uzairports.refresh_leeway', 60);
 
         return is_numeric($leeway) ? (int) $leeway : 60;
-    }
-
-    /**
-     * Where a browser is sent to authenticate again.
-     *
-     * A missing route would raise a `RouteNotFoundException` here — a 500 in
-     * place of the redirect, at the one moment the user most needs to be sent
-     * back through SSO. An unresolvable name therefore falls back to the site
-     * root, and the caller is left to notice the misconfiguration in the log.
-     */
-    private function loginUrl(): string
-    {
-        $route = config('uzairports.login_route', 'login');
-
-        if (! is_string($route) || $route === '') {
-            $route = 'login';
-        }
-
-        if (Route::has($route)) {
-            return route($route);
-        }
-
-        Log::warning("The route [{$route}] configured as [uzairports.login_route] is not registered.");
-
-        return url('/');
     }
 }

@@ -14,7 +14,7 @@ return new class extends Migration
      * since been superseded.
      *
      * It is guarded because installations that published `oauth_tokens` after
-     * this release already have the column from the create migration.
+     * this release already have the column from the creation migration.
      */
     public function up(): void
     {
@@ -35,9 +35,9 @@ return new class extends Migration
      * roll back by dropping the column every login in the table is named by.
      *
      * What says the column is not this migration's to drop is that something
-     * else is built on it. An installation whose create migration wrote
+     * else is built on it. An installation whose creation migration wrote
      * `session_id` wrote `unique(user_id, session_id)` and the session index
-     * over it in the same breath, and neither is this migration's to take
+     * over it in the same breath, and neither is this migration to take
      * apart. The legacy shape this does reverse has no such thing: the pair
      * arrives with `make_oauth_tokens_per_session`, whose own `down()` takes it
      * back off first — a full rollback therefore reaches here with nothing left

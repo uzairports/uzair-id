@@ -16,9 +16,9 @@ return new class extends Migration
      *
      * `stringKeyColumn()` narrows to this list and `mirrorColumn()` has an arm
      * for each member, so the two are named from one place rather than kept in
-     * step by hand.
+     * a step by hand.
      */
-    private const REFERENCEABLE_TYPES = ['uuid', 'char', 'bpchar', 'varchar'];
+    private const array REFERENCEABLE_TYPES = ['uuid', 'char', 'bpchar', 'varchar'];
 
     /**
      * Run the migrations.
@@ -28,7 +28,7 @@ return new class extends Migration
      * so a token stored without one is renewed on the owner's next request.
      *
      * `refresh_token` is nullable because the identity provider is not obliged
-     * to issue one; without it the session simply ends when the access token
+     * to issue one; without it, the session simply ends when the access token
      * does, and the user is sent back through the SSO flow.
      *
      * A row is one login, identified by the browser session that made it, so
@@ -103,19 +103,19 @@ return new class extends Migration
      * The constraint cannot simply be asked for, because the column has to
      * match the one it references before any driver accepts it — MySQL refuses
      * `varchar(255)` against a `char(36)` key, Postgres refuses it against a
-     * `uuid`. So the users table is read and its key column is mirrored: type,
+     * `uuid`. So the user's table is read, and its key column is mirrored: type,
      * length, and on MySQL the collation, which is its own way to be refused
      * and need not be the same in two tables.
      *
-     * Where that column cannot be read the column is written as it always was
-     * and left unconstrained. Two cases reach that — the users table does not
+     * Where that column cannot be read, the column is written as it always was
+     * and left unconstrained. Two cases reach that — the user's table does not
      * exist yet, and a model whose `$keyType` says `string` over a column that
      * is nothing of the sort. Neither could be given a constraint that would
      * hold, and neither is worth failing the migration over.
      *
-     * What the cascade is NOT is a way to end a login. It deletes underneath
+     * What the cascade is NOT is a way to end a login. It is deleted underneath
      * Eloquent: no model events, so nothing observing logouts hears about it,
-     * no `OauthToken::forgetLogin()`, and above all no grant surrendered to the
+     * no `OauthToken::forgetLogin()`, and above all, no grant surrendered to the
      * identity provider — the access and refresh tokens of a deleted account
      * stay live at UzAirports ID until they expire on their own. It is an
      * integrity net for rows nobody could use anyway. An application that
@@ -253,7 +253,7 @@ return new class extends Migration
     }
 
     /**
-     * The length a column's full type declares, where it declares one.
+     * The length of a column's full type declares, where it declares one.
      *
      * Postgres writes `character varying(36)` where MySQL writes `varchar(36)`,
      * and SQLite writes `varchar` with no length at all — the number in

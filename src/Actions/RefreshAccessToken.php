@@ -93,7 +93,7 @@ class RefreshAccessToken
      * Let the lock go, without letting that undo the exchange.
      *
      * The lock is released in a `finally`, so a store that went away while the
-     * exchange was running would otherwise raise from there — and a `finally`
+     * exchange was running would otherwise rise from there — and a `finally`
      * raises over whatever the block was already doing. That is a 500 on a
      * request whose token has just been renewed and stored, sending its owner
      * back through SSO for a grant they are holding; and where the exchange
@@ -310,7 +310,7 @@ class RefreshAccessToken
             $cache?->forget(self::PROVIDER_FAILURE_COUNT_KEY);
             $cache?->forget(self::PROVIDER_FAILURE_KEY);
         } catch (Throwable) {
-            // A store that will not answer has nothing recorded in it either.
+            // A store that will not answer has anything recorded in it either.
         }
     }
 
@@ -348,7 +348,7 @@ class RefreshAccessToken
      * How long the identity provider is left alone after it fails to answer.
      *
      * Zero switches it off, which is the behavior of calling the provider on
-     * every renewal, however, it answered the last one.
+     * every renewal; however, it answered the last one.
      */
     private static function providerCooldown(): int
     {
@@ -665,7 +665,7 @@ class RefreshAccessToken
     }
 
     /**
-     * Say which driver was found where this package's was expected.
+     * Say which driver was found where this package was expected.
      */
     private function refuseTheDriver(OauthToken $token, string $found): never
     {
@@ -755,7 +755,7 @@ class RefreshAccessToken
      * `invalid_client` is credentials the identity provider would not
      * authenticate, and `unauthorized_client` is a client not allowed to use
      * this grant type at all. Neither says anything about the refresh token —
-     * every login of every account gets the same answer, because there is one
+     * every login of every account gets the same answer because there is one
      * set of credentials behind all of them.
      *
      * They used to be read as a refused grant, which is the one answer that

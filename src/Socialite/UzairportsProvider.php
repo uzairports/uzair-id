@@ -96,6 +96,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      *
      * @throws InvalidStateException when the callback carries no matching state
      * @throws GuzzleException
+     * @throws Throwable
      */
     public function user(): User
     {
@@ -124,7 +125,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      * Give up the grants of a handshake that got no further than the exchange.
      *
      * Routed through `EndSessions` like every other revocation in the package,
-     * so both grants go on the wire together and a refusal is reported the same
+     * so both grants go on the wire together, and a refusal is reported the same
      * way. Nothing raises: the caller is about to be handed the failure that
      * brought it here, which is the one worth reading.
      *
@@ -266,9 +267,6 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         ]);
     }
 
-    /**
-     * @throws GuzzleException
-     */
     public function logout(string $token): ?ResponseInterface
     {
         return $this->wait($this->logoutAsync($token));
@@ -314,8 +312,6 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      * is nothing to call, and the method says so by returning null, so a
      * deployment whose provider offers no such endpoint pays no failed request
      * on every logout.
-     *
-     * @throws GuzzleException
      */
     public function revokeRefreshToken(string $refreshToken): ?ResponseInterface
     {

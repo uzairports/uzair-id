@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Concerns;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -69,7 +70,7 @@ trait HasUzairToken
     /**
      * The login this request is running on.
      *
-     * A request that has a browser session is answered by the login naming it.
+     * The login naming it answers a request that has a browser session.
      * One that has none — an API client, a console command — is answered by a
      * login that names none either: `session_id` is nullable precisely so that
      * a token can be held outside a session, and such a row belongs to the
@@ -91,7 +92,7 @@ trait HasUzairToken
      * The unique pair does not collapse several null session ids, so the most
      * recent of them is taken — the same rule `uzair.token` goes by.
      */
-    public function currentToken(): ?OauthToken
+    public function currentToken(): Model
     {
         $sessionId = $this->currentSessionId();
 

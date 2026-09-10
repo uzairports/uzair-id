@@ -59,6 +59,28 @@ class StateFlushingTest extends TestCase
     }
 
     /**
+     * A `login_route` naming nothing sends everyone to the site root instead of
+     * a sign-in page, and `Uzair::loginUrl()` may be called from a template on
+     * every page — so the line is worth writing once and worth nothing repeated
+     * on each of them, and worth writing again after a deploy.
+     */
+    public function test_a_terminated_operation_lets_the_login_route_warning_be_said_again(): void
+    {
+        Uzair::flushLoginRouteWarnings();
+
+        config(['uzairports.login_route' => 'a.route.nobody.registered']);
+
+        Log::shouldReceive('warning')->twice()->with(Mockery::pattern('/is not registered/'));
+
+        $this->assertSame(url('/'), Uzair::loginUrl());
+        $this->assertSame(url('/'), Uzair::loginUrl());
+
+        Event::dispatch(self::OCTANE_OPERATION_TERMINATED);
+
+        $this->assertSame(url('/'), Uzair::loginUrl());
+    }
+
+    /**
      * The resolver is registered while the application boots, the way a route
      * or a binding is. A worker that dropped it between requests would serve
      * every later one without it.
@@ -82,6 +104,7 @@ class StateFlushingTest extends TestCase
     protected function tearDown(): void
     {
         OauthToken::flushLoginCacheWarnings();
+        Uzair::flushLoginRouteWarnings();
         Uzair::resolveUserUsing(null);
 
         parent::tearDown();

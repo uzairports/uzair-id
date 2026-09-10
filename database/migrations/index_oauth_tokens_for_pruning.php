@@ -15,7 +15,7 @@ return new class extends Migration
      * table of any size the nightly `model:prune` was the only full scan left.
      *
      * Installations created after this release already have the index from the
-     * create migration, so it is added only where it is missing.
+     * creation migration, so it is added only where it is missing.
      */
     public function up(): void
     {

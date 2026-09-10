@@ -80,7 +80,7 @@ return [
     |
     | Whether the cleanup gives each login's grant up at the identity provider
     | before dropping its row. A closed browser never signs out, so without
-    | this its refresh token stays honoured long after nothing here points at
+    | this its refresh token stays honored long after nothing here points at
     | it — which is the one way a login can end holding a live grant.
     |
     | It costs the provider's revocation calls per row, in a command that may
@@ -253,10 +253,10 @@ return [
     |
     | Whether `single_session` gives each login's grant up at the identity
     | provider before letting the new one in. On by default, because a grant
-    | nobody surrendered keeps being honoured: whoever holds a copy of that
+    | nobody surrendered keeps being honored: whoever holds a copy of that
     | refresh token has a way into the account until it expires on its own.
     |
-    | The cost falls on the one request a user is actually waiting on, and it
+    | The cost falls on the one request a user is actually waiting on. It
     | grows with the number of devices the account is signed in on — an account
     | on a dozen of them waits out a dozen revocation timeouts before it sees
     | the dashboard. Turn it off where that wait is real: the logins still end
@@ -306,9 +306,9 @@ return [
     | provider fails to answer one.
     |
     | Without it, an unreachable provider costs every request holding an
-    | expiring token the full `timeout` above before it is answered, and those
-    | waits are held in the application's workers — of which there are far fewer
-    | than there are requests during a wave of expiries. A provider that is
+    | expiring token the full `timeout` above before it is answered. Those
+    | waits are held in the application's workers — of whom there are far fewer
+    | than there are requests during a wave of expiry. A provider that is
     | merely unreachable then takes the whole application down with it, pages
     | that never needed a token included.
     |
@@ -320,7 +320,7 @@ return [
     | The entry lapses rather than being probed, so traffic reaches the provider
     | again for one `timeout` in every cooldown. Set it to several times that
     | timeout, or a shorter value spares little; zero calls the provider on
-    | every renewal however it answered the last one.
+    | every renewal, however, it answered the last one.
     |
     */
 
@@ -358,7 +358,7 @@ return [
     | account's other logins in.
     |
     | Raising it shortens that wait and opens more sockets at once; lowering it
-    | to 1 restores the old one-at-a-time behaviour.
+    | to 1 restores the old one-at-a-time behavior.
     |
     */
 
@@ -423,7 +423,7 @@ return [
     | `login_cache_ttl` being zero.
     |
     | This is where to point the entries when the application caches in
-    | something unshared but a store every process reads is available.
+    | something unshared, but a store every process reads is available.
     |
     */
 

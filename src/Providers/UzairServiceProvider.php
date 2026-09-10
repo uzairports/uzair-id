@@ -27,7 +27,7 @@ class UzairServiceProvider extends ServiceProvider
      * that is not Octane. A listener is registered under a name, so it need
      * not be.
      */
-    private const OCTANE_OPERATION_TERMINATED = 'Laravel\Octane\Contracts\OperationTerminated';
+    private const string OCTANE_OPERATION_TERMINATED = 'Laravel\Octane\Contracts\OperationTerminated';
 
     /**
      * Register services.
@@ -148,11 +148,11 @@ class UzairServiceProvider extends ServiceProvider
      * lock store would stay marked for the life of the worker.
      *
      * `OperationTerminated` is the interface all of Octane's terminating events
-     * implement, so requests, tasks and ticks are covered by the one listener —
+     * implement, so the one listener covers requests, tasks, and ticks —
      * Laravel's dispatcher matches an object event against the interfaces it
      * implements as readily as against its class.
      *
-     * The listener is registered whether or not Octane is installed. Nothing
+     * The listener is registered whether Octane is installed. Nothing
      * else dispatches an event implementing that interface, so on every other
      * runtime this is one entry in the dispatcher's array that never fires —
      * cheaper than the `interface_exists()` call it would take to avoid it, and
@@ -173,7 +173,7 @@ class UzairServiceProvider extends ServiceProvider
      * Declare what `vendor:publish` may copy out of the package.
      *
      * Every group here builds its destination paths eagerly — four of them time
-     * stamp a migration filename apiece — and none of it can be asked for
+     * stamp a migration filename apiece — and none of them can be asked for
      * outside the console, so it is declared there and nowhere else.
      */
     private function registerPublishing(): void
