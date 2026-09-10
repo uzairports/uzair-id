@@ -41,6 +41,12 @@ class RefreshAccessToken
      * from what is stored, or told to come back, without holding a worker for
      * either.
      *
+     * A store that will not hand the lock over is answered the same way a lock
+     * wait is, and never by exchanging unguarded — see
+     * `refuseOverTheLockStore()`. What the store does is told apart from what
+     * the exchange does: a failure raised by the work under the lock belongs to
+     * the caller and goes back to it untouched.
+     *
      * @throws Throwable
      */
     public function __invoke(OauthToken $token, int $leeway = 0): bool
@@ -49,23 +55,98 @@ class RefreshAccessToken
             return $this->answerWithoutCalling($token, $leeway);
         }
 
-        $store = $this->lockStore();
+        try {
+            $store = $this->lockStore();
+        } catch (Throwable $exception) {
+            return $this->refuseOverTheLockStore($token, $leeway, $exception);
+        }
 
         if ($store === null) {
             return $this->exchange($token, $leeway);
         }
 
-        /** @var Lock $lock */
-        $lock = $store->lock($this->lockKey($token), self::lockTtl());
-
+        // Taking the lock and doing the work under it are kept apart, rather
+        // than handing the work to `block()` as a callback. Only then can a
+        // store that will not answer be told from an exchange that failed:
+        // wrapped together, one `catch` sees both, and answering a login that
+        // could not be stored as though the cache had hiccuped would lose the
+        // failure the caller has to hear.
         try {
-            /** @var bool $refreshed */
-            $refreshed = $lock->block(self::lockWait(), fn (): bool => $this->exchange($token, $leeway));
+            /** @var Lock $lock */
+            $lock = $store->lock($this->lockKey($token), self::lockTtl());
 
-            return $refreshed;
+            $lock->block(self::lockWait());
         } catch (LockTimeoutException) {
             return $this->answerWithoutCalling($token, $leeway);
+        } catch (Throwable $exception) {
+            return $this->refuseOverTheLockStore($token, $leeway, $exception);
         }
+
+        try {
+            return $this->exchange($token, $leeway);
+        } finally {
+            $this->release($lock);
+        }
+    }
+
+    /**
+     * Let the lock go, without letting that undo the exchange.
+     *
+     * The lock is released in a `finally`, so a store that went away while the
+     * exchange was running would otherwise raise from there — and a `finally`
+     * raises over whatever the block was already doing. That is a 500 on a
+     * request whose token has just been renewed and stored, sending its owner
+     * back through SSO for a grant they are holding; and where the exchange
+     * failed, it is that failure replaced by a cache error on the way out.
+     *
+     * Nothing is lost by letting go quietly. The lock expires on its own —
+     * `lockTtl()` outlives the exchange by design — so the worst of it is that
+     * one login's renewals wait for that to happen.
+     */
+    private function release(Lock $lock): void
+    {
+        try {
+            $lock->release();
+        } catch (Throwable $exception) {
+            self::warnAboutTheLockStore(
+                'The cache store behind [uzairports.lock_store] would not release the lock that guards the UzAirports refresh token exchange, which will now be held until it expires. ('.$exception::class.')'
+            );
+        }
+    }
+
+    /**
+     * Answer from the row when the lock could not be taken at all.
+     *
+     * Only `LockTimeoutException` was caught here, so a store that would not
+     * answer — a Redis that stopped, a `lock_store` naming nothing — came out
+     * of `acquire()` as an ordinary failure and left the middleware raising a
+     * 500 on every request holding an expiring token. That is the outage taking
+     * the whole application down, which is precisely what this class refuses to
+     * let an unreachable identity provider do, and what every other cache call
+     * in it is already written to prevent.
+     *
+     * The answer is the one a lock wait already gets, and for the same reason:
+     * `answerWithoutCalling()` adopts a login another process renewed, reports
+     * one that is gone, and otherwise says 503. What it never does is spend the
+     * refresh token. Running the exchange unguarded would be the worst reading
+     * of a store outage there is — nobody holds a lock while the store is down,
+     * so every process renewing at that moment would spend the same rotating
+     * token, and the losers would all be signed out.
+     *
+     * `lockStore()` returning null is a different thing and keeps its own
+     * answer: a store that works and offers no atomic locks is a standing
+     * misconfiguration an operator reads once in the log, not a moment when
+     * every worker is unguarded at once.
+     *
+     * @throws ServiceUnavailableHttpException when the login is still due a renewal
+     */
+    private function refuseOverTheLockStore(OauthToken $token, int $leeway, Throwable $exception): bool
+    {
+        self::warnAboutTheLockStore(
+            'The cache store behind [uzairports.lock_store] would not hold the lock that guards the UzAirports refresh token exchange, so renewals are being answered from what is stored rather than spent unguarded. ('.$exception::class.')'
+        );
+
+        return $this->answerWithoutCalling($token, $leeway);
     }
 
     /**

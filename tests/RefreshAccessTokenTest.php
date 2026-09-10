@@ -16,9 +16,11 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use InvalidArgumentException;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
 use Mockery;
+use RuntimeException;
 use stdClass;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Uzairports\Uzairid\Actions\EndSessions;
@@ -557,12 +559,13 @@ class RefreshAccessTokenTest extends TestCase
 
         $lock = Mockery::mock(Lock::class);
         $lock->shouldReceive('block')->once()->andReturnUsing(
-            function (int $seconds, callable $callback) use (&$wait): bool {
+            function (int $seconds) use (&$wait): bool {
                 $wait = $seconds;
 
-                return (bool) $callback();
+                return true;
             }
         );
+        $lock->shouldReceive('release')->once();
 
         $store = Mockery::mock(LockProvider::class);
         $store->shouldReceive('lock')->once()->andReturnUsing(
@@ -839,6 +842,114 @@ class RefreshAccessTokenTest extends TestCase
         // would send them back to cannot sign them in either.
         $this->assertModelExists($token);
         Event::assertDispatched(UzairTokenRefreshFailed::class);
+    }
+
+    /**
+     * A store that stopped answering is not a lock wait, and only a lock wait
+     * was being caught — so the failure came out of `acquire()` and left the
+     * middleware raising a 500 on every request holding an expiring token.
+     *
+     * The refresh token must not be spent to get around it: while the store is
+     * down nobody holds a lock, so every process renewing at that moment would
+     * spend the same rotating token.
+     */
+    public function test_a_lock_store_that_will_not_answer_refuses_without_spending_the_grant(): void
+    {
+        $token = $this->expiredToken('3020');
+
+        $lock = Mockery::mock(Lock::class);
+        $lock->shouldReceive('block')->once()->andThrow(new RuntimeException('The lock store cannot be reached.'));
+
+        $store = Mockery::mock(LockProvider::class);
+        $store->shouldReceive('lock')->once()->andReturn($lock);
+
+        Cache::shouldReceive('store')->andReturn($store);
+        Socialite::shouldReceive('driver')->never();
+
+        RefreshAccessToken::flushLockStoreWarnings();
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($token));
+        $this->assertModelExists($token);
+    }
+
+    /**
+     * The store is resolved before the lock is asked for, and `lock_store`
+     * naming nothing at all fails there — one line earlier than the case above,
+     * and just as much a 500.
+     */
+    public function test_a_lock_store_that_cannot_be_resolved_refuses_without_spending_the_grant(): void
+    {
+        $token = $this->expiredToken('3021');
+
+        Cache::shouldReceive('store')->andThrow(new InvalidArgumentException('Cache store [nowhere] is not defined.'));
+        Socialite::shouldReceive('driver')->never();
+
+        RefreshAccessToken::flushLockStoreWarnings();
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($token));
+        $this->assertModelExists($token);
+    }
+
+    /**
+     * The lock is let go in a `finally`, so a store that went away while the
+     * exchange was running would raise from there — over a renewal that has
+     * already been made and stored. The caller must hear the renewal, not the
+     * cache: refusing would send the owner back through SSO for a token they
+     * are holding.
+     */
+    public function test_a_lock_that_cannot_be_released_still_answers_with_the_renewal(): void
+    {
+        $token = $this->expiredToken('3022');
+
+        $lock = Mockery::mock(Lock::class);
+        $lock->shouldReceive('block')->once()->andReturn(true);
+        $lock->shouldReceive('release')->once()->andThrow(new RuntimeException('The lock store went away.'));
+
+        $store = Mockery::mock(LockProvider::class);
+        $store->shouldReceive('lock')->once()->andReturn($lock);
+
+        Cache::shouldReceive('store')->andReturn($store);
+
+        $this->providerReturns('old_refresh', new Token('new_access', 'new_refresh', 3600, []));
+
+        RefreshAccessToken::flushLockStoreWarnings();
+
+        $this->assertTrue((new RefreshAccessToken)($token));
+        $this->assertSame('new_access', $token->fresh()?->access_token);
+    }
+
+    /**
+     * The store and the work under it are caught apart, so a login that cannot
+     * be stored still reaches the caller as the failure it is rather than being
+     * answered as a cache that hiccuped.
+     */
+    public function test_an_exchange_that_fails_under_the_lock_is_not_read_as_a_store_failure(): void
+    {
+        $token = $this->expiredToken('3023');
+
+        $lock = Mockery::mock(Lock::class);
+        $lock->shouldReceive('block')->once()->andReturn(true);
+        $lock->shouldReceive('release')->once();
+
+        $store = Mockery::mock(LockProvider::class);
+        $store->shouldReceive('lock')->once()->andReturn($lock);
+
+        Cache::shouldReceive('store')->andReturn($store);
+
+        $failure = new RuntimeException('The login could not be stored.');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow($failure);
+        $provider->shouldReceive('logoutAsync')->andReturnNull();
+        $provider->shouldReceive('revokeRefreshTokenAsync')->andReturnNull();
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        RefreshAccessToken::flushLockStoreWarnings();
+
+        // A provider that did not answer is a 503, not a store failure quietly
+        // swallowed — and the login is still there to try again.
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($token));
+        $this->assertModelExists($token);
     }
 
     /**

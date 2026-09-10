@@ -4,6 +4,7 @@ namespace Uzairports\Uzairid\Actions;
 
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Uzairports\Uzairid\Uzair;
@@ -59,13 +60,49 @@ class ResolveUserFromSocialite
 
         $email = $reportedEmail ?? $user->getAttribute('email');
 
-        $user->forceFill([
+        $saved = $user->forceFill([
             'uzair_id' => $uzairId,
             'name' => $name,
             'email' => $email,
         ])->save();
 
+        if (! $saved) {
+            $this->reportRefusedProfile($user);
+        }
+
         return $user;
+    }
+
+    /**
+     * Say that the profile write did not happen, and hand back what is stored.
+     *
+     * `save()` answers false rather than raising when a `saving` listener
+     * refuses the write, and that answer was being dropped. The account behind
+     * the identity is still the right one — it is found by `uzair_id`, or it
+     * has just been linked by a statement of its own that model events do not
+     * reach — so the sign-in is not refused over this. What was lost is a name
+     * and an address the identity provider reported, and a host application
+     * that refuses the write is asking for exactly that.
+     *
+     * An account that is not in the database at all is a different matter and
+     * is not settled here: `UzairAuthController::writeAccount()` refuses to
+     * sign in a model that does not exist, so a refused insert still fails the
+     * handshake.
+     *
+     * The attributes are put back to what is stored. Filled and unsaved, they
+     * would have `Auth::login()` and every listener behind it read a name this
+     * request did not write and the next one will not find.
+     */
+    private function reportRefusedProfile(Model $user): void
+    {
+        Log::warning('A model listener refused the write that refreshes an UzAirports profile, so the stored one stands.', [
+            'user_id' => $user->getKey(),
+            'account_exists' => $user->exists,
+        ]);
+
+        if ($user->exists) {
+            $user->setRawAttributes($user->getRawOriginal(), sync: true);
+        }
     }
 
     /**

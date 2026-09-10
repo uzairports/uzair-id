@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
@@ -143,6 +144,51 @@ class ResolveUserFromSocialiteTest extends TestCase
         $this->assertNull($second->refresh()->uzair_id);
         $this->assertSame('2012', $resolved->getAttribute('uzair_id'));
         $this->assertSame(3, TestUser::query()->count());
+    }
+
+    /**
+     * `save()` answers false rather than raising when a listener refuses the
+     * write, and dropping that answer left the caller holding a model whose
+     * name this request did not write and the next one will not find.
+     *
+     * The sign-in is not refused over it. The account is the right one either
+     * way, and an application whose listener declines a profile write is asking
+     * for the stored profile to stand, not for nobody to be able to sign in.
+     */
+    public function test_a_refused_profile_write_leaves_the_stored_profile_standing(): void
+    {
+        $user = TestUser::create([
+            'uzair_id' => '2014',
+            'name' => 'Before',
+            'email' => 'before@uzairports.com',
+        ]);
+
+        Log::shouldReceive('warning')
+            ->once()
+            ->withArgs(fn (string $message, array $context): bool => $context['user_id'] === $user->getKey());
+
+        TestUser::saving(fn (): bool => false);
+
+        try {
+            $resolved = (new ResolveUserFromSocialite)(SocialiteUser::fake([
+                'id' => '2014',
+                'name' => 'After',
+                'email' => 'after@uzairports.com',
+            ]));
+        } finally {
+            TestUser::flushEventListeners();
+        }
+
+        $this->assertSame($user->getKey(), $resolved->getKey());
+
+        // What the caller is handed matches what is stored, rather than the
+        // values the write was refused.
+        $this->assertSame('Before', $resolved->getAttribute('name'));
+        $this->assertSame('before@uzairports.com', $resolved->getAttribute('email'));
+
+        $stored = $user->refresh();
+        $this->assertSame('Before', $stored->name);
+        $this->assertSame('before@uzairports.com', $stored->email);
     }
 
     public function test_preserves_name_when_socialite_returns_blank(): void
