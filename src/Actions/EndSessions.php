@@ -245,6 +245,36 @@ class EndSessions
     }
 
     /**
+     * Hand back grants that no row was ever written for.
+     *
+     * A sign-in exchanges the authorization code before anything can be stored,
+     * so a handshake that fails between those two moments is holding a live
+     * access token and a live refresh token that nothing will ever point at:
+     * there is no row for the account to end and none for `model:prune` to
+     * sweep, and they would stay honored at UzAirports ID until they expired on
+     * their own. Both places that can be left holding them — the driver, when
+     * the profile request fails, and the controller, when the account or the
+     * login cannot be written — hand them here.
+     *
+     * The values go onto an unsaved model because that is what the revocation
+     * path reads them off, and the encrypted casts round-trip them unchanged.
+     * Nothing is written and nothing is deleted.
+     */
+    public function surrenderIssued(mixed $accessToken, mixed $refreshToken): void
+    {
+        $grants = array_filter(
+            ['access_token' => $accessToken, 'refresh_token' => $refreshToken],
+            fn (mixed $grant): bool => is_string($grant) && $grant !== '',
+        );
+
+        if ($grants === []) {
+            return;
+        }
+
+        $this->surrender((new OauthToken)->forceFill($grants));
+    }
+
+    /**
      * Give several logins' grants up at once, leaving their rows alone.
      *
      * `surrender()` settles its own revocations, so a sweep calling it per row

@@ -78,6 +78,54 @@ class ResolveUserFromSocialiteTest extends TestCase
         $this->assertSame(1, TestUser::query()->count());
     }
 
+    /**
+     * Finding the unlinked account and claiming it are two statements, and
+     * another identity may link it in between. Both used to write the same row
+     * — no unique violation, because it is one row updated twice — and two
+     * people ended up signed in to one local account.
+     *
+     * The listener stands in for that other callback: it links the row the
+     * moment this one has read it, which is exactly the window being closed.
+     */
+    public function test_an_account_linked_by_somebody_else_in_the_meantime_is_not_taken(): void
+    {
+        config(['uzairports.link_by_email' => true]);
+
+        $legacy = TestUser::create([
+            'uzair_id' => null,
+            'name' => 'Legacy',
+            'email' => 'legacy@uzairports.com',
+        ]);
+
+        $raced = false;
+
+        TestUser::retrieved(function (TestUser $candidate) use (&$raced): void {
+            if ($raced || $candidate->uzair_id !== null) {
+                return;
+            }
+
+            $raced = true;
+
+            TestUser::query()->whereKey($candidate->getKey())->update(['uzair_id' => 'the-identity-that-got-there-first']);
+        });
+
+        try {
+            $resolved = (new ResolveUserFromSocialite)(SocialiteUser::fake([
+                'id' => '2013',
+                'name' => 'Late',
+                'email' => 'legacy@uzairports.com',
+            ]));
+        } finally {
+            TestUser::flushEventListeners();
+        }
+
+        $this->assertTrue($raced);
+        $this->assertNotSame($legacy->getKey(), $resolved->getKey());
+        $this->assertSame('the-identity-that-got-there-first', $legacy->refresh()->uzair_id);
+        $this->assertSame('2013', $resolved->getAttribute('uzair_id'));
+        $this->assertSame(2, TestUser::query()->count());
+    }
+
     public function test_an_address_more_than_one_unclaimed_account_carries_links_to_neither(): void
     {
         config(['uzairports.link_by_email' => true]);

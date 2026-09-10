@@ -5,11 +5,16 @@ namespace Uzairports\Uzairid\Socialite;
 use GuzzleHttp\Exception\GuzzleException;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\RequestOptions;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Two\AbstractProvider;
+use Laravel\Socialite\Two\InvalidStateException;
 use Laravel\Socialite\Two\ProviderInterface;
 use Laravel\Socialite\Two\User;
 use Psr\Http\Message\ResponseInterface;
 use RuntimeException;
+use Throwable;
+use Uzairports\Uzairid\Actions\EndSessions;
 
 class UzairportsProvider extends AbstractProvider implements ProviderInterface
 {
@@ -70,7 +75,78 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         return self::seconds(config('uzairports.guzzle.timeout', config('uzairports.timeout', 10)), 10);
     }
 
-    /** @return array<array-key, mixed>
+    /**
+     * Complete the handshake, giving the grants up if the profile cannot be read.
+     *
+     * This is Socialite's own `user()` with one thing added, and it is added
+     * here because there is nowhere else it can go. The exchange happens first
+     * and the profile request second, so a provider that answers the first and
+     * fails the second has already issued a live access token and a live
+     * refresh token — and `user()` throws instead of returning them, so the
+     * caller never sees the grants it would have to hand back. They exist only
+     * as a local variable in this method.
+     *
+     * Both halves of a callback that cannot be completed are answered the same
+     * way now: the driver surrenders what fails here, and
+     * `UzairAuthController` surrenders what fails after it has a user.
+     *
+     * The profile request is the likelier of the two to fail — it is a second
+     * round trip to the identity provider, with its own timeout — so leaving it
+     * uncovered left the more common failure leaking grants.
+     *
+     * @throws InvalidStateException when the callback carries no matching state
+     * @throws GuzzleException
+     */
+    public function user(): User
+    {
+        if ($this->user) {
+            return $this->user;
+        }
+
+        if ($this->hasInvalidState()) {
+            throw new InvalidStateException;
+        }
+
+        $response = $this->getAccessTokenResponse($this->getCode());
+
+        try {
+            $profile = $this->getUserByToken($response['access_token']);
+        } catch (Throwable $exception) {
+            $this->surrenderIssuedGrants($response);
+
+            throw $exception;
+        }
+
+        return $this->userInstance($response, $profile);
+    }
+
+    /**
+     * Give up the grants of a handshake that got no further than the exchange.
+     *
+     * Routed through `EndSessions` like every other revocation in the package,
+     * so both grants go on the wire together and a refusal is reported the same
+     * way. Nothing raises: the caller is about to be handed the failure that
+     * brought it here, which is the one worth reading.
+     *
+     * @param  array<array-key, mixed>  $response
+     */
+    private function surrenderIssuedGrants(array $response): void
+    {
+        try {
+            app(EndSessions::class)->surrenderIssued(
+                Arr::get($response, 'access_token'),
+                Arr::get($response, 'refresh_token'),
+            );
+        } catch (Throwable $exception) {
+            Log::warning('Failed to surrender the grants of an UzAirports handshake whose profile could not be read.', [
+                'exception_class' => $exception::class,
+            ]);
+        }
+    }
+
+    /**
+     * @return array{access_token: string, ...}
+     *
      * @throws GuzzleException
      */
     public function getAccessTokenResponse($code): array
@@ -112,7 +188,9 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         return $decoded;
     }
 
-    /** @return array<array-key, mixed> */
+    /**
+     * @return array{access_token: string, ...}
+     */
     private function decodeTokenResponse(ResponseInterface $response): array
     {
         $decoded = json_decode((string) $response->getBody(), true);
@@ -128,15 +206,28 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Read the profile behind an access token.
      *
-     * A body that is not a JSON object — an empty response, a bare string, a
-     * page of HTML from a proxy in front of the identity provider — decodes to
-     * something this method cannot map, so it is reported as such instead of
-     * being handed on as a malformed profile.
+     * Two things are asked of the answer, and the token exchange beside this
+     * has always asked both — see `decodeTokenResponse()`.
+     *
+     * The status comes first. Guzzle raises a 4xx or a 5xx on its own only
+     * while `http_errors` is left on, and `uzairports.guzzle` is merged into the
+     * client, so an application is free to turn it off. A redirect is not
+     * covered by that setting at all: these requests carry
+     * `ALLOW_REDIRECTS => false`, so a 302 comes back as an ordinary response —
+     * and a gateway in front of the identity provider answering one with a body
+     * of its own was mapped into a user and signed in. Whatever a non-2xx
+     * carries, it is not a profile this provider vouched for.
+     *
+     * Then the body. Anything that is not a JSON object — an empty response, a
+     * bare string, a page of HTML — decodes to something this method cannot
+     * map, and is reported as such rather than handed on as a malformed
+     * profile. The account behind it is still refused twice over:
+     * `ResolveUserFromSocialite` turns down a profile carrying no id.
      *
      * @return array<array-key, mixed>
      *
      * @throws GuzzleException
-     * @throws RuntimeException when the identity provider answers with anything but a JSON object
+     * @throws RuntimeException when the identity provider answers with anything but a 2xx JSON object
      */
     protected function getUserByToken($token): array
     {
@@ -148,6 +239,10 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         $response = $this->getHttpClient()->get(
             $url, $this->getRequestOptions((string) $token)
         );
+
+        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
+            throw new RuntimeException('UzAirports SSO did not answer with a user profile.');
+        }
 
         $decoded = json_decode((string) $response->getBody(), true);
 

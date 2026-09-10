@@ -220,20 +220,17 @@ class UzairAuthController
     /**
      * Hand back the grants a handshake was issued before it failed.
      *
-     * The identity provider has already exchanged the authorization code by the
-     * time anything here can fail, so a callback that cannot finish is holding a
-     * live access token and a live refresh token. Nothing was written: the
-     * failure is either the account or the login row, and neither reaches the
-     * database with these values in it. So there is no row for the user to end,
-     * none for `model:prune` to sweep, and nothing anywhere pointing at the
-     * grants — they would simply stay honored at UzAirports ID until they
-     * expire on their own, while the browser that caused them is sent away
-     * unauthenticated.
+     * The authorization code has already been exchanged by the time anything
+     * here can fail, so a callback that cannot finish is holding a live access
+     * token and a live refresh token, and nothing was written: the failure is
+     * either the account or the login row, and neither reaches the database
+     * with these values in it. `EndSessions::surrenderIssued()` is where that
+     * is answered, and what it says about grants no row points at.
      *
-     * This is the same compensation `RefreshAccessToken` makes when it cannot
-     * store what an exchange just issued. It is paid on a request that has
-     * already failed, and both grants go on the wire together, so it costs one
-     * revocation wait before the redirect.
+     * This covers the failures from `Auth::login()` onward. A profile request
+     * that fails is the other half, and never reaches here — `user()` throws
+     * before it can hand a user back, so there is nothing to read the grants
+     * off. The driver surrenders those itself, where they are still in hand.
      *
      * Nothing raises out of here. The caller is in the middle of answering a
      * failure and must go on to sign the browser out and report the original
@@ -246,17 +243,8 @@ class UzairAuthController
             return;
         }
 
-        $grants = array_filter(
-            ['access_token' => $uzairUser->token, 'refresh_token' => $uzairUser->refreshToken],
-            fn (mixed $grant): bool => filled($grant),
-        );
-
-        if ($grants === []) {
-            return;
-        }
-
         try {
-            $endSessions->surrender((new OauthToken)->forceFill($grants));
+            $endSessions->surrenderIssued($uzairUser->token, $uzairUser->refreshToken);
         } catch (Throwable $exception) {
             Log::warning('Failed to surrender the grants of an UzAirports handshake that could not be completed.', [
                 'exception_class' => $exception::class,

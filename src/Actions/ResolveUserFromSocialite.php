@@ -49,7 +49,7 @@ class ResolveUserFromSocialite
         $reportedEmail = $uzairUser->getEmail() ?: null;
 
         $user = $this->query()->firstWhere('uzair_id', $uzairId)
-            ?? $this->findUnlinkedUserByEmail($reportedEmail)
+            ?? $this->claimUnlinkedUserByEmail($reportedEmail, $uzairId)
             ?? $this->newUser();
 
         $name = $uzairUser->getName();
@@ -66,6 +66,45 @@ class ResolveUserFromSocialite
         ])->save();
 
         return $user;
+    }
+
+    /**
+     * Take an account created before the package was installed, if it is still
+     * there to be taken.
+     *
+     * Finding the account and claiming it are two statements, and an account
+     * nobody has linked is exactly the kind another identity may be linking at
+     * the same moment. Both would see `uzair_id` empty, both would write, and
+     * the unique index cannot refuse either of them — it is one row, written
+     * twice, so the second write is an ordinary update. Two people would then
+     * be signed in to one local account, which is the worst outcome this action
+     * has: the whole reason `uzair_id` is the only identifier trusted here is
+     * that an address is not proof of who owns it.
+     *
+     * So the claim is made conditional on the account still being unlinked, and
+     * whoever finds it already taken does not argue: an address the identity
+     * provider never promised to have verified is not enough to take an account
+     * from whoever got there first. The loser gets a new account, which is what
+     * linking being off would have given it anyway.
+     *
+     * A second callback for the same identity that arrives here loses the claim
+     * too, and its new account is refused by the unique index on `uzair_id` —
+     * `UzairAuthController` retries once and finds the row the winner linked.
+     */
+    private function claimUnlinkedUserByEmail(?string $email, string $uzairId): ?Model
+    {
+        $candidate = $this->findUnlinkedUserByEmail($email);
+
+        if ($candidate === null) {
+            return null;
+        }
+
+        $claimed = $this->query()
+            ->whereKey($candidate->getKey())
+            ->whereNull('uzair_id')
+            ->update(['uzair_id' => $uzairId]);
+
+        return $claimed === 1 ? $candidate : null;
     }
 
     /**

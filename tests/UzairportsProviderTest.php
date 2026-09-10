@@ -9,6 +9,7 @@ use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Http\Request;
 use Laravel\Socialite\Facades\Socialite;
+use Mockery;
 use Psr\Http\Message\RequestInterface;
 use RuntimeException;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -131,6 +132,82 @@ class UzairportsProviderTest extends TestCase
         $this->expectExceptionMessage('not a JSON object');
 
         $provider->userFromToken('access-token');
+    }
+
+    /**
+     * The code is exchanged before the profile is asked for, so a provider that
+     * answers the first call and fails the second has already issued a live
+     * access token and a live refresh token — and `user()` throws instead of
+     * handing them back, so no caller can give them up on its behalf. Nothing
+     * would ever point at them: no row is written, and `model:prune` sweeps
+     * rows.
+     *
+     * This is the likelier of the two ways a callback fails, being a second
+     * round trip to the identity provider with a timeout of its own.
+     */
+    /**
+     * These requests do not follow redirects, so a 302 comes back as an
+     * ordinary response and Guzzle raises nothing over it. A gateway in front
+     * of the identity provider answering one with a body of its own was mapped
+     * into a user and signed in.
+     */
+    public function test_a_profile_answered_by_a_redirect_is_refused(): void
+    {
+        $provider = $this->provider([
+            'handler' => HandlerStack::create(new MockHandler([
+                new Response(302, ['Location' => 'https://gateway.test/login'], '{"id":"synthetic-user"}'),
+            ])),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('did not answer with a user profile');
+
+        $provider->userFromToken('access-token');
+    }
+
+    /**
+     * `uzairports.guzzle` is merged into the client, so an application may turn
+     * `http_errors` off — and then a refusal arrives as an ordinary response
+     * carrying whatever the identity provider put in it. The token exchange
+     * beside this has always read the status for itself.
+     */
+    public function test_a_refused_profile_is_not_read_as_one_when_guzzle_raises_nothing(): void
+    {
+        $provider = $this->provider([
+            'http_errors' => false,
+            'handler' => HandlerStack::create(new MockHandler([
+                new Response(500, [], '{"id":"whatever-the-error-page-carried"}'),
+            ])),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('did not answer with a user profile');
+
+        $provider->userFromToken('access-token');
+    }
+
+    public function test_a_profile_request_that_fails_surrenders_the_issued_grants(): void
+    {
+        $revoker = Mockery::mock(UzairportsProvider::class);
+        $revoker->shouldReceive('logoutAsync')->with('issued-access')->once()->andReturn($this->revoked());
+        $revoker->shouldReceive('revokeRefreshTokenAsync')->with('issued-refresh')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
+
+        $provider = $this->provider([
+            'handler' => HandlerStack::create(new MockHandler([
+                new Response(200, [], '{"access_token":"issued-access","refresh_token":"issued-refresh","expires_in":3600}'),
+                new Response(503, [], 'the identity provider is not answering'),
+            ])),
+        ])->stateless();
+
+        try {
+            $provider->user();
+
+            $this->fail('A profile request that failed must not hand back a user.');
+        } catch (GuzzleException) {
+            $this->addToAssertionCount(1);
+        }
     }
 
     public function test_a_driver_resolved_from_the_container_reads_the_configured_host(): void
