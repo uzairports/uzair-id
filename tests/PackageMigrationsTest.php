@@ -7,6 +7,7 @@ use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\Test;
 
 /**
@@ -416,9 +417,11 @@ class PackageMigrationsTest extends TestCase
         $this->assertFalse(Schema::hasIndex('members', ['email'], 'unique'));
 
         // Duplicates and a missing address are what relaxing the column is for.
+        // The key is a real uuid: the column is declared as one, and Postgres
+        // holds it to that where SQLite takes any string.
         foreach ([null, 'shared@uzairports.com', 'shared@uzairports.com'] as $index => $email) {
             DB::table('members')->insert([
-                'member_key' => "member-{$index}",
+                'member_key' => Str::uuid()->toString(),
                 'name' => "Member {$index}",
                 'email' => $email,
                 'created_at' => now(),
