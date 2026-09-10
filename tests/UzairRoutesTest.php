@@ -83,6 +83,32 @@ class UzairRoutesTest extends TestCase
         $this->assertSame('sso.login', $this->routeFor('sso/redirect')->getName());
     }
 
+    /**
+     * An application that keeps its own `login` points the setting elsewhere,
+     * and then every template linking to SSO has to know where. Laravel gives a
+     * route one name — `Route::name()` appends rather than aliases — so the name
+     * is resolved rather than fixed, and a template asks for the URL.
+     */
+    public function test_the_sign_in_url_follows_the_configured_login_route(): void
+    {
+        config(['uzairports.login_route' => 'sso.login']);
+
+        Uzair::routes(['prefix' => 'sso']);
+
+        $this->assertSame(url('sso/redirect'), Uzair::loginUrl());
+    }
+
+    /**
+     * A setting naming no registered route must not answer a sign-in link with
+     * a 500, which is what `route()` does with a name it cannot find.
+     */
+    public function test_the_sign_in_url_falls_back_to_the_site_root(): void
+    {
+        config(['uzairports.login_route' => 'a.route.nobody.registered']);
+
+        $this->assertSame(url('/'), Uzair::loginUrl());
+    }
+
     public function test_every_endpoint_is_registered(): void
     {
         Uzair::routes(['prefix' => 'sso']);

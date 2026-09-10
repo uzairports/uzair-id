@@ -89,7 +89,11 @@ class OauthTokenTest extends TestCase
     public function test_a_vetoed_prune_keeps_the_login_and_does_not_revoke_its_grants(): void
     {
         $user = TestUser::create(['uzair_id' => 'vetoed-prune']);
-        $token = $user->tokens()->create(['access_token' => 'access', 'refresh_token' => 'refresh']);
+        $token = $user->tokens()->create([
+            'access_token' => 'access',
+            'refresh_token' => 'refresh',
+            'session_id' => 'vetoed-session',
+        ]);
         $token->forceFill(['updated_at' => now()->subMinutes(241)])->saveQuietly();
         Socialite::shouldReceive('driver')->never();
         OauthToken::deleting(fn (): bool => false);
@@ -386,6 +390,89 @@ class OauthTokenTest extends TestCase
         $this->travel(5)->hours();
 
         $this->assertSame(1, (new OauthToken)->prunable()->count());
+    }
+
+    /**
+     * A login held outside a browser names no session, and the argument the
+     * sweep makes about browsers — the session behind it has quietly expired —
+     * says nothing about it. Measured by the same clock, an API integration was
+     * collected after four hours of nobody calling it, and its grant handed
+     * back with it.
+     */
+    public function test_a_login_that_names_no_session_is_not_swept_for_being_idle(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1014']);
+
+        $user->tokens()->create([
+            'access_token' => 'the_api_integrations_token',
+            'refresh_token' => 'the_api_integrations_refresh_token',
+            'expires_at' => now()->addDays(30),
+            'session_id' => null,
+        ]);
+
+        $this->travel(5)->hours();
+
+        $this->assertSame(0, (new OauthToken)->prunable()->count());
+    }
+
+    /**
+     * What it is measured by instead is whether anything can still be done with
+     * it. A login holding no refresh token, whose access token has run out, can
+     * neither be spent nor renewed — so it goes, and its grant with it. Anything
+     * that can still renew itself is ended deliberately, not on a timer.
+     */
+    public function test_a_login_that_names_no_session_is_swept_once_nothing_can_renew_it(): void
+    {
+        $user = TestUser::create(['uzair_id' => '1015']);
+
+        $renewable = $user->tokens()->create([
+            'access_token' => 'still_renewable',
+            'refresh_token' => 'the_refresh_token_that_keeps_it_alive',
+            'expires_at' => now()->subDay(),
+            'session_id' => null,
+        ]);
+
+        $spent = $user->tokens()->create([
+            'access_token' => 'nothing_left_to_spend',
+            'refresh_token' => null,
+            'expires_at' => now()->subMinute(),
+            'session_id' => null,
+        ]);
+
+        $this->assertSame([$spent->getKey()], (new OauthToken)->prunable()->pluck('id')->all());
+        $this->assertModelExists($renewable);
+    }
+
+    /**
+     * The two measures are one bracketed group. Left as clauses side by side,
+     * `A OR B AND id = ?` would have every caller that narrows this query — the
+     * sweep re-reads each row by key before deleting it — matching rows it
+     * never named.
+     */
+    public function test_the_two_measures_do_not_leak_past_a_narrowed_query(): void
+    {
+        config(['session.lifetime' => 120]);
+
+        $user = TestUser::create(['uzair_id' => '1016']);
+
+        $abandoned = $user->tokens()->create([
+            'access_token' => 'left_behind',
+            'session_id' => 'abandoned-session',
+        ]);
+
+        $current = $user->tokens()->create([
+            'access_token' => 'still_in_use',
+            'expires_at' => now()->addHour(),
+            'session_id' => 'current-session',
+        ]);
+
+        $this->travel(5)->hours();
+        $current->keepAlive();
+
+        $this->assertSame(0, (new OauthToken)->prunable()->whereKey($current->getKey())->count());
+        $this->assertSame(1, (new OauthToken)->prunable()->whereKey($abandoned->getKey())->count());
     }
 
     /**

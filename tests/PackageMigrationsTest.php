@@ -387,6 +387,51 @@ class PackageMigrationsTest extends TestCase
     }
 
     /**
+     * The other two migrations of the `uzairid-user-migrations` tag alter the
+     * same table and were still spelling its name. An application keeping its
+     * accounts anywhere else could publish the tag and then fail the whole
+     * `migrate` on a table it does not have.
+     */
+    #[Test]
+    public function test_the_user_migrations_follow_the_configured_model(): void
+    {
+        Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('members');
+        Schema::dropIfExists('users');
+
+        Schema::create('members', function (Blueprint $table): void {
+            $table->uuid('member_key')->primary();
+            $table->string('name');
+            $table->string('email')->unique();
+            $table->string('password');
+            $table->timestamps();
+        });
+
+        config()->set('auth.providers.users.model', MemberWithItsOwnTable::class);
+
+        $this->migration('relax_email_column_on_users_table')->up();
+        $this->migration('remove_password_column_from_users_table')->up();
+
+        $this->assertFalse(Schema::hasColumn('members', 'password'));
+        $this->assertFalse(Schema::hasIndex('members', ['email'], 'unique'));
+
+        // Duplicates and a missing address are what relaxing the column is for.
+        foreach ([null, 'shared@uzairports.com', 'shared@uzairports.com'] as $index => $email) {
+            DB::table('members')->insert([
+                'member_key' => "member-{$index}",
+                'name' => "Member {$index}",
+                'email' => $email,
+                'created_at' => now(),
+                'updated_at' => now(),
+            ]);
+        }
+
+        $this->assertSame(3, DB::table('members')->count());
+
+        Schema::dropIfExists('members');
+    }
+
+    /**
      * The accounts table belongs to the host application and need not be there
      * when this runs. There is no column to add to a table that does not exist,
      * and reaching for one used to fail the migration.

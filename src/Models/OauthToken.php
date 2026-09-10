@@ -139,12 +139,13 @@ class OauthToken extends Model
     }
 
     /**
-     * The rows whose session the store has long since collected.
+     * The logins there is no longer any use for, by the measure each one asks.
      *
-     * A browser that is simply closed leaves its row behind: nothing signs it
-     * out, and the session it names expires quietly in the session store. Twice
-     * the session lifetime after the row was last used, whatever it names is
-     * gone, and so is any use for the row.
+     * A row that names a browser session goes by how long it is since anything
+     * touched it. A browser that is simply closed leaves its row behind:
+     * nothing signs it out, and the session it names expires quietly in the
+     * session store. Twice the session lifetime after the row was last used,
+     * whatever it names is gone, and so is any use for the row.
      *
      * What makes that safe is `keepAlive()`: the row is written again while its
      * browser is still making requests, so `updated_at` means "last seen" and
@@ -153,9 +154,6 @@ class OauthToken extends Model
      * token against a two-hour session lifetime — would go untouched while its
      * owner worked and be pruned out from under them.
      *
-     * Pruning runs through Laravel's `model:prune` command, which the host
-     * application has to schedule for the rows to actually go.
-     *
      * A row carrying no `updated_at` is swept on sight. `timestamps()` leaves
      * the column nullable, so a row written around Eloquent — a seeder, a data
      * migration, an import — can arrive without one, and null answers no
@@ -163,14 +161,55 @@ class OauthToken extends Model
      * kept for good, because nothing but `keepAlive()` on a request it may
      * never see would ever give it a date to be measured by.
      *
+     * A row that names no session is measured by nothing of the sort, and used
+     * to be. `session_id` is nullable so that a login can be held outside a
+     * browser — an API client, a console command — and the whole argument above
+     * rests on a session having quietly expired somewhere. There is none. Such
+     * a login was being collected after four hours of an idle API on the
+     * default settings, and its grant handed back with it, which is a
+     * credential deleted for the crime of not being called overnight.
+     *
+     * It is measured by whether anything can still be done with it instead: a
+     * login holding no refresh token, whose access token has run out, cannot be
+     * spent and cannot be renewed. That is the whole of it — while a refresh
+     * token is there, the login renews indefinitely and is nobody's to collect
+     * on a timer. Those are ended deliberately, through `uzair.logoutDevice` or
+     * `EndSessions`, the way a credential is.
+     *
+     * The two are one bracketed group, not two clauses side by side. Callers
+     * narrow this query further — `deleteForPruning()` adds `whereKey()` — and
+     * `A OR B AND key = ?` is not what any of them mean.
+     *
+     * Pruning runs through Laravel's `model:prune` command, which the host
+     * application has to schedule for the rows to actually go.
+     *
      * @return Builder<OauthToken>
      */
     public function prunable(): Builder
     {
+        $abandoned = now()->subMinutes(self::sessionLifetime() * 2);
+
         return $this->newQuery()->where(
             fn (Builder $query) => $query
-                ->where('updated_at', '<', now()->subMinutes(self::sessionLifetime() * 2))
-                ->orWhereNull('updated_at')
+                ->where(
+                    fn (Builder $browser) => $browser
+                        ->whereNotNull('session_id')
+                        ->where(
+                            fn (Builder $unseen) => $unseen
+                                ->where('updated_at', '<', $abandoned)
+                                ->orWhereNull('updated_at')
+                        )
+                )
+                ->orWhere(
+                    fn (Builder $issued) => $issued
+                        ->whereNull('session_id')
+                        ->whereNull('refresh_token')
+                        ->where(
+                            fn (Builder $spent) => $spent
+                                ->whereNull('expires_at')
+                                ->orWhere('expires_at', '<', now())
+                        )
+                )
         );
     }
 
@@ -528,11 +567,20 @@ class OauthToken extends Model
 
         // Hold the row until publication finishes, so deletion cannot forget
         // the entry between checking the login and writing its cached answer.
+        //
+        // Shared rather than exclusive. All this needs is that a delete cannot
+        // commit in between, and a shared lock blocks one — it wants the row
+        // exclusively. What it does not block is another request of the same
+        // account publishing at the same moment, which is the common case and
+        // used to queue: the entry is written under this lock, so an exclusive
+        // one held the row for the length of a call to the cache store, and a
+        // store having a slow minute became lock waits on the login itself.
+        // Nothing here writes the row, so there is no upgrade to deadlock over.
         $this->getConnection()->transaction(function () use ($sessionId, $ttl): void {
             $stored = $this->newQuery()
                 ->whereKey($this->getKey())
                 ->where('session_id', $sessionId)
-                ->lockForUpdate()
+                ->sharedLock()
                 ->first(['id', 'user_id', 'expires_at']);
 
             if ($stored === null) {

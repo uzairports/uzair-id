@@ -379,6 +379,14 @@ return [
     | the read off a busy page — and leave it at zero if a login must never
     | outlive its row by even that much.
     |
+    | What it saves is the read on requests that only need the login to still be
+    | there, which is nearly all of them. A request that goes on to ask for the
+    | token itself — `$user->getUzairAccessToken()`, `$user->currentToken()` —
+    | reads the row anyway, and no setting can change that: the entry holds the
+    | account and the expiry and never the token, which lives under an encrypted
+    | cast and has no business in a cache store. Expect this to do nothing for
+    | an endpoint that calls the identity provider on the user's behalf.
+    |
     | Above zero this rests on `login_cache_store` below being a store every
     | process shares.
     |

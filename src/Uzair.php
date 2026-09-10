@@ -65,6 +65,35 @@ class Uzair
     }
 
     /**
+     * Where a browser is sent to sign in through UzAirports ID.
+     *
+     * The `redirect` endpoint is named by `uzairports.login_route`, and that is
+     * deliberate — it is the sign-in page, and both `redirectGuestsTo()` and
+     * Laravel's own `Authenticate` look for `login`. What it leaves an
+     * application without is a name it can write down: one that keeps its own
+     * `login` route points the setting somewhere else, and then every template
+     * linking to SSO has to know what it was pointed at. `route('uzair.redirect')`
+     * is not that name and never will be, because Laravel gives a route one
+     * name — `Route::name()` appends rather than aliases — and a second route on
+     * the same URI to carry an alias is a trick that reads as a mistake later.
+     *
+     * So the name is resolved here instead, and a template asks for the URL
+     * rather than for a name. A setting naming no registered route answers with
+     * the site root, the way the middleware's own fallback does: a broken
+     * sign-in link is worth less than the 500 that `route()` would raise.
+     */
+    public static function loginUrl(): string
+    {
+        $route = config('uzairports.login_route', 'login');
+
+        if (! is_string($route) || $route === '') {
+            $route = 'login';
+        }
+
+        return Route::has($route) ? route($route) : url('/');
+    }
+
+    /**
      * Register the SSO endpoints.
      *
      * Call this from the application's `routes/web.php`, so the routes inherit

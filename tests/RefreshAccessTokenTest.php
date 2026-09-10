@@ -35,7 +35,10 @@ class RefreshAccessTokenTest extends TestCase
     public function test_a_refresh_finishing_after_pruning_surrenders_its_new_grants(): void
     {
         $token = $this->expiredToken('pruned-during-refresh');
-        $token->forceFill(['updated_at' => now()->subMinutes(241)])->saveQuietly();
+        $token->forceFill([
+            'session_id' => 'pruned-session',
+            'updated_at' => now()->subMinutes(241),
+        ])->saveQuietly();
 
         $provider = Mockery::mock(UzairportsProvider::class);
         $provider->shouldReceive('refreshToken')->with('old_refresh')->once()->andReturnUsing(function (): Token {
