@@ -10,7 +10,6 @@ use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
-use Psr\SimpleCache\InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -125,10 +124,16 @@ class EndSessions
             }
         }
 
-        $this->deleteStoredSessions($userId, $exceptSessionId, $sessionIds);
-        $this->forgetResolvedLogins($sessionIds);
-
-        $this->revokeAll($tokens);
+        // The rows are committed by the time this runs, so the grants they held
+        // have nothing left pointing at them: whatever the cleanup before it
+        // does, the revocation is the last chance to stop the identity provider
+        // honoring them. `endAll()` holds the same guarantee the same way.
+        try {
+            $this->deleteStoredSessions($userId, $exceptSessionId, $sessionIds);
+            $this->forgetResolvedLogins($sessionIds);
+        } finally {
+            $this->revokeAll($tokens);
+        }
 
         return $tokens->count();
     }
@@ -214,9 +219,12 @@ class EndSessions
      * session, so a login ended here has to take that answer with it — the
      * device would otherwise keep being let through until the entry lapsed.
      *
-     * @param  array<array-key, string>  $sessionIds
+     * The model reports a store that will not answer rather than raising it:
+     * the rows are already gone by the time any caller reaches this, and what
+     * follows — dropping the sessions, surrendering the grants — must not be
+     * skipped over a cache.
      *
-     * @throws InvalidArgumentException
+     * @param  array<array-key, string>  $sessionIds
      */
     private function forgetResolvedLogins(array $sessionIds): void
     {

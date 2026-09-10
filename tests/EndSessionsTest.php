@@ -9,7 +9,9 @@ use GuzzleHttp\Promise\Promise;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
@@ -1021,6 +1023,35 @@ class EndSessionsTest extends TestCase
         }
 
         $this->assertSame(['desktop-session'], OauthToken::query()->pluck('session_id')->all());
+    }
+
+    /**
+     * The rows are committed before the cache is ever touched, so the grants
+     * they were holding have nothing left pointing at them: a store that will
+     * not drop the entries must not be able to stop the identity provider being
+     * told to stop honoring them. The device is refused on its next request
+     * either way — the row is gone — and the seconds until the entry lapses are
+     * what `login_cache_ttl` documents.
+     */
+    public function test_a_cache_that_will_not_answer_still_hands_the_grants_back(): void
+    {
+        config(['uzairports.login_cache_ttl' => 60]);
+
+        $user = TestUser::create(['uzair_id' => 'logout-during-a-cache-outage']);
+        $this->login($user, 'the-only-session', 'the_only_access');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('the_only_access')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $repository = Mockery::mock(CacheRepository::class);
+        $repository->shouldReceive('get', 'put', 'forget', 'deleteMultiple')
+            ->andThrow(new RuntimeException('The cache store cannot be reached.'));
+        Cache::shouldReceive('store')->andReturn($repository);
+        OauthToken::flushLoginCacheWarnings();
+
+        $this->assertSame(1, (new EndSessions)((int) $user->id));
+        $this->assertSame(0, OauthToken::query()->count());
     }
 
     private function login(TestUser $user, string $sessionId, string $accessToken): void

@@ -226,6 +226,66 @@ class RefreshAccessTokenTest extends TestCase
     }
 
     /**
+     * Credentials the identity provider will not authenticate say nothing about
+     * the login that was presented with them. Read as a refused grant, one
+     * mistyped `client_secret` signed every account out as its token came due.
+     */
+    public function test_credentials_the_provider_refuses_do_not_end_the_login(): void
+    {
+        $this->assertTheApplicationIsRefusedWithoutEndingTheLogin('invalid_client', 401);
+    }
+
+    /**
+     * The other half of RFC 6749 §5.2's client-side pair: a client that is not
+     * allowed this grant type at all. It arrives as a 400, which is also how a
+     * refused grant arrives — the code is the only thing telling them apart.
+     */
+    public function test_a_client_refused_this_grant_type_does_not_end_the_login(): void
+    {
+        $this->assertTheApplicationIsRefusedWithoutEndingTheLogin('unauthorized_client', 400);
+    }
+
+    /**
+     * Assert an application-level refusal is answered as unavailable: the row
+     * stands, its grants are not handed back, and the identity provider is
+     * still called on the next renewal — it answered, so there is no outage to
+     * wait out, and pausing the calls would only postpone the log line.
+     */
+    private function assertTheApplicationIsRefusedWithoutEndingTheLogin(string $error, int $status): void
+    {
+        $this->tripOnTheFirstFailure();
+
+        Event::fake([UzairTokenRefreshFailed::class]);
+
+        $token = $this->expiredToken("client-{$error}", 'a_perfectly_good_refresh');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')
+            ->with('a_perfectly_good_refresh')
+            ->twice()
+            ->andThrow(new RequestException(
+                'Refused',
+                new Request('POST', 'https://sso.test/oauth/token'),
+                new Response($status, [], sprintf('{"error":"%s"}', $error)),
+            ));
+
+        $provider->shouldNotReceive('logoutAsync');
+        $provider->shouldNotReceive('revokeRefreshTokenAsync');
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($token));
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($token));
+
+        $stored = $token->fresh();
+
+        $this->assertNotNull($stored);
+        $this->assertSame('old_access', $stored->access_token);
+        $this->assertSame('a_perfectly_good_refresh', $stored->refresh_token);
+        Event::assertDispatched(UzairTokenRefreshFailed::class);
+    }
+
+    /**
      * A refusal has to say which refusal it was.
      *
      * The status alone does not: a grant the identity provider no longer

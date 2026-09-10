@@ -467,14 +467,20 @@ class RefreshAccessToken
 
             $this->forgetProviderFailures();
         } catch (Throwable $e) {
+            $oauthError = $this->oauthError($e);
+
             Log::warning('Failed to refresh UzAirports access token.', [
                 'user_id' => $token->user_id,
                 'exception_class' => $e::class,
                 'http_status' => $e instanceof RequestException ? $e->getResponse()?->getStatusCode() : null,
-                'oauth_error' => $this->oauthError($e),
+                'oauth_error' => $oauthError,
             ]);
 
             UzairTokenRefreshFailed::dispatch($token, $e);
+
+            if (in_array($oauthError, self::CLIENT_ERRORS, true)) {
+                $this->refuseTheClient($token, $oauthError);
+            }
 
             if ($this->grantWasRejected($e)) {
                 return false;
@@ -661,6 +667,64 @@ class RefreshAccessToken
         return is_string($error) && $error !== '' ? $error : null;
     }
 
+    /**
+     * The OAuth error codes that name the application rather than the login.
+     *
+     * RFC 6749 §5.2 gives both to the client, not to the grant it presented:
+     * `invalid_client` is credentials the identity provider would not
+     * authenticate, and `unauthorized_client` is a client not allowed to use
+     * this grant type at all. Neither says anything about the refresh token —
+     * every login of every account gets the same answer, because there is one
+     * set of credentials behind all of them.
+     *
+     * They used to be read as a refused grant, which is the one answer that
+     * must never be given here: `false` sends the middleware on to end the
+     * login, so a mistyped `client_secret` signed every user out as their
+     * tokens came due — and none of them could sign back in, since starting a
+     * new login spends the same credentials. That is the failure
+     * `answerWithoutCalling()` and `refuseTheDriver()` already refuse to cause;
+     * this is the third door into it.
+     *
+     * @var list<string>
+     */
+    private const array CLIENT_ERRORS = ['invalid_client', 'unauthorized_client'];
+
+    /**
+     * Say that the application, not the login, is what was refused.
+     *
+     * A 503 rather than `false`, and an error rather than the warning the
+     * exchange already wrote: nothing renews until somebody changes the
+     * configuration, and the line that says so is the one an operator is
+     * looking for.
+     *
+     * The provider is not recorded as unreachable. It answered, and precisely —
+     * the cooldown is for a provider that did not, and pausing the calls here
+     * would only postpone the log line while the logins stay stuck either way.
+     *
+     * @throws ServiceUnavailableHttpException always
+     */
+    private function refuseTheClient(OauthToken $token, string $error): never
+    {
+        Log::error('UzAirports ID refused this application, so no login can be renewed until its credentials are fixed.', [
+            'user_id' => $token->user_id,
+            'oauth_error' => $error,
+            'client_id' => config('uzairports.client_id'),
+        ]);
+
+        throw $this->temporarilyUnavailable();
+    }
+
+    /**
+     * Whether the identity provider refused the grant this login presented.
+     *
+     * Only the login is ended on this answer, so it covers the codes that name
+     * the grant and nothing else. What names the application is taken out
+     * before this is asked — see `CLIENT_ERRORS`.
+     *
+     * A refusal whose body cannot be read is still a refusal at 401, and stays
+     * one: the token endpoint answering 401 with no OAuth error to give is the
+     * shape of a credential that is no longer honored.
+     */
     private function grantWasRejected(Throwable $exception): bool
     {
         if (! $exception instanceof RequestException) {
@@ -687,7 +751,11 @@ class RefreshAccessToken
 
         $error = $body['error'] ?? null;
 
-        return in_array($error, ['invalid_grant', 'invalid_token', 'unauthorized_client'], true)
+        if (in_array($error, self::CLIENT_ERRORS, true)) {
+            return false;
+        }
+
+        return in_array($error, ['invalid_grant', 'invalid_token'], true)
             || ($statusCode === 401 && ($error === null || is_string($error)));
     }
 

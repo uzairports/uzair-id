@@ -217,6 +217,13 @@ class EnsureAccessTokenIsFresh
 
     /**
      * Leave nothing of the current session behind.
+     *
+     * The cached login is forgotten before the session is invalidated, not
+     * after: invalidating regenerates the id, and the entry is keyed by the id
+     * the browser was actually holding. `forgetLogin()` reports a store that
+     * will not answer rather than raising it, so the invalidation below happens
+     * whatever the cache does — a session left standing here is a browser still
+     * carrying a session this request has just decided to refuse.
      */
     private function endSession(Request $request): void
     {

@@ -321,6 +321,34 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
+     * The authorization code has already been exchanged by the time anything
+     * here can fail, so a handshake that cannot be finished is holding a live
+     * access token and a live refresh token — and nothing was written, so there
+     * is no row for the account to end and none for `model:prune` to sweep.
+     * They would simply stay honored at UzAirports ID until they expired.
+     */
+    public function test_a_handshake_that_cannot_be_finished_hands_its_grants_back(): void
+    {
+        $this->instance(ResolveUserFromSocialite::class, new ResolverThatCannotWriteTheAccount);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andReturn(SocialiteUser::fake([
+            'id' => '5030',
+            'token' => 'the_issued_access_token',
+            'refreshToken' => 'the_issued_refresh_token',
+        ]));
+        $provider->shouldReceive('logoutAsync')->with('the_issued_access_token')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('the_issued_refresh_token')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->get(route('uzair.callback'))->assertRedirect(url('/'));
+
+        $this->assertGuest();
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
      * Two callbacks for an identity with no local account, yet both see nothing
      * to update and both insert. The loser's transaction is rolled back by the
      * unique index on `users.uzair_id`, and the work is done again — this time
@@ -759,6 +787,17 @@ class TestUserWithoutAKey extends TestUser
     public function getAuthIdentifier(): object
     {
         return (object) ['id' => $this->getKey()];
+    }
+}
+
+/**
+ * Stands in for a host application whose account write cannot be completed.
+ */
+class ResolverThatCannotWriteTheAccount extends ResolveUserFromSocialite
+{
+    public function __invoke(SocialiteUser $uzairUser): Model
+    {
+        throw new RuntimeException('The account behind this identity cannot be written.');
     }
 }
 

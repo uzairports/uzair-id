@@ -6,9 +6,11 @@ use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Psr7\Request as GuzzleRequest;
 use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Illuminate\Auth\AuthenticationException;
+use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Session\Session as SessionContract;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
 use Laravel\Socialite\Facades\Socialite;
@@ -542,6 +544,53 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     /**
      * How many times `oauth_tokens` was read while the given work ran.
      */
+    /**
+     * The entry is an optimisation over reading the row, and an optimisation
+     * that cannot be reached must cost the query it was saving rather than the
+     * request. Left to raise, an unreachable cache answered every authenticated
+     * request with a 500 — including the requests of an application that had
+     * only ever turned `login_cache_ttl` on to save itself a query.
+     */
+    public function test_a_login_cache_that_will_not_answer_falls_back_to_the_row(): void
+    {
+        config(['uzairports.login_cache_ttl' => 10]);
+
+        $user = TestUser::create(['uzair_id' => '4020']);
+
+        $session = $this->startedSession();
+
+        $user->tokens()->create([
+            'access_token' => 'valid_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->loginCacheIsDown();
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+
+        $reads = $this->tokenReadsDuring(function () use ($user, $session): void {
+            $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+        });
+
+        $this->assertGreaterThan(0, $reads);
+    }
+
+    /**
+     * A store that answers every call with a failure, the way an unreachable
+     * Redis does.
+     */
+    private function loginCacheIsDown(): void
+    {
+        $repository = Mockery::mock(CacheRepository::class);
+        $repository->shouldReceive('get', 'put', 'forget', 'deleteMultiple')
+            ->andThrow(new RuntimeException('The cache store cannot be reached.'));
+
+        Cache::shouldReceive('store')->andReturn($repository);
+
+        OauthToken::flushLoginCacheWarnings();
+    }
+
     private function tokenReadsDuring(callable $work): int
     {
         $reads = 0;

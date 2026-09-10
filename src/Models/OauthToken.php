@@ -17,7 +17,6 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use Psr\SimpleCache\InvalidArgumentException;
 use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
@@ -473,6 +472,12 @@ class OauthToken extends Model
      * before must not answer for whoever holds it now, and the caller compares
      * the two before trusting it.
      *
+     * A store that will not answer has nothing to say about the login, so the
+     * row is read instead — which is what `login_cache_ttl` being zero does on
+     * every request anyway. Left to itself the failure came out of the
+     * middleware, and a cache outage answered every authenticated request with
+     * a 500: an optimisation nobody asked for taking the application down.
+     *
      * @return array{user: string, expires_at: int|null}|null
      */
     public static function cachedLogin(string $sessionId): ?array
@@ -481,7 +486,13 @@ class OauthToken extends Model
             return null;
         }
 
-        $cached = self::loginCache()->get(self::loginCacheKey($sessionId));
+        try {
+            $cached = self::loginCache()->get(self::loginCacheKey($sessionId));
+        } catch (Throwable $exception) {
+            self::reportLoginCacheFailure('answer for a resolved UzAirports login, so the row is read instead', $exception);
+
+            return null;
+        }
 
         if (! is_array($cached) || ! is_string($cached['user'] ?? null)) {
             return null;
@@ -497,6 +508,15 @@ class OauthToken extends Model
 
     /**
      * Let this login answer for its row until the entry lapses.
+     *
+     * An entry that cannot be written is an entry the next request will not
+     * find, and a request that finds none reads the row — so a store that will
+     * not take it costs a query and nothing else. Raised through, it answered a
+     * request whose login had just been resolved as perfectly fresh with a 500.
+     *
+     * Only the writing is caught. The read around it is this application's own
+     * database, and a failure there is not something to swallow on the way to
+     * an optimisation.
      */
     public function cacheLogin(string $sessionId): void
     {
@@ -519,10 +539,14 @@ class OauthToken extends Model
                 return;
             }
 
-            self::loginCache()->put(self::loginCacheKey($sessionId), [
-                'user' => (string) $stored->user_id,
-                'expires_at' => $stored->expires_at?->getTimestamp(),
-            ], $ttl);
+            try {
+                self::loginCache()->put(self::loginCacheKey($sessionId), [
+                    'user' => (string) $stored->user_id,
+                    'expires_at' => $stored->expires_at?->getTimestamp(),
+                ], $ttl);
+            } catch (Throwable $exception) {
+                self::reportLoginCacheFailure('hold a resolved UzAirports login, so the next request reads the row instead', $exception);
+            }
         });
     }
 
@@ -537,6 +561,10 @@ class OauthToken extends Model
      *
      * A row dropped from outside the package — a sweep, a handwritten delete —
      * is what the entry's lifetime is actually covering.
+     *
+     * A store that will not drop the entry is reported and not raised through,
+     * for the reason `forgetLogins()` gives at length: every caller here has
+     * already deleted the row, and the ending must finish.
      */
     public static function forgetLogin(?string $sessionId): void
     {
@@ -544,21 +572,37 @@ class OauthToken extends Model
             return;
         }
 
-        self::loginCache()->forget(self::loginCacheKey($sessionId));
+        try {
+            self::loginCache()->forget(self::loginCacheKey($sessionId));
+        } catch (Throwable $exception) {
+            self::reportLoginCacheFailure('drop a resolved UzAirports login, so that device may be let through until the entry lapses', $exception);
+        }
     }
 
     /**
      * Stop several sessions' entries answering for rows that are no longer there.
      *
-     * Ending an account's logins forgets one entry per login, and a store that
-     * is not the local process — which is the only kind a deployment running
-     * more than one worker can use here — charges a round-trip for each. They
-     * are dropped in one call instead, which is a single command on the stores
-     * that offer one and the same loop as before on those that do not.
+     * Ending an account's logins forgets one entry per login, and this is the
+     * one call the callers make for all of them. What it is not is one command
+     * on the wire: `Illuminate\Cache\Repository::deleteMultiple()` loops
+     * `forget()` over the keys, and no first-party store overrides it, so a
+     * remote store is still charged a round-trip apiece. The comment that used
+     * to stand here promised the round-trips were saved and they never were.
+     *
+     * Whether that is worth going under the repository for depends on the
+     * caller: a logout drops one entry, `single_session` a handful, and only a
+     * pruning sweep of an unusual backlog drops enough for the difference to be
+     * measurable. Nothing here is on a browser's critical path in a quantity
+     * that shows, so it stays on the contract every store implements.
+     *
+     * A store that will not answer is reported and not raised through. Every
+     * caller has already deleted the rows by the time this runs, and the rest
+     * of the ending — dropping the sessions, handing the grants back to the
+     * identity provider — must not be skipped over a cache: the row is gone, so
+     * the middleware refuses that device the moment the entry lapses, and the
+     * `login_cache_ttl` note is where the seconds in between are documented.
      *
      * @param  array<array-key, string>  $sessionIds
-     *
-     * @throws InvalidArgumentException
      */
     public static function forgetLogins(array $sessionIds): void
     {
@@ -578,7 +622,26 @@ class OauthToken extends Model
             return;
         }
 
-        self::loginCache()->deleteMultiple($keys);
+        try {
+            self::loginCache()->deleteMultiple($keys);
+        } catch (Throwable $exception) {
+            self::reportLoginCacheFailure('drop the resolved UzAirports logins of ended sessions, so those devices may be let through until their entries lapse', $exception);
+        }
+    }
+
+    /**
+     * Say that the login cache would not answer, once per process.
+     *
+     * A store that is down is down for every request, and the line is worth
+     * writing once and worth nothing repeated on each of them — the same
+     * bargain `warnAboutTheLoginCache()` already makes for a misconfigured
+     * store, and the same one `flushLoginCacheWarnings()` undoes for a test.
+     */
+    private static function reportLoginCacheFailure(string $refusedTo, Throwable $exception): void
+    {
+        self::warnAboutTheLoginCache(
+            "The cache store behind [uzairports.login_cache_store] would not {$refusedTo}. (".$exception::class.')'
+        );
     }
 
     /**

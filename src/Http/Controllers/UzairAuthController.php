@@ -54,7 +54,9 @@ class UzairAuthController
      * `storeIdentity()`.
      *
      * Anything failing along the way leaves the browser unauthenticated: the
-     * session is invalidated and the user is sent back with the reason.
+     * session is invalidated, the grants the handshake was already issued are
+     * handed back — see `surrenderIssuedGrants()` — and the user is sent back
+     * with the reason.
      */
     public function callback(
         Request $request,
@@ -66,6 +68,8 @@ class UzairAuthController
 
             return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
         }
+
+        $uzairUser = null;
 
         try {
             /** @var SocialiteUser $uzairUser */
@@ -79,6 +83,8 @@ class UzairAuthController
 
             return $this->handshakeFailed(__('uzairid::messages.handshake_lost'));
         } catch (Throwable $e) {
+            $this->surrenderIssuedGrants($endSessions, $uzairUser);
+
             Auth::logout();
             if ($request->hasSession()) {
                 $request->session()->invalidate();
@@ -94,6 +100,17 @@ class UzairAuthController
 
         $this->endPreviousLogin($endSessions, $token, $previousSessionId);
 
+        // Two callbacks for one account finishing at the same moment each write
+        // their own row and then end "the others", which by then includes the
+        // row the other one just wrote: both logins can go, and both browsers
+        // are sent back through SSO on their next request. That is left
+        // unserialized on purpose. Closing it means holding a lock on the
+        // account across the write and the sweep — on the sign-in path, for
+        // every sign-in — to buy an outcome that differs from the intended one
+        // only in which of two simultaneous logins survives. `single_session`
+        // promises that one login stands at a time, and ending both keeps that
+        // promise the strict way: nothing is left signed in that should not be,
+        // and signing in again is one redirect.
         if (config('uzairports.single_session', false)) {
             $endSessions(
                 $this->accountKey($user),
@@ -198,6 +215,53 @@ class UzairAuthController
         }
 
         return $key;
+    }
+
+    /**
+     * Hand back the grants a handshake was issued before it failed.
+     *
+     * The identity provider has already exchanged the authorization code by the
+     * time anything here can fail, so a callback that cannot finish is holding a
+     * live access token and a live refresh token. Nothing was written: the
+     * failure is either the account or the login row, and neither reaches the
+     * database with these values in it. So there is no row for the user to end,
+     * none for `model:prune` to sweep, and nothing anywhere pointing at the
+     * grants — they would simply stay honored at UzAirports ID until they
+     * expire on their own, while the browser that caused them is sent away
+     * unauthenticated.
+     *
+     * This is the same compensation `RefreshAccessToken` makes when it cannot
+     * store what an exchange just issued. It is paid on a request that has
+     * already failed, and both grants go on the wire together, so it costs one
+     * revocation wait before the redirect.
+     *
+     * Nothing raises out of here. The caller is in the middle of answering a
+     * failure and must go on to sign the browser out and report the original
+     * exception, which is the one worth reading; `EndSessions` already reports
+     * a revocation that would not go through.
+     */
+    private function surrenderIssuedGrants(EndSessions $endSessions, ?SocialiteUser $uzairUser): void
+    {
+        if ($uzairUser === null) {
+            return;
+        }
+
+        $grants = array_filter(
+            ['access_token' => $uzairUser->token, 'refresh_token' => $uzairUser->refreshToken],
+            fn (mixed $grant): bool => filled($grant),
+        );
+
+        if ($grants === []) {
+            return;
+        }
+
+        try {
+            $endSessions->surrender((new OauthToken)->forceFill($grants));
+        } catch (Throwable $exception) {
+            Log::warning('Failed to surrender the grants of an UzAirports handshake that could not be completed.', [
+                'exception_class' => $exception::class,
+            ]);
+        }
     }
 
     /**
