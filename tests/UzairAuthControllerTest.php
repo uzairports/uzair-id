@@ -349,6 +349,41 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
+     * `save()` answers false rather than raising when a listener refuses the
+     * write, and that answer used to be dropped: the browser was signed in
+     * against a row that does not exist, the issued grants were never handed
+     * back, and `uzair.token` refused the very next request — a sign-in loop
+     * that leaves a live grant behind on every pass.
+     */
+    public function test_a_login_a_listener_refuses_to_record_fails_the_handshake(): void
+    {
+        Event::fake([UzairAuthenticated::class]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andReturn(SocialiteUser::fake([
+            'id' => '5031',
+            'token' => 'the_issued_access_token',
+            'refreshToken' => 'the_issued_refresh_token',
+        ]));
+        $provider->shouldReceive('logoutAsync')->with('the_issued_access_token')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('the_issued_refresh_token')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        OauthToken::saving(fn (): bool => false);
+
+        try {
+            $this->get(route('uzair.callback'))->assertRedirect(url('/'));
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertGuest();
+        $this->assertSame(0, OauthToken::query()->count());
+        Event::assertNotDispatched(UzairAuthenticated::class);
+    }
+
+    /**
      * Two callbacks for an identity with no local account, yet both see nothing
      * to update and both insert. The loser's transaction is rolled back by the
      * unique index on `users.uzair_id`, and the work is done again — this time

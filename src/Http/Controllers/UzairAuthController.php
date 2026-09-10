@@ -396,6 +396,15 @@ class UzairAuthController
                 throw new RuntimeException('The configured [auth.providers.users.model] cannot be authenticated.');
             }
 
+            // The account has to be in the database to be signed in, and
+            // `save()` answers false rather than raising when a listener
+            // refuses the write. Left unasked, `Auth::login()` would fire the
+            // `Login` event naming a model with no key, and the login row
+            // written next would carry a null `user_id` into the foreign key.
+            if (! $user->exists) {
+                throw new RuntimeException('The account behind this UzAirports identity was not written.');
+            }
+
             // `single_session` ends the account's other logins once this one is
             // written and names them by whatever `getAuthIdentifier()` hands
             // back. A key that names no row is asked for here, before the
@@ -433,8 +442,29 @@ class UzairAuthController
     }
 
     /**
+     * Write the login row, refusing the handshake if the write did not happen.
+     *
+     * `save()` answers false rather than raising when a `saving` or `creating`
+     * listener returns false, and that answer used to be dropped. The handshake
+     * then carried on as though it had succeeded: the browser stayed signed in
+     * against a row that was never written — or, where the row already existed,
+     * one still holding the grants of the previous login — the freshly issued
+     * grants were never handed back, `UzairAuthenticated` was dispatched naming
+     * a model that does not exist, and under `single_session` the sweep that
+     * follows ended every other login of the account on behalf of one that had
+     * not been recorded. The browser was then refused by `uzair.token` on its
+     * very next request and sent back to sign in again, which is a loop.
+     *
+     * A listener that refuses the write is saying this login must not be
+     * recorded, and the only coherent answer is not to sign the browser in.
+     * Raising puts it through the same cleanup as any other failed handshake:
+     * the session is dropped and the grants are surrendered. It is the same
+     * respect `EndSessions` already pays a `deleting` listener that refuses to
+     * let a row go.
+     *
      * @param  Authenticatable&Model  $user
      *
+     * @throws RuntimeException when the write was refused without raising
      * @throws Throwable
      */
     private function writeToken(Request $request, SocialiteUser $uzairUser, Authenticatable $user): OauthToken
@@ -446,7 +476,7 @@ class UzairAuthController
             'session_id' => $sessionId,
         ]);
 
-        $token->forceFill([
+        $saved = $token->forceFill([
             'user_id' => $user->getKey(),
             'session_id' => $sessionId,
             'access_token' => $uzairUser->token,
@@ -455,6 +485,10 @@ class UzairAuthController
             'ip_address' => $request->ip(),
             'user_agent' => Str::limit((string) $request->userAgent(), 500, ''),
         ])->save();
+
+        if (! $saved) {
+            throw new RuntimeException('The UzAirports login was refused by a model listener and not recorded.');
+        }
 
         return $token;
     }

@@ -34,6 +34,61 @@ class PackageMigrationsTest extends TestCase
         }
     }
 
+    /**
+     * The two schema upgrades skip a table that already has the shape, so their
+     * rollbacks have to skip the same tables. They did not: on an installation
+     * created after the release, `migrate:rollback` dropped `ip_address` and
+     * `user_agent` with the device list they hold, put every account back to
+     * one login, and then took `session_id` — all of it structure the create
+     * migration wrote and these two never touched.
+     */
+    public function test_upgrade_rollbacks_leave_a_table_they_never_changed_alone(): void
+    {
+        $before = $this->shapeOfOauthTokens();
+
+        foreach (['make_oauth_tokens_per_session', 'add_session_id_to_oauth_tokens_table'] as $migration) {
+            $this->migration($migration)->up();
+            $this->migration($migration)->down();
+        }
+
+        $this->assertSame($before, $this->shapeOfOauthTokens());
+        $this->assertTrue(Schema::hasColumns('oauth_tokens', ['session_id', 'ip_address', 'user_agent']));
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['user_id', 'session_id']));
+        $this->assertFalse($this->hasIndexOn('oauth_tokens', ['user_id']));
+    }
+
+    /**
+     * The columns and indexes of `oauth_tokens`, in a form two runs can be
+     * compared by.
+     *
+     * @return array{columns: list<string>, indexes: list<list<string>>}
+     */
+    private function shapeOfOauthTokens(): array
+    {
+        $columns = [];
+
+        foreach (Schema::getColumns('oauth_tokens') as $column) {
+            $columns[] = (string) $column['name'];
+        }
+
+        $indexes = [];
+
+        foreach (Schema::getIndexes('oauth_tokens') as $index) {
+            $over = [];
+
+            foreach ((array) $index['columns'] as $name) {
+                $over[] = (string) $name;
+            }
+
+            $indexes[] = $over;
+        }
+
+        sort($columns);
+        sort($indexes);
+
+        return ['columns' => $columns, 'indexes' => $indexes];
+    }
+
     public function test_upgrade_rollbacks_preserve_indexes_from_the_create_migration(): void
     {
         foreach (['session_id' => 'index_oauth_tokens_by_session', 'updated_at' => 'index_oauth_tokens_for_pruning'] as $column => $migration) {
