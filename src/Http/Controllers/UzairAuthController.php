@@ -106,6 +106,8 @@ class UzairAuthController
 
         $this->endPreviousLogin($endSessions, $token, $previousSessionId);
 
+        $this->noteTheBrowsersLogin($request);
+
         // Two callbacks for one account finishing at the same moment each writes
         // their own row and then ends "the others", which by then includes the
         // row the other one just wrote: both logins can go, and both browsers
@@ -137,6 +139,12 @@ class UzairAuthController
      * revocation: a provider that cannot be reached must not be able to keep a
      * user signed in here.
      *
+     * The login is looked up by the session id the browser carries, so a
+     * session renamed since it was recorded is followed first. This endpoint
+     * carries no `uzair.token`, and a browser signing out on the first request
+     * after a regeneration would otherwise find no login to end: signed out
+     * here, still holding a grant at UzAirports ID that nothing surrenders.
+     *
      * @throws Throwable
      */
     public function logout(Request $request, EndSessions $endSessions): JsonResponse|RedirectResponse
@@ -144,6 +152,8 @@ class UzairAuthController
         $user = Auth::user();
 
         if ($user !== null) {
+            Uzair::followRegeneratedSession($request, $user->getAuthIdentifier());
+
             $tokens = OauthToken::query()->where('user_id', $user->getAuthIdentifier());
 
             $token = $request->hasSession()
@@ -198,6 +208,12 @@ class UzairAuthController
                 Uzair::loginUrl(),
             );
         }
+
+        // Which row is this browser's own is decided below by comparing session
+        // ids, so a session renamed since the row was written is followed
+        // first. Left behind, ending "another device" off the list would end
+        // this one and leave the browser signed in against nothing.
+        Uzair::followRegeneratedSession($request, $user->getAuthIdentifier());
 
         $login = OauthToken::query()
             ->where('user_id', $user->getAuthIdentifier())
@@ -313,6 +329,31 @@ class UzairAuthController
         return redirect()
             ->to($this->target(config('uzairports.redirect_on_error', '/')))
             ->withErrors(['oauth' => $message]);
+    }
+
+    /**
+     * Write down which session holds this login, and how it was authenticated.
+     *
+     * The note is what a later regeneration is measured against: the row is
+     * named by the session id settled a moment ago, and this is the browser's
+     * own record of it. It is written here rather than left to the first
+     * request through `uzair.token`, so a session regenerated before the
+     * browser reaches a route carrying the middleware is still recognized.
+     *
+     * It is deliberately not `followRegeneratedSession()`. The note this
+     * overwrites names of the session the browser held before signing in. The
+     * login filed under it is the one `endPreviousLogin()` has just ended —
+     * following it would move a row that is on its way out onto the id the new
+     * row already holds.
+     *
+     * Any mark left by a password sign-in in this same session goes with it:
+     * this browser holds an SSO login now, and its ending is what `uzair.token`
+     * has to notice.
+     */
+    private function noteTheBrowsersLogin(Request $request): void
+    {
+        Uzair::rememberSession($request);
+        Uzair::forgetLocalSession($request);
     }
 
     /**

@@ -36,6 +36,16 @@ class EnsureAccessTokenIsFresh
      * unauthenticated one: a redirect back through SSO for a browser, a 401 for
      * an API client.
      *
+     * Two sessions holding no login are let through rather than refused. One
+     * belongs to an account this package never linked, which is a local account
+     * living as it always did. The other was authenticated by the application
+     * itself and says so — `Uzair::markSessionAsLocal()` — which is the only
+     * thing that tells a hybrid application's password sign-in apart from a
+     * login that was ended, since an account that ever signed in through SSO
+     * carries `uzair_id` for good. The mark is asked for only once no login was
+     * found, so a session that holds one still has its token renewed on the
+     * ordinary path.
+     *
      * @param  Closure(Request): Response  $next
      *
      * @throws AuthenticationException when the session can no longer be renewed
@@ -58,7 +68,7 @@ class EnsureAccessTokenIsFresh
         $token = $this->tokenFor($request, $user);
 
         if ($token === null) {
-            if (! $this->isUzairUser($user)) {
+            if (! $this->isUzairUser($user) || Uzair::sessionIsLocal($request)) {
                 return $next($request);
             }
 
@@ -135,6 +145,13 @@ class EnsureAccessTokenIsFresh
      * request, but nothing guarantees it, and the request in hand is the one
      * whose session this decision is about.
      *
+     * A browser whose session was given a new id is still the same browser.
+     * Its login is moved to that id rather than lost with the old one — see
+     * `Uzair::followRegeneratedSession()`, which is asked only once the lookup
+     * has come back with nothing. Finding a login is the common answer and the
+     * inexpensive one; a session that carries no note of an earlier id answers
+     * without a statement completely.
+     *
      * What is found is handed to a user model carrying `HasUzairToken`,
      * whichever kind of request it was, so that anything downstream asking the
      * user for its login — a controller, a view — reads what was looked up here
@@ -144,19 +161,35 @@ class EnsureAccessTokenIsFresh
      */
     private function tokenFor(Request $request, Authenticatable $user): ?OauthToken
     {
-        $tokens = OauthToken::query()->where('user_id', $user->getAuthIdentifier());
-
         $sessionId = $request->hasSession() ? $request->session()->getId() : null;
 
-        $token = $sessionId === null
-            ? $tokens->whereNull('session_id')->latest('id')->first()
-            : $tokens->where('session_id', $sessionId)->first();
+        $token = $this->lookUpToken($user, $sessionId);
+
+        if ($token === null && $sessionId !== null && Uzair::followRegeneratedSession($request, $user->getAuthIdentifier())) {
+            $token = $this->lookUpToken($user, $sessionId);
+        }
+
+        if ($token !== null && $sessionId !== null) {
+            Uzair::rememberSession($request);
+        }
 
         if (method_exists($user, 'rememberCurrentToken')) {
             $user->rememberCurrentToken($token, $sessionId);
         }
 
         return $token;
+    }
+
+    /**
+     * The account's login for a session id, or for naming none.
+     */
+    private function lookUpToken(Authenticatable $user, ?string $sessionId): ?OauthToken
+    {
+        $tokens = OauthToken::query()->where('user_id', $user->getAuthIdentifier());
+
+        return $sessionId === null
+            ? $tokens->whereNull('session_id')->latest('id')->first()
+            : $tokens->where('session_id', $sessionId)->first();
     }
 
     /**

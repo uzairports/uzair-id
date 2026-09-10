@@ -22,6 +22,7 @@ use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
+use Uzairports\Uzairid\Uzair;
 
 class EnsureAccessTokenIsFreshTest extends TestCase
 {
@@ -341,6 +342,118 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     }
 
     /**
+     * Confirming a password, passing a second factor, `logoutOtherDevices()` —
+     * ordinary Laravel hands the browser a new session id and keeps the
+     * payload. The login names the old one, and until it followed, the very
+     * next request found no login for the session it came from and signed a
+     * signed-in user out.
+     */
+    public function test_a_login_follows_its_browser_through_a_regenerated_session(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4023']);
+
+        $session = $this->startedSession();
+
+        $token = $user->tokens()->create([
+            'access_token' => 'valid_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+
+        $session->regenerate();
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+
+        $this->assertSame($session->getId(), $token->fresh()?->session_id);
+        $this->assertSame(1, $user->tokens()->count());
+    }
+
+    /**
+     * A session id names a session and not an account, so what says the two ids
+     * are one browser is the payload — and the move is still scoped to whoever
+     * the session is signed in as. Another account holding the old id keeps its
+     * login.
+     */
+    public function test_a_regenerated_session_takes_no_login_but_its_own_accounts(): void
+    {
+        $first = TestUser::create(['uzair_id' => '4024']);
+        $second = TestUser::create(['uzair_id' => '4025']);
+
+        $session = $this->startedSession();
+
+        $login = $first->tokens()->create([
+            'access_token' => 'the_first_accounts_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($first, $session))->getContent());
+
+        $session->regenerate();
+
+        try {
+            $this->handle($this->sessionRequest($second, $session));
+
+            $this->fail('An account holding no login of its own should have been refused.');
+        } catch (AuthenticationException) {
+            //
+        }
+
+        $this->assertSame($login->session_id, $login->fresh()?->session_id);
+    }
+
+    /**
+     * The note the move is measured against lives in the session payload, which
+     * the browser holds a key to and never writes. A session carrying none —
+     * one this middleware has never let through — moves nothing, whatever id it
+     * arrives with.
+     */
+    public function test_a_session_that_never_held_a_login_adopts_none(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4026']);
+
+        $login = $user->tokens()->create([
+            'access_token' => 'the_other_devices_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => 'the-other-devices-session',
+        ]);
+
+        $session = $this->startedSession();
+
+        try {
+            $this->handle($this->sessionRequest($user, $session));
+
+            $this->fail('A session holding no login should have been refused.');
+        } catch (AuthenticationException) {
+            //
+        }
+
+        $this->assertSame('the-other-devices-session', $login->fresh()?->session_id);
+    }
+
+    /**
+     * `uzair_id` is carried for good once an account has signed in through SSO,
+     * so it cannot tell a login ended apart from a password sign-in
+     * this application made itself. The session says which it is, and a hybrid
+     * application's own sign-in is let through.
+     */
+    public function test_a_session_the_application_authenticated_itself_is_let_through(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4027']);
+
+        $session = $this->startedSession();
+
+        $request = $this->sessionRequest($user, $session);
+
+        Uzair::markSessionAsLocal($request);
+
+        $this->assertSame('OK', $this->handle($request)->getContent());
+        $this->assertSame(0, $user->tokens()->count());
+    }
+
+    /**
      * Letting a fresh token through is the one moment the middleware learns the
      * login is still in use, and pruning has nothing else to go on.
      */
@@ -403,9 +516,9 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     /**
      * A login that names no session belongs to the caller that names none
      * either, and the middleware validates the request on it. Asking the user
-     * for it afterwards used to answer null: the trait refused to hand out a
+     * for it afterward used to answer null: the trait refused to hand out a
      * login without a session, which was the right answer only while such a
-     * request was being lent somebody else's browser row.
+     * request was being borrowed from somebody else's browser row.
      */
     public function test_a_request_without_a_session_can_read_the_login_it_was_let_through_on(): void
     {
@@ -475,7 +588,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
 
     /**
      * A browser clicking around asks the same two questions of the same row on
-     * every request, and gets the same answer. Given a lifetime to stand for,
+     * every request and gets the same answer. Given a lifetime to stand for,
      * that answer is reused and the read goes away.
      */
     public function test_a_resolved_login_answers_the_next_request_without_reading_the_row(): void
@@ -561,7 +674,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     }
 
     /**
-     * An unknown expiry is not freshness — the token is renewed rather than let
+     * Unknown expiry is not freshness — the token is renewed rather than let
      * past — so it must not be cached as though it were.
      */
     public function test_a_login_without_a_known_expiry_is_never_answered_from_an_entry(): void
@@ -596,7 +709,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
      * How many times `oauth_tokens` was read while the given work ran.
      */
     /**
-     * The entry is an optimisation over reading the row, and an optimisation
+     * The entry is an optimization over reading the row, and an optimization
      * that cannot be reached must cost the query it was saving rather than the
      * request. Left to raise, an unreachable cache answered every authenticated
      * request with a 500 — including the requests of an application that had

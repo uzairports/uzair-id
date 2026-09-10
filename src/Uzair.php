@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\Request;
 use Illuminate\Routing\Route as RegisteredRoute;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
@@ -135,6 +136,131 @@ class Uzair
     public static function flushLoginRouteWarnings(): void
     {
         self::$reportedAboutTheLoginRoute = [];
+    }
+
+    /**
+     * Where the session notes the id the login it holds is filed under.
+     */
+    private const string SESSION_KEY = 'uzairid.session';
+
+    /**
+     * Where the session notes that this application authenticated it itself.
+     */
+    private const string LOCAL_KEY = 'uzairid.local';
+
+    /**
+     * Note the session id this browser's login is filed under.
+     *
+     * The note is what `followRegeneratedSession()` compares against, and it
+     * lives in the session payload — the application's own store, which the
+     * browser holds a key to and never writes. Rewritten only when the id has
+     * changed, so an unchanged session is not marked dirty by being read.
+     */
+    public static function rememberSession(Request $request): void
+    {
+        if (! $request->hasSession()) {
+            return;
+        }
+
+        $session = $request->session();
+
+        if ($session->get(self::SESSION_KEY) !== $session->getId()) {
+            $session->put(self::SESSION_KEY, $session->getId());
+        }
+    }
+
+    /**
+     * Take the login with the browser when its session is given a new id.
+     *
+     * `regenerate()` keeps the payload and changes the id, so the note written
+     * by `rememberSession()` still holds the id the login was filed under while
+     * the session answers to a new one. That difference is the whole signal:
+     * the browser is the same browser, and the row is moved to the id it
+     * carries now. Laravel fires nothing on a regeneration, and the alternative
+     * — a login found by nothing at all — signs a signed-in user out.
+     *
+     * The account is passed in, and the move is scoped to it because the note
+     * says which session this is and not whose login it is. `getAuthIdentifier()`
+     * promises nothing about what it hands back, and a key that is neither an
+     * integer nor a string names no account to scope by, so nothing is moved
+     * for it.
+     *
+     * The note is brought up to date whatever the move did. A session whose
+     * login has genuinely gone must not spend a statement looking for it again
+     * on every request for as long as the browser keeps it.
+     *
+     * @param  mixed  $userId  the key of the account the session is signed in as
+     * @return bool whether a login may now be found under the current id
+     */
+    public static function followRegeneratedSession(Request $request, mixed $userId): bool
+    {
+        if (! $request->hasSession() || (! is_int($userId) && ! is_string($userId))) {
+            return false;
+        }
+
+        $session = $request->session();
+        $previous = $session->get(self::SESSION_KEY);
+
+        if (! is_string($previous) || $previous === '' || $previous === $session->getId()) {
+            return false;
+        }
+
+        $session->put(self::SESSION_KEY, $session->getId());
+
+        return OauthToken::followSession($userId, $previous, $session->getId());
+    }
+
+    /**
+     * Say that this session was authenticated by the application itself.
+     *
+     * `uzair.token` refuses a session holding no login when the account carries
+     * a `uzair_id`, and it is right to: the login was ended somewhere, and what
+     * is left is a session with nothing behind it. An account that has ever
+     * signed in through SSO carries that column for good, though, so the same
+     * refusal met a hybrid application's own password sign-in — a user who used
+     * SSO once could never be signed in by the application again, on any route
+     * carrying the middleware.
+     *
+     * The mark says the difference the column cannot: this session's
+     * authentication does not come from UzAirports ID and must not be measured
+     * against a login row. Call it from wherever the application signs a
+     * browser in itself, after it has done so — `Auth::attempt()` migrates the
+     * session, and a mark written before that is written into the session that
+     * is about to be replaced.
+     *
+     * It is a statement about how this browser was authenticated, so only the
+     * application making that statement may write it, and only into a session
+     * it has just authenticated. It ends with the session: signing out
+     * invalidates it, and signing in through SSO takes it off.
+     */
+    public static function markSessionAsLocal(Request $request): void
+    {
+        if ($request->hasSession()) {
+            $request->session()->put(self::LOCAL_KEY, true);
+        }
+    }
+
+    /**
+     * Whether this session was authenticated by the application itself.
+     */
+    public static function sessionIsLocal(Request $request): bool
+    {
+        return $request->hasSession() && $request->session()->get(self::LOCAL_KEY) === true;
+    }
+
+    /**
+     * Stop a session counting as one the application authenticated itself.
+     *
+     * The callback calls this: a browser that signs in through SSO holds a
+     * login row from that moment, and a mark left over from a password sign-in
+     * in the same session would go on exempting it from the one check that
+     * notices the login being ended.
+     */
+    public static function forgetLocalSession(Request $request): void
+    {
+        if ($request->hasSession()) {
+            $request->session()->forget(self::LOCAL_KEY);
+        }
     }
 
     /**

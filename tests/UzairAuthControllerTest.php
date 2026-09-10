@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
@@ -27,6 +28,7 @@ use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
+use Uzairports\Uzairid\Uzair;
 
 class UzairAuthControllerTest extends TestCase
 {
@@ -515,6 +517,107 @@ class UzairAuthControllerTest extends TestCase
         $this->assertSame(1, OauthToken::query()->count());
     }
 
+    /**
+     * The callback writes down which session holds the login, so a browser
+     * renamed before it ever reaches a route carrying `uzair.token` is still
+     * recognized. Left to the middleware to note on its first request, a
+     * regeneration in between — a host application hardening the session the
+     * moment somebody signs in — left the row named by an id nobody carried.
+     */
+    public function test_a_login_follows_a_session_renamed_before_the_middleware_ever_ran(): void
+    {
+        $this->fakeIdentity(['id' => '5030', 'name' => 'Renamed', 'token' => 'access_token_value']);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $token = OauthToken::query()->firstOrFail();
+
+        $renamed = $this->afterRenamingTheSessionHolding($token);
+
+        $this->withCookie($this->sessionCookie(), $renamed)
+            ->get(route('protected'))
+            ->assertOk();
+
+        $this->assertSame($renamed, $token->fresh()?->session_id);
+        $this->assertSame(1, OauthToken::query()->count());
+    }
+
+    /**
+     * A session the application authenticated itself is exempt from the check
+     * that notices a login being ended — so signing in through SSO in that same
+     * browser has to take the mark off. The login it holds now is one
+     * `uzair.token` must be able to refuse.
+     */
+    public function test_signing_in_through_sso_stops_a_session_counting_as_local(): void
+    {
+        Route::middleware('web')->get('uzairid-test/local', function (Request $request): string {
+            Uzair::markSessionAsLocal($request);
+
+            return $request->session()->getId();
+        });
+
+        $local = (string) $this->get('uzairid-test/local')->getContent();
+
+        $this->fakeIdentity(['id' => '5031', 'name' => 'Was Local', 'token' => 'access_token_value']);
+
+        $this->withCookie($this->sessionCookie(), $local)
+            ->get(route('uzair.callback'))
+            ->assertRedirect(route('dashboard'));
+
+        $signedIn = (string) OauthToken::query()->firstOrFail()->session_id;
+
+        // The login is ended from another device, which is what the exemption
+        // must not be allowed to answer for.
+        OauthToken::query()->delete();
+
+        $this->withCookie($this->sessionCookie(), $signedIn)
+            ->get(route('protected'))
+            ->assertRedirect(route('login'));
+
+        $this->assertGuest();
+    }
+
+    /**
+     * Signing out is the one path that has to find the login without
+     * `uzair.token` having run: this endpoint does not carry it. A browser
+     * renamed on the request before this one used to find nothing to end — and
+     * left holding a grant at UzAirports ID that nothing would surrender.
+     */
+    public function test_signing_out_after_a_renamed_session_still_hands_the_grant_back(): void
+    {
+        $this->fakeIdentity(
+            ['id' => '5032', 'name' => 'Renamed Then Left', 'token' => 'this_devices_token'],
+            logout: 'this_devices_token',
+        );
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $renamed = $this->afterRenamingTheSessionHolding(OauthToken::query()->firstOrFail());
+
+        $this->withCookie($this->sessionCookie(), $renamed)
+            ->post(route('uzair.logout'))
+            ->assertRedirect(url('/'));
+
+        $this->assertGuest();
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    /**
+     * Hand the browser holding this login a new session id, the way
+     * `regenerate()` does wherever a host application calls it, and say what it
+     * carries now.
+     */
+    private function afterRenamingTheSessionHolding(OauthToken $token): string
+    {
+        Route::middleware('web')->get('uzairid-test/rename', function (Request $request): string {
+            $request->session()->regenerate();
+
+            return $request->session()->getId();
+        });
+
+        return (string) $this->onTheDeviceHolding($token)->get('uzairid-test/rename')->getContent();
+    }
+
     public function test_logout_ends_this_device_only(): void
     {
         Event::fake([UzairLoggedOut::class]);
@@ -628,6 +731,33 @@ class UzairAuthControllerTest extends TestCase
         $thisDevice = $user->tokens()->firstOrFail();
 
         $this->onTheDeviceHolding($thisDevice)
+            ->post(route('uzair.logoutDevice', $thisDevice))
+            ->assertRedirect(url('/'));
+
+        $this->assertGuest();
+        $this->assertSame(0, $user->tokens()->count());
+    }
+
+    /**
+     * Which row is this browser's own is decided by comparing session ids, so a
+     * browser renamed since the row was written has to be followed first.
+     * Otherwise picking your own device off the list read as ending somebody
+     * else's: the login went, and the browser was left signed in against a row
+     * that no longer existed.
+     */
+    public function test_ending_this_devices_own_login_after_a_renamed_session_still_signs_it_out(): void
+    {
+        $user = TestUser::create(['uzair_id' => '5033', 'name' => 'Renamed And Leaving']);
+
+        $this->fakeIdentity(['id' => '5033', 'name' => 'Renamed And Leaving', 'token' => 'this_devices_token'], logout: 'this_devices_token');
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $thisDevice = $user->tokens()->firstOrFail();
+
+        $renamed = $this->afterRenamingTheSessionHolding($thisDevice);
+
+        $this->withCookie($this->sessionCookie(), $renamed)
             ->post(route('uzair.logoutDevice', $thisDevice))
             ->assertRedirect(url('/'));
 

@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Prunable;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Events\ModelsPruned;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
@@ -395,6 +396,66 @@ class OauthToken extends Model
         }
 
         $this->forceFill(['updated_at' => now()])->saveQuietly();
+    }
+
+    /**
+     * File an account's login under the session id its browser now carries.
+     *
+     * A login names a session, and a session is free to be renamed under it.
+     * `$request->session()->regenerate()` is ordinary Laravel — confirming a
+     * password, passing a second factor, `logoutOtherDevices()`, a host
+     * application hardening a privilege change — and it keeps the payload while
+     * handing the browser a new id. The row went on naming the old one, so the
+     * very next request through `uzair.token` found no login for the session it
+     * was made from, dropped the session and sent a signed-in user back through
+     * SSO, leaving a row nobody could reach still holding a grant nobody gave
+     * up until the sweep collected it.
+     *
+     * The move is scoped to the account, because the id alone is not evidence
+     * of whose login it is: what says the two ids are the same browser is the
+     * session payload, which is the application's own store and which the
+     * browser cannot write. `Uzair::followRegeneratedSession()` is where that
+     * is read; this is only the writing.
+     *
+     * Written around the model on purpose, the way `keepAlive()` writes
+     * quietly: nothing about the login changed except where it is filed, and an
+     * observer watching for a login being saved is watching for grants moving,
+     * not for a browser being renamed.
+     *
+     * The unique pair refuses the move when the account already holds a login
+     * under the new id. There is nothing to do about it and nothing to report:
+     * a caller only reaches this having found no login under that id, so the
+     * row it collided with was written between the two — by another request of
+     * the same browser doing this, or by a callback signing in again — and
+     * either way the login the caller is looking for is now there to be read.
+     *
+     * @return bool whether the login is worth looking for under the new id
+     */
+    public static function followSession(int|string $userId, string $previousSessionId, string $sessionId): bool
+    {
+        if ($previousSessionId === '' || $sessionId === '' || $previousSessionId === $sessionId) {
+            return false;
+        }
+
+        try {
+            $moved = static::query()
+                ->where('user_id', $userId)
+                ->where('session_id', $previousSessionId)
+                ->update(['session_id' => $sessionId]);
+        } catch (UniqueConstraintViolationException) {
+            return true;
+        }
+
+        if ($moved === 0) {
+            return false;
+        }
+
+        // The entry was keyed by an id no browser carries now, and the login it
+        // stands for is filed elsewhere. Nothing reads it again either way; it
+        // goes because every id this package stops using it drops.
+        self::forgetLogin($previousSessionId);
+
+        return true;
     }
 
     /**
