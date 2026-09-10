@@ -36,7 +36,7 @@ class EnsureAccessTokenIsFresh
      * unauthenticated one: a redirect back through SSO for a browser, a 401 for
      * an API client.
      *
-     * @param Closure(Request): Response $next
+     * @param  Closure(Request): Response  $next
      *
      * @throws AuthenticationException when the session can no longer be renewed
      * @throws Throwable

@@ -2,7 +2,6 @@
 
 namespace Uzairports\Uzairid\Concerns;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -92,7 +91,7 @@ trait HasUzairToken
      * The unique pair does not collapse several null session ids, so the most
      * recent of them is taken — the same rule `uzair.token` goes by.
      */
-    public function currentToken(): Model
+    public function currentToken(): ?OauthToken
     {
         $sessionId = $this->currentSessionId();
 
