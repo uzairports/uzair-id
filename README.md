@@ -25,6 +25,8 @@ php artisan migrate
     'client_id' => env('UZAIR_CLIENT_ID'),
     'client_secret' => env('UZAIR_CLIENT_SECRET'),
     'redirect' => env('UZAIR_CALLBACK_URL'),
+    'host' => env('UZAIR_HOST', 'https://my.uzairports.com'),
+    'scopes' => env('UZAIR_SCOPES', ''),
 ],
 ```
 И в .env:
@@ -32,7 +34,17 @@ php artisan migrate
 UZAIR_CLIENT_ID=your-client-id
 UZAIR_CLIENT_SECRET=your-client-secret
 UZAIR_CALLBACK_URL=https://your-app.com/auth/callback
+UZAIR_SCOPES="openid profile email"
+# UZAIR_HOST="https://my.uzairports.com"
 ```
+
+`UZAIR_HOST` — адрес сервера UzAirports ID, на котором строятся все запросы OAuth и API.
+Задавать его нужно, только чтобы направить приложение на тестовый стенд: пустое значение
+оставляет боевой `https://my.uzairports.com`.
+
+`UZAIR_SCOPES` — список запрашиваемых разрешений через пробел (принимается и запятая).
+Пустое значение оставляет выбор разрешений за сервером UzAirports ID.
+
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
 
 ### Аутентификация
