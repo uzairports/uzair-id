@@ -56,7 +56,7 @@ Route::get('/dashboard', [DashboardController::class, 'index'])
 | Раздел | О чём |
 | --- | --- |
 | [Установка](docs/installation.md) | Composer, публикация конфигурации, базовые и опциональные миграции, обновление со старых версий, языковые файлы |
-| [Конфигурация](docs/configuration.md) | Переменные `.env`, полная таблица ключей `config/uzairports.php`, PKCE |
+| [Конфигурация](docs/configuration.md) | Переменные `.env`, полная таблица ключей `config/uzairports.php`, Guard, смена провайдера (`uzair:provider`), PKCE |
 | [Идентификация пользователя](docs/user-identification.md) | Почему опознание идёт по `uzair_id`, `ResolveUserFromSocialite`, привязка старых аккаунтов по email |
 | [Аутентификация](docs/authentication.md) | Маршруты и лимиты, конфликт имени `login`, контроллер, трейт `HasUzairToken` |
 | [Сессии и устройства](docs/sessions.md) | Несколько устройств, смена id сессии, гибридный вход по паролю, завершение входов, список входов, уборка, единственная сессия |

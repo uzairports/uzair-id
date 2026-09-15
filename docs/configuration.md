@@ -50,6 +50,8 @@ php artisan vendor:publish --tag=uzairid-config
 | `login_cache_ttl` | `UZAIR_LOGIN_CACHE_TTL` | `0` | Сколько секунд `uzair.token` может пропускать запрос по уже найденному входу, не читая строку; `0` — читать всегда |
 | `login_cache_store` | `UZAIR_LOGIN_CACHE_STORE` | — | Имя хранилища кеша для кеширования входов (по умолчанию — системный кеш) |
 | `lock_store` | `UZAIR_LOCK_STORE` | — | Хранилище кеша для atomic lock при обновлении токена |
+| `provider_cooldown` | `UZAIR_PROVIDER_COOLDOWN` | `30` | Пауза (сек) перед повторными запросами к SSO после серии сбоев (circuit breaker) |
+| `provider_failure_threshold` | `UZAIR_PROVIDER_FAILURE_THRESHOLD` | `5` | Количество последовательных сбоев обновления токенов до включения cooldown |
 
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
 
@@ -72,6 +74,40 @@ Guard, который аутентифицирует каждый запрос �
 `uzair.token` и `logout` просто не станут его разлогинивать — строка входа, грант и сессия
 завершаются как обычно.
 
+## Смена guard и провайдера учётных записей (`uzair:provider`)
+
+Если в приложении меняется guard (`uzairports.guard`) или модель пользователей (`auth.providers.{provider}.model`), внешний ключ `user_id` таблицы `oauth_tokens` перестаёт соответствовать целевой таблице. Чтобы предотвратить рассинхронизацию данных, middleware защищает систему и при расхождении отвечает `503 Service Unavailable`:
+> *«The UzAirports token owner is [old_table], but the configured provider uses [new_table]. Run php artisan uzair:provider for the transition procedure.»*
+
+Для контролируемого перехода предусмотрена команда `php artisan uzair:provider`:
+
+1. **Включите режим обслуживания** и остановите фоновые воркеры:
+   ```bash
+   php artisan down
+   ```
+2. **Завершите активные SSO-входы** под старым провайдером с отзывом грантов у UzAirports ID:
+   ```bash
+   php artisan uzair:provider --end-sessions
+   ```
+3. **Обновите конфигурацию** (укажите новый guard/модель в `.env` и `config/`) и сбросьте кэш:
+   ```bash
+   php artisan config:clear
+   ```
+4. **Пересоздайте чистую таблицу токенов** под новую модель пользователей:
+   ```bash
+   php artisan uzair:provider --rebuild-empty
+   ```
+   *Прежняя пустая таблица сохраняется как резервная копия с префиксом `uzair_tokens_backup_*`.*
+5. **Проверьте соответствие схемы**:
+   ```bash
+   php artisan uzair:provider
+   ```
+   Команда подтвердит: `The token table matches the configured account provider.`
+6. **Выключите режим обслуживания**:
+   ```bash
+   php artisan up
+   ```
+
 ## PKCE
 
 По умолчанию пакет отправляет `code_challenge`/`code_challenge_method=S256`: код авторизации
@@ -82,3 +118,4 @@ Guard, который аутентифицирует каждый запрос �
 ---
 
 Далее: [Идентификация пользователя](user-identification.md)
+

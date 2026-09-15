@@ -23,6 +23,10 @@
 - **`record_device` (`UZAIR_RECORD_DEVICE`, по умолчанию `true`).** Выключает запись адреса и
   user-agent рядом с входом. Колонки при этом пишутся как `null`, а не пропускаются: строка
   может быть та же, что заполнил прошлый вход.
+- **Документация процедур `uzair:provider` и `uzair:prune`.** В документацию добавлены разделы
+  по безопасному переходу на другого провайдера пользователей (`uzair:provider`), параметрам
+  circuit breaker (`provider_cooldown`, `provider_failure_threshold`) в `docs/configuration.md`,
+  а также по команде плановой уборки `uzair:prune` в `docs/sessions.md`.
 
 ### Fixed
 
