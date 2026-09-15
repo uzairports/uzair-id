@@ -236,6 +236,21 @@ class UzairportsProviderTest extends TestCase
         }
     }
 
+    public function test_sub_claim_is_used_as_fallback_for_user_id(): void
+    {
+        $provider = $this->provider([
+            'handler' => HandlerStack::create(new MockHandler([
+                new Response(200, [], '{"sub":"subject-uuid-123","name":"Test User","email":"user@example.com"}'),
+            ])),
+        ]);
+
+        $user = $provider->userFromToken('access-token');
+
+        $this->assertSame('subject-uuid-123', $user->getId());
+        $this->assertSame('Test User', $user->getName());
+        $this->assertSame('user@example.com', $user->getEmail());
+    }
+
     public function test_a_driver_resolved_from_the_container_reads_the_configured_host(): void
     {
         config(['uzairports.host' => 'https://staging.uzairports.com/']);

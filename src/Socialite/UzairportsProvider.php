@@ -261,7 +261,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     protected function mapUserToObject(array $user): User
     {
         return (new User)->setRaw($user)->map([
-            'id' => $user['id'] ?? null,
+            'id' => $user['id'] ?? $user['sub'] ?? null,
             'name' => $user['name'] ?? '',
             'email' => $user['email'] ?? '',
             'avatar' => $user['avatar'] ?? '',
@@ -287,7 +287,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     public function logoutAsync(string $token): ?PromiseInterface
     {
-        $endpoint = config('uzairports.logout_endpoint', '/api/v1/oauth/logout');
+        $endpoint = config('uzairports.logout_endpoint', '/api/oauth/logout');
 
         if (! is_string($endpoint) || $endpoint === '') {
             return null;

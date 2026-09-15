@@ -59,7 +59,7 @@ return [
     |
     */
 
-    'logout_endpoint' => env('UZAIR_LOGOUT_ENDPOINT', '/api/v1/oauth/logout'),
+    'logout_endpoint' => env('UZAIR_LOGOUT_ENDPOINT', '/api/oauth/logout'),
 
     /*
     |--------------------------------------------------------------------------

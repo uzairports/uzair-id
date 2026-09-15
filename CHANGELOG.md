@@ -148,7 +148,7 @@
   `session_id`. Колонка `user_id` повторяет тип ключа таблицы пользователей — integer, UUID
   или строку, — а не предполагает `bigint` в таблице с именем `users`.
 - **Адрес SSO и его эндпоинты настраиваются.** В провайдере были зашиты `my.uzairports.com`,
-  `/api/user` и `/api/v1/oauth/logout`; теперь это `host`, `user_endpoint`, `logout_endpoint`
+  `/api/user` и `/api/oauth/logout`; теперь это `host`, `user_endpoint`, `logout_endpoint`
   и `revoke_endpoint`, а `scopes` приходят из конфига. Стенд отличается от продакшена
   переменной `.env`, а не форком провайдера.
 - **`config/`, `database/` и `lang/` лежат в корне пакета, а не в `src/`.** `src` остаётся

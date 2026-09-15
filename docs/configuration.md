@@ -23,8 +23,8 @@ php artisan vendor:publish --tag=uzairid-config
 | `client_secret` | `UZAIR_CLIENT_SECRET` | — | Секрет OAuth-клиента |
 | `redirect` | `UZAIR_CALLBACK_URL` | — | Адрес callback-маршрута |
 | `host` | `UZAIR_HOST` | `https://my.uzairports.com` | Адрес UzAirports ID; меняется для стенда |
-| `revoke_endpoint` | `UZAIR_REVOKE_ENDPOINT` | — | Эндпоинт RFC 7009 для отзыва refresh-токена |
-| `logout_endpoint` | `UZAIR_LOGOUT_ENDPOINT` | `/api/v1/oauth/logout` | Эндпоинт для отзыва access-токена при logout |
+| `revoke_endpoint` | `UZAIR_REVOKE_ENDPOINT` | — (опционально, `/oauth/revoke`) | Эндпоинт RFC 7009 для отзыва refresh-токена |
+| `logout_endpoint` | `UZAIR_LOGOUT_ENDPOINT` | `/api/oauth/logout` | Эндпоинт для отзыва access-токена при logout |
 | `user_endpoint` | `UZAIR_USER_ENDPOINT` | `/api/user` | Эндпоинт получения профиля пользователя |
 | `revoke_on_prune` | `UZAIR_REVOKE_ON_PRUNE` | `true` | Отдавать ли гранты SSO при уборке брошенных входов |
 | `revoke_on_single_session` | `UZAIR_REVOKE_ON_SINGLE_SESSION` | `true` | Отзывать ли гранты SSO при завершении других входов через `single_session` |
