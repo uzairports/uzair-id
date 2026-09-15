@@ -99,6 +99,11 @@ jobs:
       # the tests, and they are the same in both jobs. The other job runs them
       # without the coverage driver attached.
       #
+      # `--min` is what makes the measurement mean anything: without it the
+      # report was printed and nothing read it, so coverage could fall to zero
+      # and the job would still be green. The floor is a ratchet — raise it to
+      # just under whatever this job reports once a run has said what that is.
+      #
       # Not `--parallel`: the suite runs in about three seconds, and paratest
       # spends longer starting its workers than it saves. Worth revisiting if
       # the suite grows to where the run is dominated by the tests themselves.
@@ -121,6 +126,6 @@ jobs:
 
       - name: Execute tests with coverage
         if: matrix.stability == 'prefer-stable' && matrix.database == 'sqlite'
-        run: vendor/bin/pest --coverage
+        run: vendor/bin/pest --coverage --min=85
         env:
           DB_CONNECTION: ${{ matrix.database }}

@@ -86,6 +86,74 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
+     * The address and the user agent are the only things in the row a person
+     * could recognise their own phone by, and an application that does not want
+     * them stored says so in one setting.
+     */
+    public function test_the_device_is_not_recorded_when_the_application_asks_for_it_not_to_be(): void
+    {
+        config(['uzairports.record_device' => false]);
+
+        $this->fakeIdentity(['id' => '5002-private', 'name' => 'Phone', 'token' => 'access_token_value']);
+
+        $this->withServerVariables(['REMOTE_ADDR' => '10.1.2.3'])
+            ->withHeaders(['User-Agent' => 'Mozilla/5.0 (iPhone) Safari/605'])
+            ->get(route('uzair.callback'))
+            ->assertRedirect(route('dashboard'));
+
+        $token = OauthToken::query()->firstOrFail();
+
+        $this->assertNull($token->ip_address);
+        $this->assertNull($token->user_agent);
+        $this->assertNotNull($token->session_id);
+    }
+
+    /**
+     * An application authenticating through a guard of its own had the callback
+     * open a session on the default one, and every later request look for the
+     * account on the guard the route names: signed in and a guest at once.
+     */
+    public function test_the_handshake_signs_the_browser_in_to_the_configured_guard(): void
+    {
+        $this->useSecondaryGuard();
+
+        $this->fakeIdentity(['id' => '5040', 'name' => 'Second Guard', 'token' => 'access_token_value']);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $this->assertAuthenticated('secondary');
+        $this->assertGuest();
+
+        $user = TestUser::query()->firstWhere('uzair_id', '5040');
+
+        $this->assertNotNull($user);
+        $this->assertSame(session()->getId(), $user->tokens()->firstOrFail()->session_id);
+    }
+
+    /**
+     * The other half: `logout` used to ask the default guard who was signed in,
+     * find nobody, and answer a redirect without ending anything at all.
+     */
+    public function test_logging_out_ends_the_login_of_the_configured_guard(): void
+    {
+        $this->useSecondaryGuard();
+
+        $this->fakeIdentity(
+            ['id' => '5041', 'name' => 'Second Guard', 'token' => 'the_only_token'],
+            logout: 'the_only_token',
+        );
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $this->assertAuthenticated('secondary');
+
+        $this->post(route('uzair.logout'))->assertRedirect(url('/'));
+
+        $this->assertSame(0, OauthToken::query()->count());
+        $this->assertGuest('secondary');
+    }
+
+    /**
      * The point of the whole design: a phone and a desktop are two logins, each
      * with the grant its own browser was issued.
      */
@@ -1032,6 +1100,17 @@ class UzairAuthControllerTest extends TestCase
         }
 
         return $cookie;
+    }
+
+    /**
+     * Put the package on a guard of the application's own, beside the default.
+     */
+    private function useSecondaryGuard(): void
+    {
+        config([
+            'auth.guards.secondary' => ['driver' => 'session', 'provider' => 'users'],
+            'uzairports.guard' => 'secondary',
+        ]);
     }
 
     /**

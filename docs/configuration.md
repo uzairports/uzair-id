@@ -32,6 +32,8 @@ php artisan vendor:publish --tag=uzairid-config
 | `scopes` | `UZAIR_SCOPES` | — | Запрашиваемые scope через пробел |
 | `refresh_leeway` | `UZAIR_REFRESH_LEEWAY` | `60` | За сколько секунд до истечения обновлять токен |
 | `default_token_ttl` | `UZAIR_DEFAULT_TOKEN_TTL` | `3600` | Fallback TTL токена (сек), если провайдер не вернул `expires_in` |
+| `guard` | `UZAIR_GUARD` | — | Guard, в который пакет логинит, из которого разлогинивает и в котором читает аккаунт; пусто — guard приложения по умолчанию |
+| `record_device` | `UZAIR_RECORD_DEVICE` | `true` | Сохранять ли адрес и user-agent браузера рядом с входом (список устройств) |
 | `login_route` | `UZAIR_LOGIN_ROUTE` | `login` | Имя маршрута повторной аутентификации |
 | `redirect_to` | `UZAIR_REDIRECT_TO` | `dashboard` | Маршрут или URL перенаправления после входа |
 | `redirect_on_error` | `UZAIR_REDIRECT_ON_ERROR` | `/` | Куда вернуть пользователя, если вход не удался |
@@ -50,6 +52,25 @@ php artisan vendor:publish --tag=uzairid-config
 | `lock_store` | `UZAIR_LOCK_STORE` | — | Хранилище кеша для atomic lock при обновлении токена |
 
 > Для получения доступа к UzAirports ID, пожалуйста, свяжитесь с технической поддержкой: it@uzairports.com
+
+## Guard
+
+Пусто — guard приложения по умолчанию, то есть ровно то, что пакет делал всегда. Задавайте
+ключ, если приложение аутентифицирует через собственный guard: иначе callback откроет сессию
+в одном guard, а `uzair.token` будет искать аккаунт в другом — пользователь одновременно
+залогинен и гость.
+
+Отдельный маршрут может назвать свой guard параметром middleware, и он важнее конфига:
+
+```php
+Route::get('/admin', [AdminController::class, 'index'])
+    ->middleware(['auth:admin', 'uzair.token:admin']);
+```
+
+Guard, который аутентифицирует каждый запрос заново (token guard, Sanctum), сессии не держит:
+`login()`/`logout()` у него нет. Callback такой guard отвергнет как ошибку конфигурации, а
+`uzair.token` и `logout` просто не станут его разлогинивать — строка входа, грант и сессия
+завершаются как обычно.
 
 ## PKCE
 

@@ -10,8 +10,10 @@ use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Session\Session as SessionContract;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Session;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
@@ -19,6 +21,7 @@ use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
+use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -770,10 +773,156 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         return $reads;
     }
 
-    private function handle(Request $request): Response
+    /**
+     * A route authenticated by a guard of its own says so beside `auth:`, and
+     * the account is read off that guard. Asked the default one, the middleware
+     * saw a guest on every such request and let it through unchecked.
+     */
+    public function test_the_route_names_the_guard_the_account_is_read_off(): void
+    {
+        $this->defineSecondaryGuard();
+
+        $user = TestUser::create(['uzair_id' => '4200']);
+
+        $this->assertSame('OK', $this->handle($this->guardedRequest($user, 'secondary'))->getContent());
+
+        $this->expectException(AuthenticationException::class);
+
+        $this->handle($this->guardedRequest($user, 'secondary'), 'secondary');
+    }
+
+    /**
+     * A route that names none falls back to the configured guard, which is what
+     * the endpoints in the controller go by — they carry no parameter.
+     */
+    public function test_the_configured_guard_stands_where_the_route_names_none(): void
+    {
+        $this->defineSecondaryGuard();
+
+        config(['uzairports.guard' => 'secondary']);
+
+        $user = TestUser::create(['uzair_id' => '4201']);
+
+        $this->expectException(AuthenticationException::class);
+
+        $this->handle($this->guardedRequest($user, 'secondary'));
+    }
+
+    /**
+     * A guard that authenticates each request on its own holds no session and
+     * has no `logout()`. The bare `Auth::logout()` that used to stand here
+     * answered such an application with a `BadMethodCallException` — a 500 in
+     * place of the 401 the refusal means.
+     */
+    public function test_a_guard_that_holds_no_session_is_refused_rather_than_signed_out(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4202']);
+
+        Auth::viaRequest('uzairid-probe', fn (): TestUser => $user);
+
+        config(['auth.guards.probe' => ['driver' => 'uzairid-probe']]);
+
+        $this->expectException(AuthenticationException::class);
+
+        $this->handle($this->guardedRequest($user, 'probe'), 'probe');
+    }
+
+    /**
+     * `markSessionAsLocal()` is written into a session payload, so it says
+     * nothing about a request that carries none — and an account that ever
+     * signed in through SSO carries `uzair_id` for good. An API authenticating
+     * its own way was therefore refused on every request, with nothing it could
+     * say to the contrary.
+     */
+    public function test_a_sessionless_request_the_application_authenticated_itself_is_let_through(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4203']);
+
+        Uzair::treatRequestsAsLocalWhen(fn (Request $request): bool => $request->headers->has('X-Api-Token'));
+
+        try {
+            $refused = $this->statelessRequest($user);
+
+            try {
+                $this->handle($refused);
+
+                $this->fail('A caller with no login and no way of saying it is local must be refused.');
+            } catch (AuthenticationException) {
+                //
+            }
+
+            $local = $this->statelessRequest($user);
+            $local->headers->set('X-Api-Token', 'the-applications-own');
+
+            $this->assertSame('OK', $this->handle($local)->getContent());
+        } finally {
+            Uzair::treatRequestsAsLocalWhen(null);
+        }
+    }
+
+    /**
+     * The imperative form of the same thing, for an application deciding it in
+     * a middleware of its own rather than by a rule.
+     */
+    public function test_a_request_marked_as_local_is_let_through(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4204']);
+
+        $request = $this->statelessRequest($user);
+
+        Uzair::markRequestAsLocal($request);
+
+        $this->assertSame('OK', $this->handle($request)->getContent());
+    }
+
+    /**
+     * The other half of the ways a login ends. An application listening for its
+     * users signing out heard the ones they asked for themselves and nothing at
+     * all about the ones ended here.
+     */
+    public function test_refusing_a_login_says_so_through_the_event(): void
+    {
+        Event::fake([UzairLoggedOut::class]);
+
+        $user = TestUser::create(['uzair_id' => '4205']);
+
+        try {
+            $this->handle($this->statelessRequest($user));
+
+            $this->fail('A caller holding no login must be refused.');
+        } catch (AuthenticationException) {
+            //
+        }
+
+        Event::assertDispatched(UzairLoggedOut::class, fn (UzairLoggedOut $event): bool => $event->user?->getKey() === $user->getKey());
+    }
+
+    private function handle(Request $request, ?string $guard = null): Response
     {
         return (new EnsureAccessTokenIsFresh(new RefreshAccessToken, new EndSessions))
-            ->handle($request, fn () => response('OK'));
+            ->handle($request, fn () => response('OK'), $guard);
+    }
+
+    /**
+     * A guard of the application's own, beside the default one.
+     */
+    private function defineSecondaryGuard(): void
+    {
+        config(['auth.guards.secondary' => ['driver' => 'session', 'provider' => 'users']]);
+    }
+
+    /**
+     * A request only one named guard can answer for.
+     *
+     * The resolver is handed the guard the caller asked about, the way
+     * Laravel's own is, so a middleware asking the wrong one finds a guest.
+     */
+    private function guardedRequest(TestUser $user, string $guard): Request
+    {
+        $request = Request::create('/api/data');
+        $request->setUserResolver(fn (?string $asked = null): ?TestUser => $asked === $guard ? $user : null);
+
+        return $request;
     }
 
     private function statelessRequest(TestUser $user): Request

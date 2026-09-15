@@ -6,11 +6,15 @@ use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Promise\Utils;
 use Illuminate\Database\Query\Builder;
+use Illuminate\Session\ArraySessionHandler;
+use Illuminate\Session\CookieSessionHandler;
 use Illuminate\Support\Collection as SupportCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Session;
 use Laravel\Socialite\Facades\Socialite;
 use RuntimeException;
+use SessionHandlerInterface;
 use Throwable;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -30,8 +34,10 @@ class EndSessions
      * - The row is deleted, so `uzair.token` refuses that session on its next
      *   request whatever the session driver is;
      * - The session itself is deleted from the store, so a device that never
-     *   reaches the middleware loses its session too. Only the database driver
-     *   keeps sessions somewhere this can reach.
+     *   reaches the middleware loses its session too. Every driver that keeps a
+     *   session somewhere is reached — the database one by a statement, the
+     *   rest through their own handler — except `cookie` and `array`, which
+     *   hold nothing another browser's session could be dropped from.
      *
      * Pass `$exceptSessionId` to keep the browser in front of you signed in.
      *
@@ -493,21 +499,102 @@ class EndSessions
     /**
      * Drop the named sessions from the session store.
      *
+     * The database driver keeps its sessions in a table this can reach, so they
+     * go in one statement — a session named twice is named once here, since
+     * rows found by session id may belong to different accounts.
+     *
+     * Every other driver is reached through its own handler, which is what the
+     * whole of `SessionHandlerInterface` exists for: `destroy()` takes an id and
+     * drops that session, whether it is a file, a key in Redis or an item in
+     * Memcached. Only the database driver used to be reached at all, so a
+     * deployment on Redis sessions — the one this package's own locking notes
+     * assume, since it is the one running several processes — signed a device
+     * out of its login and left its session standing in the store. What saved it
+     * was the row being gone, which `uzair.token` refuses on the next request;
+     * a route not carrying the middleware saw a browser that was still signed
+     * in.
+     *
+     * Two handlers are deliberately not asked. `ArraySessionHandler` holds the
+     * sessions of one process, so it has none of another browser's to drop. The
+     * `cookie` driver keeps nothing at all — the session travels in the browser's
+     * own cookie — and its `destroy()` queues a cookie onto the response of the
+     * request in hand, which is this browser's, not the one being signed out.
+     *
+     * A handler that will not answer is reported once for the whole batch and
+     * never raised: the rows are gone by the time any caller reaches this, and
+     * the rest of the ending — surrendering the grants — must not be skipped
+     * over a session store.
+     *
      * @param  array<array-key, string>  $sessionIds
      */
     private function deleteStoredSessionsById(array $sessionIds): void
     {
-        if ($sessionIds === [] || config('session.driver') !== 'database') {
+        $sessionIds = array_values(array_unique(array_filter(
+            $sessionIds,
+            fn (string $sessionId): bool => $sessionId !== '',
+        )));
+
+        if ($sessionIds === []) {
             return;
         }
 
-        try {
-            $this->storedSessions()->whereIn('id', array_values($sessionIds))->delete();
-        } catch (Throwable $e) {
-            Log::warning('Failed to delete the stored session of an UzAirports user.', [
-                'exception_class' => $e::class,
+        if (config('session.driver') === 'database') {
+            try {
+                $this->storedSessions()->whereIn('id', $sessionIds)->delete();
+            } catch (Throwable $e) {
+                Log::warning('Failed to delete the stored session of an UzAirports user.', [
+                    'exception_class' => $e::class,
+                ]);
+            }
+
+            return;
+        }
+
+        $handler = $this->sessionHandler();
+
+        if ($handler === null) {
+            return;
+        }
+
+        $failure = null;
+
+        foreach ($sessionIds as $sessionId) {
+            try {
+                $handler->destroy($sessionId);
+            } catch (Throwable $e) {
+                $failure ??= $e;
+            }
+        }
+
+        if ($failure !== null) {
+            Log::warning('Failed to drop the stored session of an UzAirports user from the session store.', [
+                'session_driver' => config('session.driver'),
+                'exception_class' => $failure::class,
             ]);
         }
+    }
+
+    /**
+     * The handler holding the sessions of browsers other than this one.
+     *
+     * Null where there is none to ask: a driver that keeps nothing this process
+     * can reach, or a session manager that cannot be built at all — which is an
+     * ordinary state for a console command in an application configured without
+     * sessions, and no reason to fail the ending that is running.
+     */
+    private function sessionHandler(): ?SessionHandlerInterface
+    {
+        try {
+            $handler = Session::getHandler();
+        } catch (Throwable) {
+            return null;
+        }
+
+        if ($handler instanceof ArraySessionHandler || $handler instanceof CookieSessionHandler) {
+            return null;
+        }
+
+        return $handler;
     }
 
     /**
@@ -526,6 +613,13 @@ class EndSessions
      * session is taken out of the id list rather than excluded again, since
      * `whereIn` is already naming rows one by one.
      *
+     * Only the first of the two halves is the database driver's alone. A
+     * session the account holds that no login here names can only be found by
+     * `user_id`, and that column exists in the sessions table and nowhere else
+     * — no handler can be asked "which sessions are this account's". The ones
+     * the ended logins do name go through `deleteStoredSessionsById()`, which
+     * reaches every driver that keeps a session somewhere.
+     *
      * A store that cannot be reached must not cost the caller the rest of the
      * work, so a failure here is logged: the rows are gone already, and the
      * middleware refuses those sessions on their next request regardless.
@@ -534,10 +628,6 @@ class EndSessions
      */
     private function deleteStoredSessions(int|string $userId, ?string $exceptSessionId, array $sessionIds = []): void
     {
-        if (config('session.driver') !== 'database') {
-            return;
-        }
-
         if ($exceptSessionId !== null) {
             $sessionIds = array_filter(
                 $sessionIds,
@@ -545,21 +635,21 @@ class EndSessions
             );
         }
 
-        try {
-            $this->storedSessions()
-                ->where('user_id', $userId)
-                ->when($exceptSessionId !== null, fn ($query) => $query->where('id', '!=', $exceptSessionId))
-                ->delete();
-
-            if ($sessionIds !== []) {
-                $this->storedSessions()->whereIn('id', array_values($sessionIds))->delete();
+        if (config('session.driver') === 'database') {
+            try {
+                $this->storedSessions()
+                    ->where('user_id', $userId)
+                    ->when($exceptSessionId !== null, fn ($query) => $query->where('id', '!=', $exceptSessionId))
+                    ->delete();
+            } catch (Throwable $e) {
+                Log::warning('Failed to delete the stored sessions of an UzAirports user.', [
+                    'user_id' => $userId,
+                    'exception_class' => $e::class,
+                ]);
             }
-        } catch (Throwable $e) {
-            Log::warning('Failed to delete the stored sessions of an UzAirports user.', [
-                'user_id' => $userId,
-                'exception_class' => $e::class,
-            ]);
         }
+
+        $this->deleteStoredSessionsById($sessionIds);
     }
 
     /**

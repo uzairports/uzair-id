@@ -14,9 +14,11 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Session;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
 use RuntimeException;
+use SessionHandlerInterface;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -271,12 +273,16 @@ class EndSessionsTest extends TestCase
     }
 
     /**
-     * Only the database driver keeps sessions somewhere this can reach. The rows
-     * are gone either way, which is what the middleware reads.
+     * A driver other than `database` keeps its sessions somewhere only its own
+     * handler can reach, and `destroy()` is exactly the way to reach them. Only
+     * the database driver used to be asked at all, so a deployment on Redis
+     * sessions — the one this package's locking already assumes, since it is the
+     * one running several processes — signed a device out of its login and left
+     * its session standing in the store.
      */
-    public function test_a_session_store_that_cannot_be_reached_is_left_alone(): void
+    public function test_a_session_store_is_reached_through_its_own_handler(): void
     {
-        config(['session.driver' => 'file']);
+        $handler = $this->probeSessionHandler();
 
         $user = TestUser::create(['uzair_id' => '7006']);
         $this->login($user, 'phone-session', 'phone_token');
@@ -289,7 +295,60 @@ class EndSessionsTest extends TestCase
         (new EndSessions)($user->id);
 
         $this->assertSame(0, OauthToken::query()->count());
+        $this->assertSame(['phone-session'], $handler->destroyed);
+
+        // The sessions table is the database driver's, and this is not it.
         $this->assertSame(['phone-session'], $this->storedSessionIds());
+    }
+
+    /**
+     * The same, for a login ended one at a time off a list of devices.
+     */
+    public function test_ending_one_login_drops_its_session_through_the_handler(): void
+    {
+        $handler = $this->probeSessionHandler();
+
+        $user = TestUser::create(['uzair_id' => '7006-one']);
+        $this->login($user, 'desktop-session', 'desktop_token');
+        $this->login($user, 'phone-session', 'phone_token');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('phone_token')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)->end(OauthToken::query()->where('session_id', 'phone-session')->firstOrFail());
+
+        $this->assertSame(['phone-session'], $handler->destroyed);
+    }
+
+    /**
+     * A store held in the memory of one process has none of another browser's
+     * sessions to drop, and the `cookie` driver keeps nothing at all — its
+     * `destroy()` queues a cookie onto the response of the request in hand,
+     * which belongs to the browser doing the signing out, not the one being
+     * signed out.
+     */
+    public function test_a_store_holding_no_other_browsers_session_is_not_asked(): void
+    {
+        config(['session.driver' => 'array']);
+
+        $handler = Session::getHandler();
+
+        $handler->write('phone-session', 'the-payload');
+
+        $user = TestUser::create(['uzair_id' => '7006-array']);
+        $this->login($user, 'phone-session', 'phone_token');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)($user->id);
+
+        $this->assertSame(0, OauthToken::query()->count());
+        $this->assertSame('the-payload', $handler->read('phone-session'));
     }
 
     /**
@@ -1054,6 +1113,23 @@ class EndSessionsTest extends TestCase
         $this->assertSame(0, OauthToken::query()->count());
     }
 
+    /**
+     * Put the application on a session store that records what it is asked to
+     * drop, and hand that store back.
+     */
+    private function probeSessionHandler(): ProbeSessionHandler
+    {
+        $handler = new ProbeSessionHandler;
+
+        Session::extend('uzairid-probe', fn (): ProbeSessionHandler => $handler);
+
+        config(['session.driver' => 'uzairid-probe']);
+
+        Session::forgetDrivers();
+
+        return $handler;
+    }
+
     private function login(TestUser $user, string $sessionId, string $accessToken): void
     {
         $user->tokens()->create([
@@ -1079,5 +1155,50 @@ class EndSessionsTest extends TestCase
             ->pluck('id')
             ->map(fn (mixed $id): string => is_string($id) ? $id : '')
             ->all();
+    }
+}
+
+/**
+ * A session store that writes down which sessions it was told to drop.
+ *
+ * Every driver but `database` is reached through its own handler, and what a
+ * test needs to see is that the handler was asked at all — which store it
+ * stands for makes no difference to the asking.
+ */
+class ProbeSessionHandler implements SessionHandlerInterface
+{
+    /** @var list<string> */
+    public array $destroyed = [];
+
+    public function open(string $path, string $name): bool
+    {
+        return true;
+    }
+
+    public function close(): bool
+    {
+        return true;
+    }
+
+    public function read(string $id): string
+    {
+        return '';
+    }
+
+    public function write(string $id, string $data): bool
+    {
+        return true;
+    }
+
+    public function destroy(string $id): bool
+    {
+        $this->destroyed[] = $id;
+
+        return true;
+    }
+
+    public function gc(int $max_lifetime): int
+    {
+        return 0;
     }
 }

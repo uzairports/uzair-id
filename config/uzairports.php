@@ -155,6 +155,44 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Authentication Guard
+    |--------------------------------------------------------------------------
+    |
+    | The guard the package signs a browser in to, signs it out of, and reads
+    | the account off. Null is the application's default guard, which is what
+    | every call in the package meant before this key existed.
+    |
+    | Set it where the application authenticates through a guard of its own, or
+    | the callback would open a session on one guard while the middleware looked
+    | for the account on another — a user signed in and refused on the same
+    | request. A route may also name its own: `uzair.token:admin` beside
+    | `auth:admin` overrides this for that route.
+    |
+    */
+
+    'guard' => env('UZAIR_GUARD'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Record the Device Behind a Login
+    |--------------------------------------------------------------------------
+    |
+    | Whether the address and the user agent of the browser signing in are
+    | stored beside its login. They are what a list of "your devices" is written
+    | from — `OauthToken::deviceLabel()` reads the user agent — and there is
+    | nothing else in the row a person could recognise their own phone by.
+    |
+    | Turn it off where storing them is not wanted: the columns are then written
+    | as null on every sign-in, the list still shows a login per device, and
+    | each of them can still be ended. Existing rows keep what they already
+    | hold until their browser signs in again.
+    |
+    */
+
+    'record_device' => (bool) env('UZAIR_RECORD_DEVICE', true),
+
+    /*
+    |--------------------------------------------------------------------------
     | Login Route
     |--------------------------------------------------------------------------
     |

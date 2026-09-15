@@ -5,13 +5,14 @@ namespace Uzairports\Uzairid\Http\Controllers;
 use Carbon\CarbonInterface;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\Factory as AuthFactory;
+use Illuminate\Contracts\Auth\StatefulGuard;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
@@ -91,7 +92,7 @@ class UzairAuthController
         } catch (Throwable $e) {
             $this->surrenderIssuedGrants($endSessions, $uzairUser);
 
-            Auth::logout();
+            $this->signOut();
             if ($request->hasSession()) {
                 $request->session()->invalidate();
                 $request->session()->regenerateToken();
@@ -149,7 +150,7 @@ class UzairAuthController
      */
     public function logout(Request $request, EndSessions $endSessions): JsonResponse|RedirectResponse
     {
-        $user = Auth::user();
+        $user = $this->authenticated();
 
         if ($user !== null) {
             Uzair::followRegeneratedSession($request, $user->getAuthIdentifier());
@@ -164,9 +165,9 @@ class UzairAuthController
                 $endSessions->end($token);
             }
 
-            Auth::logout();
+            $this->signOut();
 
-            UzairLoggedOut::dispatch($user);
+            UzairLoggedOut::dispatch($user instanceof Model ? $user : null);
         }
 
         return $this->finishLogout($request);
@@ -199,7 +200,7 @@ class UzairAuthController
      */
     public function logoutDevice(Request $request, EndSessions $endSessions, int|string $token): JsonResponse|RedirectResponse
     {
-        $user = Auth::user();
+        $user = $this->authenticated();
 
         if ($user === null) {
             throw new AuthenticationException(
@@ -233,6 +234,66 @@ class UzairAuthController
         return $request->wantsJson()
             ? new JsonResponse([], 204)
             : back();
+    }
+
+    /**
+     * The account the endpoints of this controller answer for.
+     *
+     * The guard is `uzairports.guard`, and null there is the application's
+     * default — which is all this package ever asked for before. An application
+     * authenticating through a guard of its own had the callback sign a browser
+     * in on the default one and `logout` then find nobody to sign out.
+     */
+    private function authenticated(): ?Authenticatable
+    {
+        return app(AuthFactory::class)->guard(Uzair::guard())->user();
+    }
+
+    /**
+     * Sign the browser out of the guard this package signed it in to.
+     *
+     * A guard that authenticates each request on its own — a token guard,
+     * Sanctum — holds no session to end and has no `logout()` to call. It is
+     * left alone rather than reached for: these endpoints still drop the row,
+     * surrender the grant and invalidate the session around this.
+     */
+    private function signOut(): void
+    {
+        $this->sessionGuard()?->logout();
+    }
+
+    /**
+     * The guard a sign-in can actually be recorded in.
+     *
+     * Opening a session for the identity behind the handshake is the whole
+     * point of the callback, so a guard that cannot hold one is a
+     * misconfiguration this endpoint cannot work around. It is refused the way
+     * every other failed handshake is — the browser is sent back with the
+     * reason, and the log line names the class.
+     *
+     * @throws RuntimeException when the configured guard holds no session
+     */
+    private function statefulGuard(): StatefulGuard
+    {
+        return $this->sessionGuard()
+            ?? throw new RuntimeException('The guard named by [uzairports.guard] cannot sign a browser in.');
+    }
+
+    /**
+     * The configured guard, if it is one that holds a session at all.
+     *
+     * The guard is asked for through the contract rather than the facade: what
+     * a factory hands back is whatever the application registered under that
+     * name, and a guard that authenticates each request on its own — a token
+     * guard, Sanctum — implements neither `login()` nor `logout()`. The facade
+     * is annotated as though it always answered with a session guard, which
+     * would make the question below unaskable rather than unnecessary.
+     */
+    private function sessionGuard(): ?StatefulGuard
+    {
+        $guard = app(AuthFactory::class)->guard(Uzair::guard());
+
+        return $guard instanceof StatefulGuard ? $guard : null;
     }
 
     /**
@@ -422,7 +483,7 @@ class UzairAuthController
     {
         $user = $this->storeAccount($uzairUser, $resolveUser);
 
-        Auth::login($user);
+        $this->statefulGuard()->login($user);
 
         return ['user' => $user, 'token' => $this->storeToken($request, $uzairUser, $user)];
     }
@@ -659,6 +720,12 @@ class UzairAuthController
      * respect `EndSessions` already pays a `deleting` listener that refuses to
      * let a row go.
      *
+     * The address and the user agent are what the list of devices is written
+     * from, and `uzairports.record_device` is where an application that does not
+     * want them stored says so. Off, the columns are written as null rather than
+     * skipped: this row may be one an earlier sign-in already filled in, and
+     * leaving it as it is would keep exactly what the setting asked not to keep.
+     *
      * @param  Authenticatable&Model  $user
      *
      * @throws RuntimeException when the write was refused without raising
@@ -673,14 +740,16 @@ class UzairAuthController
             'session_id' => $sessionId,
         ]);
 
+        $records = (bool) config('uzairports.record_device', true);
+
         $saved = $token->forceFill([
             'user_id' => $user->getKey(),
             'session_id' => $sessionId,
             'access_token' => $uzairUser->token,
             'refresh_token' => $uzairUser->refreshToken,
             'expires_at' => $this->expiresAt($uzairUser),
-            'ip_address' => $request->ip(),
-            'user_agent' => Str::limit((string) $request->userAgent(), 500, ''),
+            'ip_address' => $records ? $request->ip() : null,
+            'user_agent' => $records ? Str::limit((string) $request->userAgent(), 500, '') : null,
         ])->save();
 
         if (! $saved) {

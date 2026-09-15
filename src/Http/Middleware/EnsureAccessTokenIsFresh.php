@@ -5,13 +5,15 @@ namespace Uzairports\Uzairid\Http\Middleware;
 use Closure;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\Factory as AuthFactory;
+use Illuminate\Contracts\Auth\StatefulGuard;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\Response;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
+use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Uzair;
 
@@ -36,24 +38,33 @@ class EnsureAccessTokenIsFresh
      * unauthenticated one: a redirect back through SSO for a browser, a 401 for
      * an API client.
      *
-     * Two sessions holding no login are let through rather than refused. One
+     * Two callers holding no login are let through rather than refused. One
      * belongs to an account this package never linked, which is a local account
      * living as it always did. The other was authenticated by the application
-     * itself and says so — `Uzair::markSessionAsLocal()` — which is the only
-     * thing that tells a hybrid application's password sign-in apart from a
-     * login that was ended, since an account that ever signed in through SSO
-     * carries `uzair_id` for good. The mark is asked for only once no login was
-     * found, so a session that holds one still has its token renewed on the
-     * ordinary path.
+     * itself and says so — `Uzair::markSessionAsLocal()` for a browser,
+     * `Uzair::treatRequestsAsLocalWhen()` or `Uzair::markRequestAsLocal()` for a
+     * request that carries no session — which is the only thing that tells a
+     * hybrid application's own sign-in apart from a login that was ended, since
+     * an account that ever signed in through SSO carries `uzair_id` for good.
+     * The mark is asked for only once no login was found, so a caller that
+     * holds one still has its token renewed on the ordinary path.
+     *
+     * The guard is the route's to name — `uzair.token:admin` beside
+     * `auth:admin` — and falls back to `uzairports.guard`, then to the
+     * application's default. Asking the default guard for the account on a
+     * route authenticated by another one reads every such request as a guest,
+     * or as somebody else.
      *
      * @param  Closure(Request): Response  $next
      *
      * @throws AuthenticationException when the session can no longer be renewed
      * @throws Throwable
      */
-    public function handle(Request $request, Closure $next): Response
+    public function handle(Request $request, Closure $next, ?string $guard = null): Response
     {
-        $user = $request->user();
+        $guard ??= Uzair::guard();
+
+        $user = $request->user($guard);
 
         if ($user === null) {
             return $next($request);
@@ -68,11 +79,11 @@ class EnsureAccessTokenIsFresh
         $token = $this->tokenFor($request, $user);
 
         if ($token === null) {
-            if (! $this->isUzairUser($user) || Uzair::sessionIsLocal($request)) {
+            if (! $this->isUzairUser($user) || Uzair::requestIsLocal($request)) {
                 return $next($request);
             }
 
-            $this->endSession($request);
+            $this->endSession($request, $user, $guard);
 
             throw new AuthenticationException(
                 __('uzairid::messages.session_ended'),
@@ -111,7 +122,7 @@ class EnsureAccessTokenIsFresh
         // on a stale snapshot.
         $this->endSessions->end($token);
 
-        $this->endSession($request);
+        $this->endSession($request, $user, $guard);
 
         throw new AuthenticationException(
             __('uzairid::messages.session_expired'),
@@ -260,10 +271,29 @@ class EnsureAccessTokenIsFresh
      * will not answer rather than raising it, so the invalidation below happens
      * whatever the cache does — a session left standing here is a browser still
      * carrying a session this request has just decided to refuse.
+     *
+     * Only a guard that holds a session can be signed out of one. A guard that
+     * authenticates each request on its own — a token guard, Sanctum — has no
+     * `logout()` at all, and the bare `Auth::logout()` that used to stand here
+     * answered such an application with a `BadMethodCallException` instead of
+     * the 401 the refusal means.
+     *
+     * `UzairLoggedOut` is dispatched here as well as by the controller. This is
+     * the other half of the ways a login ends — it was ended on another device,
+     * or it can no longer be renewed — and an application listening for its
+     * users signing out heard only the half they asked for themselves.
      */
-    private function endSession(Request $request): void
+    private function endSession(Request $request, Authenticatable $user, ?string $guard): void
     {
-        Auth::logout();
+        // Asked for through the contract rather than the facade, which is
+        // annotated as though it always answered with a guard that holds a
+        // session. What it actually hands back is whatever the application
+        // registered under the name.
+        $authenticator = app(AuthFactory::class)->guard($guard);
+
+        if ($authenticator instanceof StatefulGuard) {
+            $authenticator->logout();
+        }
 
         if ($request->hasSession()) {
             OauthToken::forgetLogin($request->session()->getId());
@@ -271,6 +301,8 @@ class EnsureAccessTokenIsFresh
             $request->session()->invalidate();
             $request->session()->regenerateToken();
         }
+
+        UzairLoggedOut::dispatch($user instanceof Model ? $user : null);
     }
 
     /**

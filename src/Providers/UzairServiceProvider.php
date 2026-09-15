@@ -296,13 +296,20 @@ class UzairServiceProvider extends ServiceProvider
      * instead. The key is spelled apart from the one the address ceiling uses,
      * so such a request is counted in each of them once rather than spending
      * one bucket twice.
+     *
+     * The session id is hashed rather than spelled out, for the reason
+     * `OauthToken::loginCacheKey()` hashes it: it is the credential the browser
+     * holds, and the key it is written into is a cache entry. The framework
+     * hashes the finished key itself, but only while `ThrottleRequests` is left
+     * hashing them — an application that turns that off is not asking for a
+     * session id to be legible in its cache store.
      */
     private function browserKey(Request $request): string
     {
         $sessionCookie = config('session.cookie');
 
         return $request->hasSession() && is_string($sessionCookie) && $request->cookies->has($sessionCookie)
-            ? 'session:'.$request->session()->getId()
+            ? 'session:'.hash('sha256', $request->session()->getId())
             : 'ip:'.$request->ip();
     }
 

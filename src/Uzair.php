@@ -38,6 +38,28 @@ class Uzair
     }
 
     /**
+     * The guard this package signs in, signs out, and reads the account off.
+     *
+     * Null means the application's default one, which is what every
+     * `Auth::user()` and `$request->user()` in the package used to mean without
+     * saying so. An application authenticating through a guard of its own —
+     * `auth:admin`, a second `users` provider — had this package sign a browser
+     * in on one guard and the middleware then look for the account on another,
+     * which is a user who is signed in and refused on the same request.
+     *
+     * The `uzair.token` middleware takes a guard as its own parameter
+     * (`uzair.token:admin`), which is what a route carrying `auth:admin` wants;
+     * this setting is what the endpoints in `UzairAuthController` go by, since
+     * a route registered by `Uzair::routes()` carries no such parameter.
+     */
+    public static function guard(): ?string
+    {
+        $guard = config('uzairports.guard');
+
+        return is_string($guard) && $guard !== '' ? $guard : null;
+    }
+
+    /**
      * Drop the static state that must not outlive the request that filled it.
      *
      * Under PHP-FPM the process ends with the response and takes it along;
@@ -247,6 +269,77 @@ class Uzair
     {
         return $request->hasSession() && $request->session()->get(self::LOCAL_KEY) === true;
     }
+
+    /**
+     * Say how a request with no session of its own was authenticated.
+     *
+     * `markSessionAsLocal()` is written into the session payload, so it has
+     * nothing to say about a request that carries no session — an API client
+     * holding a Sanctum token, a console command. Such a request was left with
+     * the one answer the middleware gives an account carrying `uzair_id` and
+     * holding no login: refused. An application whose API authenticates its own
+     * way therefore could not put `uzair.token` on an API route at all, while
+     * the documentation was telling it to write a login row by hand.
+     *
+     * The callback is asked about the request in front of it and answers
+     * whether this application authenticated it itself. A Sanctum deployment
+     * says so by the token the request carries:
+     *
+     * ```php
+     * Uzair::treatRequestsAsLocalWhen(
+     *     fn (Request $request): bool => $request->user()?->currentAccessToken() !== null,
+     * );
+     * ```
+     *
+     * Registered once while the application boots, the way the user resolver is
+     * — and, like it, deliberately not dropped by `flushState()`: a worker that
+     * forgot it would serve every later request as though the application had
+     * never said anything.
+     *
+     * @param  (callable(Request): bool)|null  $callback
+     */
+    public static function treatRequestsAsLocalWhen(?callable $callback): void
+    {
+        static::$localRequestResolver = $callback;
+    }
+
+    /**
+     * Say that this one request was authenticated by the application itself.
+     *
+     * The imperative form of the callback above, for an application that
+     * decides it in a middleware of its own rather than by a rule. It lives in
+     * the request's attribute bag, so it says nothing about any other request
+     * and nothing at all once this one is answered.
+     */
+    public static function markRequestAsLocal(Request $request): void
+    {
+        $request->attributes->set(self::LOCAL_KEY, true);
+    }
+
+    /**
+     * Whether this request's authentication comes from somewhere but SSO.
+     *
+     * The three ways of saying so are asked in the order of what they cost: the
+     * session payload this request is already holding, the attribute bag of the
+     * request itself, then the application's own callback.
+     */
+    public static function requestIsLocal(Request $request): bool
+    {
+        if (self::sessionIsLocal($request) || $request->attributes->get(self::LOCAL_KEY) === true) {
+            return true;
+        }
+
+        $resolver = static::$localRequestResolver;
+
+        return $resolver !== null && $resolver($request) === true;
+    }
+
+    /**
+     * How the application says a sessionless request is its own.
+     *
+     * @var (callable(Request): bool)|null
+     */
+    protected static $localRequestResolver = null;
 
     /**
      * Stop a session counting as one the application authenticated itself.
