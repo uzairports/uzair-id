@@ -4,6 +4,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Uzairports\Uzairid\Uzair;
 
 return new class extends Migration
 {
@@ -75,7 +76,7 @@ return new class extends Migration
     {
         $model = $this->userModel();
 
-        $table = $model instanceof Model ? $model->getTable() : 'users';
+        $table = $model->getTable();
 
         return Schema::hasTable($table) ? $table : null;
     }
@@ -92,10 +93,6 @@ return new class extends Migration
     {
         $model = $this->userModel();
 
-        if (! $model instanceof Model) {
-            return Schema::hasColumn($table, 'id') ? 'id' : null;
-        }
-
         $key = $model->getKeyName();
 
         return Schema::hasColumn($table, $key) ? $key : null;
@@ -104,16 +101,10 @@ return new class extends Migration
     /**
      * The configured user model, or null where the application names none.
      */
-    private function userModel(): ?Model
+    private function userModel(): Model
     {
-        $model = config('auth.providers.users.model');
+        $model = Uzair::userModel();
 
-        if (! is_string($model) || ! class_exists($model)) {
-            return null;
-        }
-
-        $user = new $model;
-
-        return $user instanceof Model ? $user : null;
+        return new $model;
     }
 };

@@ -4,6 +4,7 @@ namespace Uzairports\Uzairid\Concerns;
 
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Models\OauthToken;
 
 /**
@@ -93,6 +94,8 @@ trait HasUzairToken
      */
     public function currentToken(): ?OauthToken
     {
+        app(EnsureTokenStorageMatchesProvider::class)->forUser($this);
+
         $sessionId = $this->currentSessionId();
 
         if ($this->currentTokenWasResolved && $this->resolvedForSessionId === $sessionId) {

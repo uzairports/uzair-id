@@ -1,9 +1,9 @@
 <?php
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Uzairports\Uzairid\Uzair;
 
 return new class extends Migration
 {
@@ -57,11 +57,9 @@ return new class extends Migration
      */
     private function accountsTable(): ?string
     {
-        $model = config('auth.providers.users.model');
+        $model = Uzair::userModel();
 
-        $table = is_string($model) && class_exists($model) && ($user = new $model) instanceof Model
-            ? $user->getTable()
-            : 'users';
+        $table = (new $model)->getTable();
 
         return Schema::hasTable($table) ? $table : null;
     }

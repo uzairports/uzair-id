@@ -101,7 +101,7 @@ class EndSessions
                 }
             }
 
-            $this->deleteStoredSessions($userId, $exceptSessionId, $sessionIds);
+            $this->deleteStoredSessionsById($sessionIds);
             $this->forgetResolvedLogins($sessionIds);
 
             return $rows->count();
@@ -135,7 +135,7 @@ class EndSessions
         // does, the revocation is the last chance to stop the identity provider
         // honoring them. `endAll()` holds the same guarantee the same way.
         try {
-            $this->deleteStoredSessions($userId, $exceptSessionId, $sessionIds);
+            $this->deleteStoredSessionsById($sessionIds);
             $this->forgetResolvedLogins($sessionIds);
         } finally {
             $this->revokeAll($tokens);
@@ -595,61 +595,6 @@ class EndSessions
         }
 
         return $handler;
-    }
-
-    /**
-     * Drop the account's sessions from the session store.
-     *
-     * The account's own rows and the ones named by the logins being ended are
-     * deleted by two statements rather than one. They could be spelled as a
-     * single `user_id = ? or id in (…)`, but that reads two different columns
-     * in one predicate, and no index answers both halves — so the store falls
-     * back to a scan of `sessions`, which in a busy application is among the
-     * largest tables there is. Split, each statement enters the index built for
-     * the column it names: the primary key for the ids, `user_id` for the rest.
-     *
-     * Deleting a session is idempotent and the two sets overlap freely, so
-     * running them apart matches what the single statement matched. The spared
-     * session is taken out of the id list rather than excluded again, since
-     * `whereIn` is already naming rows one by one.
-     *
-     * Only the first of the two halves is the database driver's alone. A
-     * session the account holds that no login here names can only be found by
-     * `user_id`, and that column exists in the sessions table and nowhere else
-     * — no handler can be asked "which sessions are this account's". The ones
-     * the ended logins do name go through `deleteStoredSessionsById()`, which
-     * reaches every driver that keeps a session somewhere.
-     *
-     * A store that cannot be reached must not cost the caller the rest of the
-     * work, so a failure here is logged: the rows are gone already, and the
-     * middleware refuses those sessions on their next request regardless.
-     *
-     * @param  array<array-key, string>  $sessionIds
-     */
-    private function deleteStoredSessions(int|string $userId, ?string $exceptSessionId, array $sessionIds = []): void
-    {
-        if ($exceptSessionId !== null) {
-            $sessionIds = array_filter(
-                $sessionIds,
-                fn (string $sessionId): bool => $sessionId !== $exceptSessionId
-            );
-        }
-
-        if (config('session.driver') === 'database') {
-            try {
-                $this->storedSessions()
-                    ->where('user_id', $userId)
-                    ->when($exceptSessionId !== null, fn ($query) => $query->where('id', '!=', $exceptSessionId))
-                    ->delete();
-            } catch (Throwable $e) {
-                Log::warning('Failed to delete the stored sessions of an UzAirports user.', [
-                    'user_id' => $userId,
-                    'exception_class' => $e::class,
-                ]);
-            }
-        }
-
-        $this->deleteStoredSessionsById($sessionIds);
     }
 
     /**

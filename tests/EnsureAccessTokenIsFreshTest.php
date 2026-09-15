@@ -17,8 +17,10 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Session;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
@@ -29,6 +31,44 @@ use Uzairports\Uzairid\Uzair;
 
 class EnsureAccessTokenIsFreshTest extends TestCase
 {
+    /** @return array<string, array{bool, bool}> */
+    public static function conflictingAccounts(): array
+    {
+        return ['sessionless' => [false, false], 'browser' => [true, false], 'cached browser' => [true, true]];
+    }
+
+    #[DataProvider('conflictingAccounts')]
+    public function test_a_different_provider_cannot_use_a_matching_user_id(bool $browser, bool $cached): void
+    {
+        $owner = TestUser::create(['uzair_id' => 'token-owner']);
+        $other = new MiddlewareOtherAccount;
+        $other->forceFill(['id' => $owner->id, 'uzair_id' => 'other-identity']);
+        $session = $this->startedSession();
+        $token = $owner->tokens()->create([
+            'access_token' => 'owners-access', 'refresh_token' => 'owners-refresh',
+            'session_id' => $browser ? $session->getId() : null,
+            'expires_at' => now()->addHour(),
+        ]);
+
+        if ($cached) {
+            config(['uzairports.login_cache_ttl' => 30]);
+            $token->cacheLogin($session->getId());
+        }
+
+        Socialite::shouldReceive('driver')->never();
+        $request = $browser ? $this->sessionRequest($other, $session) : $this->statelessRequest($other);
+
+        try {
+            $this->handle($request, 'secondary');
+            $this->fail('An account from another provider must not use this token.');
+        } catch (ServiceUnavailableHttpException $exception) {
+            $this->assertSame(503, $exception->getStatusCode());
+        }
+
+        $this->assertModelExists($token);
+        $this->assertSame('owners-refresh', $token->fresh()?->refresh_token);
+    }
+
     public function test_passes_when_token_is_fresh(): void
     {
         $user = TestUser::create(['uzair_id' => '4001']);
@@ -957,4 +997,9 @@ class EnsureAccessTokenIsFreshTest extends TestCase
 
         return $request;
     }
+}
+
+class MiddlewareOtherAccount extends TestUser
+{
+    protected $table = 'other_accounts';
 }

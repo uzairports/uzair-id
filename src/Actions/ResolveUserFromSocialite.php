@@ -189,11 +189,7 @@ class ResolveUserFromSocialite
      */
     private function newUser(): Model
     {
-        $model = config('auth.providers.users.model');
-
-        if (! is_string($model) || ! is_subclass_of($model, Model::class)) {
-            throw new RuntimeException('The configured auth user model is not an Eloquent model.');
-        }
+        $model = Uzair::userModel();
 
         return new $model;
     }

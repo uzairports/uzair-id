@@ -4,9 +4,12 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Uzairports\Uzairid\Uzair;
 
 return new class extends Migration
 {
+    public string $table = 'oauth_tokens';
+
     /**
      * The string key types `user_id` can be shaped like and constrained to.
      *
@@ -60,7 +63,9 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('oauth_tokens', function (Blueprint $table) {
+        $this->userModel();
+
+        Schema::create($this->table, function (Blueprint $table) {
             $table->id();
 
             $this->defineUserIdColumn($table);
@@ -84,7 +89,9 @@ return new class extends Migration
      */
     public function down(): void
     {
-        Schema::dropIfExists('oauth_tokens');
+        $this->userModel();
+
+        Schema::dropIfExists($this->table);
     }
 
     /**
@@ -127,12 +134,6 @@ return new class extends Migration
     {
         $user = $this->userModel();
 
-        if (! $user instanceof Model) {
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete()->cascadeOnUpdate();
-
-            return;
-        }
-
         // `foreignIdFor()` reads the model's own key rather than assuming the
         // conventional `id`, which `constrained($table)` would have referenced
         // whatever the model actually calls its key.
@@ -162,17 +163,11 @@ return new class extends Migration
     /**
      * The configured user model, or null where the application names none.
      */
-    private function userModel(): ?Model
+    private function userModel(): Model
     {
-        $userModel = config('auth.providers.users.model');
+        $userModel = Uzair::userModel();
 
-        if (! is_string($userModel) || ! class_exists($userModel)) {
-            return null;
-        }
-
-        $user = new $userModel;
-
-        return $user instanceof Model ? $user : null;
+        return new $userModel;
     }
 
     /**

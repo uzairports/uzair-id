@@ -25,6 +25,25 @@ use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class EndSessionsTest extends TestCase
 {
+    public function test_bulk_ending_keeps_sessions_with_colliding_ids_without_a_token_row(): void
+    {
+        config(['session.driver' => 'database']);
+        $user = TestUser::create(['uzair_id' => 'confirmed-owner']);
+
+        foreach ([true, false] as $revoke) {
+            $this->login($user, 'confirmed-session', 'confirmed-token');
+            DB::table('sessions')->insert([
+                'id' => 'other-provider-session', 'user_id' => $user->id,
+                'payload' => '', 'last_activity' => now()->getTimestamp(),
+            ]);
+            $this->acceptsRevocations();
+
+            $this->assertSame(1, (new EndSessions)($user->id, revoke: $revoke));
+            $this->assertSame(['other-provider-session'], $this->storedSessionIds());
+            DB::table('sessions')->where('id', 'other-provider-session')->delete();
+        }
+    }
+
     public function test_partial_deletion_still_cleans_up_committed_logins(): void
     {
         config(['session.driver' => 'database', 'uzairports.login_cache_ttl' => 60]);
@@ -497,11 +516,10 @@ class EndSessionsTest extends TestCase
     }
 
     /**
-     * An account holding nothing still has its stored sessions cleared: the
-     * rows are what the middleware reads, but a session the store is still
-     * serving is a device that never reaches it.
+     * A numeric user_id alone does not identify a provider in Laravel sessions.
+     * Only sessions named by this package's login rows may be removed.
      */
-    public function test_an_account_without_logins_still_loses_its_stored_sessions(): void
+    public function test_an_account_without_logins_keeps_unidentified_stored_sessions(): void
     {
         config(['session.driver' => 'database']);
 
@@ -519,7 +537,7 @@ class EndSessionsTest extends TestCase
         $ended = (new EndSessions)($user->id);
 
         $this->assertSame(0, $ended);
-        $this->assertSame([], $this->storedSessionIds());
+        $this->assertSame(['orphan-session'], $this->storedSessionIds());
     }
 
     public function test_declining_revocation_does_not_hydrate_token_models(): void

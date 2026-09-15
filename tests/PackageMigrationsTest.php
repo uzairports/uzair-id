@@ -9,6 +9,7 @@ use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\Test;
+use RuntimeException;
 
 /**
  * @method void up()
@@ -18,6 +19,33 @@ abstract class RunnableMigration extends Migration {}
 
 class PackageMigrationsTest extends TestCase
 {
+    public function test_invalid_provider_configuration_never_falls_back_to_users(): void
+    {
+        $this->createStandardUsersTable();
+        $before = Schema::getColumns('users');
+
+        foreach (['missing-provider', 'invalid-model'] as $provider) {
+            config([
+                'uzairports.guard' => 'invalid',
+                'auth.guards.invalid' => ['driver' => 'session', 'provider' => $provider],
+                'auth.providers.invalid-model' => ['driver' => 'eloquent', 'model' => \stdClass::class],
+            ]);
+
+            foreach (['add_uzair_id_to_users_table', 'remove_password_column_from_users_table', 'relax_email_column_on_users_table', 'create_oauth_tokens_table'] as $name) {
+                foreach (['up', 'down'] as $direction) {
+                    try {
+                        $this->migration($name)->{$direction}();
+                        $this->fail('Invalid provider configuration must stop the migration.');
+                    } catch (RuntimeException $exception) {
+                        $this->assertStringContainsString('no Eloquent user model', $exception->getMessage());
+                    }
+                    $this->assertSame($before, Schema::getColumns('users'));
+                    $this->assertFalse(Schema::hasTable('oauth_tokens'));
+                }
+            }
+        }
+    }
+
     public function test_upgrade_rollbacks_preserve_indexes_with_custom_names(): void
     {
         foreach (['session_id' => 'index_oauth_tokens_by_session', 'updated_at' => 'index_oauth_tokens_for_pruning'] as $column => $migration) {
@@ -180,6 +208,62 @@ class PackageMigrationsTest extends TestCase
         // Idempotency check: running up() again does not throw
         $addUzairId->up();
         $this->assertTrue(Schema::hasColumn('users', 'uzair_id'));
+    }
+
+    public function test_account_migrations_use_the_selected_guards_provider_and_leave_users_untouched(): void
+    {
+        $this->createStandardUsersTable();
+        Schema::dropIfExists('members');
+        Schema::create('members', function (Blueprint $table): void {
+            $table->uuid('member_key')->primary();
+            $table->string('name');
+            $table->string('email')->unique();
+            $table->string('password');
+            $table->timestamps();
+        });
+
+        config([
+            'uzairports.guard' => 'members',
+            'auth.guards.members' => ['driver' => 'session', 'provider' => 'members'],
+            'auth.providers.members' => ['driver' => 'eloquent', 'model' => MemberWithItsOwnTable::class],
+        ]);
+
+        try {
+            $this->migration('add_uzair_id_to_users_table')->up();
+            $this->migration('relax_email_column_on_users_table')->up();
+            $this->migration('remove_password_column_from_users_table')->up();
+            $this->migration('create_oauth_tokens_table')->up();
+
+            $this->assertFalse(Schema::hasColumn('users', 'uzair_id'));
+            $this->assertTrue(Schema::hasColumn('users', 'password'));
+            $this->assertTrue(Schema::hasIndex('users', ['email'], 'unique'));
+            $this->assertTrue(Schema::hasColumn('members', 'uzair_id'));
+            $this->assertFalse(Schema::hasColumn('members', 'password'));
+
+            foreach ([null, 'shared@example.test', 'shared@example.test'] as $index => $email) {
+                DB::table('members')->insert([
+                    'member_key' => Str::uuid()->toString(), 'uzair_id' => "member-{$index}",
+                    'name' => 'Member', 'email' => $email,
+                ]);
+            }
+
+            $this->assertSame(3, DB::table('members')->count());
+            $foreignKey = Schema::getForeignKeys('oauth_tokens')[0];
+            $this->assertSame('members', $foreignKey['foreign_table']);
+            $this->assertSame(['member_key'], $foreignKey['foreign_columns']);
+
+            DB::table('members')->delete();
+            $this->migration('remove_password_column_from_users_table')->down();
+            $this->migration('relax_email_column_on_users_table')->down();
+            $this->migration('add_uzair_id_to_users_table')->down();
+
+            $this->assertTrue(Schema::hasColumn('members', 'password'));
+            $this->assertTrue(Schema::hasIndex('members', ['email'], 'unique'));
+            $this->assertFalse(Schema::hasColumn('members', 'uzair_id'));
+        } finally {
+            Schema::dropIfExists('oauth_tokens');
+            Schema::dropIfExists('members');
+        }
     }
 
     #[Test]

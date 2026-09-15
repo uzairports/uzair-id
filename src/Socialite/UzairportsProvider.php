@@ -112,13 +112,14 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
         try {
             $profile = $this->getUserByToken($response['access_token']);
+
+            return $this->userInstance($response, $profile);
         } catch (Throwable $exception) {
+            $this->user = null;
             $this->surrenderIssuedGrants($response);
 
             throw $exception;
         }
-
-        return $this->userInstance($response, $profile);
     }
 
     /**

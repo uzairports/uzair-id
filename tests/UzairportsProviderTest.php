@@ -12,6 +12,7 @@ use Laravel\Socialite\Facades\Socialite;
 use Mockery;
 use Psr\Http\Message\RequestInterface;
 use RuntimeException;
+use TypeError;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class UzairportsProviderTest extends TestCase
@@ -207,6 +208,31 @@ class UzairportsProviderTest extends TestCase
             $this->fail('A profile request that failed must not hand back a user.');
         } catch (GuzzleException) {
             $this->addToAssertionCount(1);
+        }
+    }
+
+    public function test_a_user_mapping_failure_surrenders_grants_and_discards_the_partial_user(): void
+    {
+        $revoker = Mockery::mock(UzairportsProvider::class);
+        $revoker->shouldReceive('logoutAsync')->with('issued-access')->once()->andReturn($this->revoked());
+        $revoker->shouldReceive('revokeRefreshTokenAsync')->with('issued-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
+
+        $provider = $this->provider([
+            'handler' => HandlerStack::create(new MockHandler([
+                new Response(200, [], '{"access_token":"issued-access","refresh_token":"issued-refresh","scope":[]}'),
+                new Response(200, [], '{"id":"first-user"}'),
+                new Response(200, [], '{"access_token":"next-access","scope":"profile"}'),
+                new Response(200, [], '{"id":"next-user"}'),
+            ])),
+        ])->stateless();
+
+        try {
+            $provider->user();
+            $this->fail('An invalid scope must not produce an authenticated user.');
+        } catch (TypeError) {
+            $this->assertSame('next-user', $provider->user()->getId());
+            $this->assertSame('next-access', $provider->user()->token);
         }
     }
 

@@ -19,6 +19,7 @@ use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\InvalidStateException;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
@@ -153,6 +154,66 @@ class UzairAuthControllerTest extends TestCase
         $this->assertGuest('secondary');
     }
 
+    /** @return array<string, array{bool}> */
+    public static function accountGuards(): array
+    {
+        return ['configured guard' => [false], 'default guard' => [true]];
+    }
+
+    #[DataProvider('accountGuards')]
+    public function test_the_callback_uses_the_guards_account_provider(bool $useDefault): void
+    {
+        $this->useAdminProvider($useDefault);
+
+        $ordinary = TestUser::create(['id' => 42, 'uzair_id' => 'ordinary', 'name' => 'Ordinary']);
+        $admin = CallbackAdmin::create(['id' => 42, 'uzair_id' => 'admin-identity', 'name' => 'Admin']);
+
+        $this->fakeIdentity(['id' => 'admin-identity', 'name' => 'Updated Admin', 'token' => 'admin-access']);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $token = OauthToken::query()->sole();
+        $this->assertTrue($token->user?->is($admin));
+        $this->assertSame('Ordinary', $ordinary->fresh()?->name);
+        $this->assertSame('Updated Admin', $admin->fresh()?->name);
+        $this->assertSame(1, TestUser::query()->count());
+
+        Route::middleware(['web', 'auth:admin', 'uzair.token:admin'])
+            ->get('admin-account', fn (Request $request): string => $request->user('admin') instanceof CallbackAdmin ? 'admin-account' : 'wrong-account');
+
+        Auth::forgetGuards();
+
+        $this->onTheDeviceHolding($token)->get('admin-account')->assertOk()->assertContent('admin-account');
+        $this->assertAuthenticatedAs($admin, 'admin');
+
+        $ordinary->delete();
+        $this->assertModelExists($token);
+        $admin->delete();
+        $this->assertModelMissing($token);
+    }
+
+    public function test_a_custom_resolver_cannot_sign_a_different_account_model_into_the_guard(): void
+    {
+        $this->useAdminProvider();
+
+        $ordinary = TestUser::create(['id' => 42, 'uzair_id' => 'ordinary']);
+        CallbackAdmin::create(['id' => 42, 'uzair_id' => 'admin-identity']);
+        Uzair::resolveUserUsing(fn (): Model => $ordinary);
+
+        $this->fakeIdentity(['id' => 'ordinary', 'token' => 'refused-access'], logout: 'refused-access');
+
+        try {
+            $this->get(route('uzair.callback'))
+                ->assertRedirect(url('/'))
+                ->assertSessionHasErrors('oauth');
+
+            $this->assertGuest('admin');
+            $this->assertSame(0, OauthToken::query()->count());
+        } finally {
+            Uzair::resolveUserUsing(null);
+        }
+    }
+
     /**
      * The point of the whole design: a phone and a desktop are two logins, each
      * with the grant its own browser was issued.
@@ -191,6 +252,41 @@ class UzairAuthControllerTest extends TestCase
             ->assertRedirect(route('dashboard'));
 
         $this->assertSame(1, OauthToken::query()->count());
+    }
+
+    public function test_signing_in_again_after_session_regeneration_revokes_the_previous_login(): void
+    {
+        config(['uzairports.login_cache_ttl' => 30]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->twice()->andReturn(
+            SocialiteUser::fake(['id' => 'old-identity', 'token' => 'old-access', 'refreshToken' => 'old-refresh']),
+            SocialiteUser::fake(['id' => 'new-identity', 'token' => 'new-access', 'refreshToken' => 'new-refresh']),
+        );
+        $provider->shouldReceive('logoutAsync')->with('old-access')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('old-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $previous = OauthToken::query()->sole();
+        $previousId = (string) $previous->session_id;
+        $previous->cacheLogin($previousId);
+
+        $otherDevice = TestUser::query()->firstOrFail()->tokens()->create([
+            'session_id' => 'another-device', 'access_token' => 'another-access',
+        ]);
+        $renamed = $this->afterRenamingTheSessionHolding($previous);
+
+        $this->withCookie($this->sessionCookie(), $renamed)
+            ->get(route('uzair.callback'))
+            ->assertRedirect(route('dashboard'));
+
+        $this->assertModelMissing($previous);
+        $this->assertModelExists($otherDevice);
+        $this->assertNull(OauthToken::cachedLogin($previousId));
+        $this->assertSame(2, OauthToken::query()->count());
+        $this->assertAuthenticatedAs(TestUser::query()->where('uzair_id', 'new-identity')->firstOrFail());
     }
 
     public function test_single_session_ends_the_accounts_other_logins(): void
@@ -1113,6 +1209,33 @@ class UzairAuthControllerTest extends TestCase
         ]);
     }
 
+    private function useAdminProvider(bool $useDefault = false): void
+    {
+        Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('callback_admins');
+        Schema::create('callback_admins', function (Blueprint $table): void {
+            $table->id();
+            $table->string('uzair_id')->nullable()->unique();
+            $table->string('name')->nullable();
+            $table->string('email')->nullable();
+            $table->timestamps();
+        });
+
+        config([
+            'auth.guards.admin' => ['driver' => 'session', 'provider' => 'admins'],
+            'auth.providers.admins' => ['driver' => 'eloquent', 'model' => CallbackAdmin::class],
+            'uzairports.guard' => $useDefault ? null : 'admin',
+        ]);
+
+        if ($useDefault) {
+            config(['auth.defaults.guard' => 'admin']);
+        }
+
+        /** @var RunnableMigration $migration */
+        $migration = require __DIR__.'/../database/migrations/create_oauth_tokens_table.php';
+        $migration->up();
+    }
+
     /**
      * @param  array<string, mixed>  $attributes
      *
@@ -1131,6 +1254,11 @@ class UzairAuthControllerTest extends TestCase
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
     }
+}
+
+class CallbackAdmin extends TestUser
+{
+    protected $table = 'callback_admins';
 }
 
 /**

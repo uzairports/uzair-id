@@ -18,9 +18,9 @@ use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
-use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
+use Uzairports\Uzairid\Uzair;
 
 /**
  * One SSO login: the tokens it was issued and the browser session holding them.
@@ -130,13 +130,9 @@ class OauthToken extends Model
      */
     public function user(): BelongsTo
     {
-        $model = config('auth.providers.users.model');
+        $model = Uzair::userModel();
 
-        if (! is_string($model) || ! is_subclass_of($model, Model::class)) {
-            throw new RuntimeException('The configured [auth.providers.users.model] is not an Eloquent model.');
-        }
-
-        return $this->belongsTo($model);
+        return $this->belongsTo($model, 'user_id');
     }
 
     /**

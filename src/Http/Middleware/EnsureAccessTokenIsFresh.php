@@ -12,6 +12,7 @@ use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
+use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -69,6 +70,8 @@ class EnsureAccessTokenIsFresh
         if ($user === null) {
             return $next($request);
         }
+
+        app(EnsureTokenStorageMatchesProvider::class)->forUser($user);
 
         $leeway = $this->leewayInSeconds();
 

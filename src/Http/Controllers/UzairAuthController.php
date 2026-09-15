@@ -26,6 +26,7 @@ use Symfony\Component\HttpFoundation\RedirectResponse as SymfonyRedirectResponse
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
+use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
@@ -79,10 +80,12 @@ class UzairAuthController
         $uzairUser = null;
 
         try {
+            app(EnsureTokenStorageMatchesProvider::class)();
+
             /** @var SocialiteUser $uzairUser */
             $uzairUser = Socialite::driver('uzairports')->user();
 
-            $previousSessionId = $this->sessionId($request);
+            $previousSessionIds = Uzair::loginSessionIds($request);
 
             ['user' => $user, 'token' => $token] = $this->storeIdentity($request, $uzairUser, $resolveUser);
         } catch (InvalidStateException) {
@@ -105,7 +108,7 @@ class UzairAuthController
             return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
         }
 
-        $this->endPreviousLogin($endSessions, $token, $previousSessionId);
+        $this->endPreviousLogin($endSessions, $token, $previousSessionIds);
 
         $this->noteTheBrowsersLogin($request);
 
@@ -246,7 +249,13 @@ class UzairAuthController
      */
     private function authenticated(): ?Authenticatable
     {
-        return app(AuthFactory::class)->guard(Uzair::guard())->user();
+        $user = app(AuthFactory::class)->guard(Uzair::guard())->user();
+
+        if ($user !== null) {
+            app(EnsureTokenStorageMatchesProvider::class)->forUser($user);
+        }
+
+        return $user;
     }
 
     /**
@@ -428,16 +437,24 @@ class UzairAuthController
      * There may be more than one row: the id names a session, not an account,
      * and a shared computer or a second identity leaves several. They are ended
      * together rather than one after the next, so the browser waiting on this
-     * callback pays one revocation wait instead of one apiece.
+     * callback pays one revocation wait instead of one apiece. Include the id
+     * recorded before a regeneration, even if the middleware never followed it.
+     *
+     * @param  list<string>  $previousSessionIds
      */
-    private function endPreviousLogin(EndSessions $endSessions, OauthToken $token, ?string $previousSessionId): void
+    private function endPreviousLogin(EndSessions $endSessions, OauthToken $token, array $previousSessionIds): void
     {
-        if ($previousSessionId === null || $previousSessionId === $token->session_id) {
+        $previousSessionIds = array_filter(
+            $previousSessionIds,
+            fn (string $sessionId): bool => $sessionId !== $token->session_id,
+        );
+
+        if ($previousSessionIds === []) {
             return;
         }
 
         $endSessions->endAll(
-            OauthToken::query()->where('session_id', $previousSessionId)->get()
+            OauthToken::query()->whereIn('session_id', $previousSessionIds)->get()
         );
     }
 
@@ -574,10 +591,6 @@ class UzairAuthController
         try {
             $table = $this->accountsTable();
 
-            if ($table === null) {
-                return [];
-            }
-
             return [
                 'accounts_table' => $table,
                 'email_is_unique' => Schema::hasIndex($table, ['email'], 'unique'),
@@ -626,17 +639,13 @@ class UzairAuthController
     /**
      * The table the host application keeps its accounts in.
      */
-    private function accountsTable(): ?string
+    private function accountsTable(): string
     {
-        $model = config('auth.providers.users.model');
-
-        if (! is_string($model) || ! class_exists($model)) {
-            return null;
-        }
+        $model = Uzair::userModel();
 
         $user = new $model;
 
-        return $user instanceof Model ? $user->getTable() : null;
+        return $user->getTable();
     }
 
     /**
@@ -651,8 +660,10 @@ class UzairAuthController
             $user = $resolveUser($uzairUser);
 
             if (! $user instanceof Authenticatable) {
-                throw new RuntimeException('The configured [auth.providers.users.model] cannot be authenticated.');
+                throw new RuntimeException('The account returned by the UzAirports resolver cannot be authenticated.');
             }
+
+            $this->ensureAccountMatchesGuard($user);
 
             // The account has to be in the database to be signed in, and
             // `save()` answers false rather than raising when a listener
@@ -675,6 +686,27 @@ class UzairAuthController
 
             return $user;
         });
+    }
+
+    /**
+     * A guard reloads the stored id through its own provider on the next request.
+     * A resolver must not put an id from another accounts table into that session.
+     */
+    private function ensureAccountMatchesGuard(Authenticatable $user): void
+    {
+        $model = Uzair::userModel();
+
+        if (Uzair::accountMatchesProvider($user)) {
+            return;
+        }
+
+        Log::error('The UzAirports account does not match the configured guard provider.', [
+            'guard' => Uzair::guard() ?? config('auth.defaults.guard'),
+            'expected_model' => $model,
+            'resolved_model' => $user::class,
+        ]);
+
+        throw new RuntimeException('The UzAirports account does not match the configured guard provider.');
     }
 
     /**

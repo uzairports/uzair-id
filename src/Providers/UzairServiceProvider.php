@@ -12,6 +12,7 @@ use Illuminate\Support\ServiceProvider;
 use Laravel\Socialite\Contracts\Factory;
 use Laravel\Socialite\SocialiteManager;
 use Symfony\Component\HttpFoundation\Response;
+use Uzairports\Uzairid\Console\Commands\ProviderCommand;
 use Uzairports\Uzairid\Console\Commands\PruneCommand;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -95,6 +96,7 @@ class UzairServiceProvider extends ServiceProvider
 
             $this->commands([
                 PruneCommand::class,
+                ProviderCommand::class,
             ]);
         }
     }

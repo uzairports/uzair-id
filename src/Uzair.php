@@ -2,12 +2,14 @@
 
 namespace Uzairports\Uzairid;
 
+use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Route as RegisteredRoute;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Laravel\Socialite\Two\User as SocialiteUser;
+use RuntimeException;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -57,6 +59,35 @@ class Uzair
         $guard = config('uzairports.guard');
 
         return is_string($guard) && $guard !== '' ? $guard : null;
+    }
+
+    /**
+     * The account model belonging to the provider of the configured guard.
+     *
+     * @return class-string<Model>
+     */
+    public static function userModel(): string
+    {
+        $guard = self::guard() ?? config('auth.defaults.guard');
+        $provider = is_string($guard) ? config("auth.guards.{$guard}.provider") : null;
+        $model = is_string($provider) ? config("auth.providers.{$provider}.model") : null;
+
+        if (! is_string($model) || ! is_subclass_of($model, Model::class)) {
+            throw new RuntimeException('The provider of the configured UzAirports guard has no Eloquent user model.');
+        }
+
+        return $model;
+    }
+
+    public static function accountMatchesProvider(Authenticatable $user): bool
+    {
+        $model = self::userModel();
+        $expected = new $model;
+
+        return $user instanceof $model
+            && $user->getTable() === $expected->getTable()
+            && $user->getKeyName() === $expected->getKeyName()
+            && $user->getConnection()->getName() === $expected->getConnection()->getName();
     }
 
     /**
@@ -189,6 +220,29 @@ class Uzair
         if ($session->get(self::SESSION_KEY) !== $session->getId()) {
             $session->put(self::SESSION_KEY, $session->getId());
         }
+    }
+
+    /**
+     * Both ids may still name logins when a browser signs in after regeneration.
+     * Read them before authentication changes the session and overwrites its note.
+     *
+     * @return list<string>
+     */
+    public static function loginSessionIds(Request $request): array
+    {
+        if (! $request->hasSession()) {
+            return [];
+        }
+
+        $session = $request->session();
+        $previous = $session->get(self::SESSION_KEY);
+        $ids = [$session->getId()];
+
+        if (is_string($previous) && $previous !== '' && $previous !== $session->getId()) {
+            $ids[] = $previous;
+        }
+
+        return $ids;
     }
 
     /**
