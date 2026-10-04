@@ -72,12 +72,16 @@ class StateFlushingTest extends TestCase
 
         Log::shouldReceive('warning')->twice()->with(Mockery::pattern('/is not registered/'));
 
-        $this->assertSame(url('/'), Uzair::loginUrl());
-        $this->assertSame(url('/'), Uzair::loginUrl());
+        $firstUrl = Uzair::loginUrl();
+        $repeatedUrl = Uzair::loginUrl();
 
         Event::dispatch(self::OCTANE_OPERATION_TERMINATED);
 
-        $this->assertSame(url('/'), Uzair::loginUrl());
+        $urlAfterTermination = Uzair::loginUrl();
+
+        $this->assertSame(url('/'), $firstUrl);
+        $this->assertSame(url('/'), $repeatedUrl);
+        $this->assertSame(url('/'), $urlAfterTermination);
     }
 
     /**

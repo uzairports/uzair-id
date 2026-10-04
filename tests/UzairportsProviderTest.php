@@ -391,7 +391,7 @@ class UzairportsProviderTest extends TestCase
     /**
      * A handler stack that answers with 200 and writes down what it was asked.
      */
-    private function recordingStack(RecordedRequest $recorded): HandlerStack
+    private function recordingStack(RecordedRequest $recorded): callable
     {
         $stack = HandlerStack::create(new MockHandler([new Response(200)]));
 

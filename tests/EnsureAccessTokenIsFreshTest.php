@@ -403,11 +403,15 @@ class EnsureAccessTokenIsFreshTest extends TestCase
             'session_id' => $session->getId(),
         ]);
 
-        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+        $beforeRegeneration = $this->handle($this->sessionRequest($user, $session));
+
+        $this->assertSame('OK', $beforeRegeneration->getContent());
 
         $session->regenerate();
 
-        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+        $afterRegeneration = $this->handle($this->sessionRequest($user, $session));
+
+        $this->assertSame('OK', $afterRegeneration->getContent());
 
         $this->assertSame($session->getId(), $token->fresh()?->session_id);
         $this->assertSame(1, $user->tokens()->count());

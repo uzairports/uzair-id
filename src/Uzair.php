@@ -151,6 +151,8 @@ class Uzair
      * It is said once per process: the setting is misconfigured for as long as
      * it is misconfigured, and a template calling this on every page would
      * otherwise write the line on every request.
+     *
+     * @phpstan-impure
      */
     public static function loginUrl(): string
     {
