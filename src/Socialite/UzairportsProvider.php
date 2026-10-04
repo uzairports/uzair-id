@@ -405,7 +405,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     }
 
     /**
-     * @return array<string, mixed>
+     * @return array{timeout: int, connect_timeout: int, allow_redirects: false, headers: array{Accept: string, Authorization: string}}
      */
     protected function getRequestOptions(string $token, ?int $timeout = null): array
     {

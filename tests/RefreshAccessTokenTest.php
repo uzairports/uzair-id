@@ -2,8 +2,8 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\ConnectException;
-use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
@@ -193,7 +193,7 @@ class RefreshAccessTokenTest extends TestCase
         $provider->shouldReceive('refreshToken')
             ->with('faulty_refresh')
             ->once()
-            ->andThrow(new RequestException('Rejected grant', new Request('POST', 'https://sso.test/oauth/token'), new Response(400, [], '{"error":"invalid_grant"}')));
+            ->andThrow(new BadResponseException('Rejected grant', new Request('POST', 'https://sso.test/oauth/token'), new Response(400, [], '{"error":"invalid_grant"}')));
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
@@ -219,7 +219,7 @@ class RefreshAccessTokenTest extends TestCase
         $provider->shouldReceive('refreshToken')
             ->with('expired_refresh')
             ->once()
-            ->andThrow(new RequestException('Unauthorized', new Request('POST', 'https://sso.test/oauth/token'), new Response(401, [], '{"error":"invalid_token"}')));
+            ->andThrow(new BadResponseException('Unauthorized', new Request('POST', 'https://sso.test/oauth/token'), new Response(401, [], '{"error":"invalid_token"}')));
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
@@ -268,7 +268,7 @@ class RefreshAccessTokenTest extends TestCase
         $provider->shouldReceive('refreshToken')
             ->with('a_perfectly_good_refresh')
             ->twice()
-            ->andThrow(new RequestException(
+            ->andThrow(new BadResponseException(
                 'Refused',
                 new Request('POST', 'https://sso.test/oauth/token'),
                 new Response($status, [], sprintf('{"error":"%s"}', $error)),
@@ -306,7 +306,7 @@ class RefreshAccessTokenTest extends TestCase
         $provider = Mockery::mock(UzairportsProvider::class);
         $provider->shouldReceive('refreshToken')
             ->once()
-            ->andThrow(new RequestException(
+            ->andThrow(new BadResponseException(
                 'Rejected grant',
                 new Request('POST', 'https://sso.test/oauth/token'),
                 new Response(400, [], '{"error":"invalid_grant","error_description":"The refresh token is invalid."}'),
@@ -336,7 +336,7 @@ class RefreshAccessTokenTest extends TestCase
         $provider = Mockery::mock(UzairportsProvider::class);
         $provider->shouldReceive('refreshToken')
             ->once()
-            ->andThrow(new RequestException(
+            ->andThrow(new BadResponseException(
                 'Bad gateway',
                 new Request('POST', 'https://sso.test/oauth/token'),
                 new Response(401, [], '<html>the proxy in front of it</html>'),
@@ -737,7 +737,7 @@ class RefreshAccessTokenTest extends TestCase
         $provider = Mockery::mock(UzairportsProvider::class);
         $provider->shouldReceive('refreshToken')
             ->twice()
-            ->andThrow(new RequestException(
+            ->andThrow(new BadResponseException(
                 'Rejected grant',
                 new Request('POST', 'https://sso.test/oauth/token'),
                 new Response(400, [], '{"error":"invalid_grant"}'),

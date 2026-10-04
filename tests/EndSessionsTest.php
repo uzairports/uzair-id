@@ -3,7 +3,7 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Exception;
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\Promise;
 use GuzzleHttp\Promise\PromiseInterface;
@@ -991,7 +991,7 @@ class EndSessionsTest extends TestCase
      */
     private function refused(int $status): PromiseInterface
     {
-        return Create::rejectionFor(new RequestException(
+        return Create::rejectionFor(new BadResponseException(
             'The identity provider refused the revocation.',
             new Request('POST', 'https://my.uzairports.test/revoke'),
             new Response($status)

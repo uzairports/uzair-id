@@ -2,7 +2,7 @@
 
 namespace Uzairports\Uzairid\Actions;
 
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\BadResponseException;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Contracts\Cache\Lock;
@@ -553,7 +553,7 @@ class RefreshAccessToken
             Log::warning('Failed to refresh UzAirports access token.', [
                 'user_id' => $token->user_id,
                 'exception_class' => $e::class,
-                'http_status' => $e instanceof RequestException ? $e->getResponse()?->getStatusCode() : null,
+                'http_status' => $e instanceof BadResponseException ? $e->getResponse()->getStatusCode() : null,
                 'oauth_error' => $oauthError,
             ]);
 
@@ -727,15 +727,11 @@ class RefreshAccessToken
      */
     private function oauthError(Throwable $exception): ?string
     {
-        if (! $exception instanceof RequestException) {
+        if (! $exception instanceof BadResponseException) {
             return null;
         }
 
         $response = $exception->getResponse();
-
-        if ($response === null) {
-            return null;
-        }
 
         $body = json_decode((string) $response->getBody(), true);
 
@@ -808,15 +804,11 @@ class RefreshAccessToken
      */
     private function grantWasRejected(Throwable $exception): bool
     {
-        if (! $exception instanceof RequestException) {
+        if (! $exception instanceof BadResponseException) {
             return false;
         }
 
         $response = $exception->getResponse();
-
-        if ($response === null) {
-            return false;
-        }
 
         $statusCode = $response->getStatusCode();
 

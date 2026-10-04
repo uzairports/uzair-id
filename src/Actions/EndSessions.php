@@ -2,9 +2,9 @@
 
 namespace Uzairports\Uzairid\Actions;
 
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\BadResponseException;
+use GuzzleHttp\Promise\Each;
 use GuzzleHttp\Promise\PromiseInterface;
-use GuzzleHttp\Promise\Utils;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Session\ArraySessionHandler;
 use Illuminate\Session\CookieSessionHandler;
@@ -428,28 +428,19 @@ class EndSessions
             return;
         }
 
-        /** @var array<int, mixed> $results */
-        $results = Utils::settle($promises)->wait();
-
-        foreach ($results as $index => $result) {
-            if (! is_array($result) || ($result['state'] ?? null) !== PromiseInterface::REJECTED) {
-                continue;
-            }
-
-            $reason = $result['reason'] ?? null;
-
+        Each::of($promises, null, function (mixed $reason, int $index) use ($sent): void {
             if (! $reason instanceof Throwable || ! isset($sent[$index])) {
-                continue;
+                return;
             }
 
-            $unauthorized = $reason instanceof RequestException && $reason->getResponse()?->getStatusCode() === 401;
+            $unauthorized = $reason instanceof BadResponseException && $reason->getResponse()->getStatusCode() === 401;
 
             if ($sent[$index]['spareUnauthorized'] && $unauthorized) {
-                continue;
+                return;
             }
 
             $this->reportFailedRevocation($sent[$index]['token'], $reason);
-        }
+        })->wait();
     }
 
     /**
@@ -492,7 +483,7 @@ class EndSessions
         Log::warning('Failed to revoke an UzAirports token.', [
             'user_id' => $token->user_id,
             'exception_class' => $exception::class,
-            'http_status' => $exception instanceof RequestException ? $exception->getResponse()?->getStatusCode() : null,
+            'http_status' => $exception instanceof BadResponseException ? $exception->getResponse()->getStatusCode() : null,
         ]);
     }
 

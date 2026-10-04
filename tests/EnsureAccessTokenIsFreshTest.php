@@ -2,7 +2,7 @@
 
 namespace Uzairports\Uzairid\Tests;
 
-use GuzzleHttp\Exception\RequestException;
+use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Psr7\Request as GuzzleRequest;
 use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Illuminate\Auth\AuthenticationException;
@@ -308,7 +308,7 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         ]);
 
         $provider = Mockery::mock(UzairportsProvider::class);
-        $provider->shouldReceive('refreshToken')->once()->andThrow(new RequestException(
+        $provider->shouldReceive('refreshToken')->once()->andThrow(new BadResponseException(
             'Rejected grant',
             new GuzzleRequest('POST', 'https://sso.test/oauth/token'),
             new GuzzleResponse(400, [], '{"error":"invalid_grant"}'),
