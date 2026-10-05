@@ -37,6 +37,8 @@ use Uzairports\Uzairid\Uzair;
  * @property int|string|null $personal_access_token_id
  * @property string|null $ip_address
  * @property string|null $user_agent
+ * @property string|null $sid
+ * @property string|null $id_token
  * @property Carbon|null $created_at
  * @property Carbon|null $updated_at
  */
@@ -57,6 +59,8 @@ class OauthToken extends Model
         'access_token',
         'refresh_token',
         'session_id',
+        'sid',
+        'id_token',
     ];
 
     /**
@@ -67,8 +71,18 @@ class OauthToken extends Model
         return [
             'access_token' => 'encrypted',
             'refresh_token' => 'encrypted',
+            'id_token' => 'encrypted',
             'expires_at' => 'datetime',
         ];
+    }
+
+    /**
+     * The ID token this login was issued, or null without one or if it cannot
+     * be decrypted. Only ever handed back to the provider as `id_token_hint`.
+     */
+    public function readableIdToken(): ?string
+    {
+        return $this->readable('id_token');
     }
 
     /**

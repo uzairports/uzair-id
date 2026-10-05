@@ -10,13 +10,17 @@ use GuzzleHttp\Psr7\Response;
 use Illuminate\Http\Request;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Psr\Http\Message\RequestInterface;
 use RuntimeException;
 use TypeError;
+use UnexpectedValueException;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class UzairportsProviderTest extends TestCase
 {
+    use SignsIdentityTokens;
+
     public function test_code_exchange_never_forwards_credentials_to_a_redirect(): void
     {
         foreach ([301, 302, 303, 307, 308] as $status) {
@@ -419,6 +423,153 @@ class UzairportsProviderTest extends TestCase
         $this->expectExceptionMessage('did not confirm token revocation');
 
         $provider->revokeRefreshToken('refresh-token');
+    }
+
+    public function test_an_authorization_response_from_another_issuer_is_refused_before_the_code_is_spent(): void
+    {
+        foreach (['https://evil.test', null] as $issuer) {
+            $history = [];
+            $stack = HandlerStack::create(new MockHandler([]));
+            $stack->push(Middleware::history($history));
+
+            try {
+                $this->callbackProvider(['handler' => $stack], $issuer)->user();
+
+                $this->fail('A response the configured provider did not issue must be refused.');
+            } catch (RuntimeException $exception) {
+                $this->assertSame('The authorization response was not issued by the configured UzAirports ID.', $exception->getMessage());
+            }
+
+            $this->assertSame([], $history);
+        }
+    }
+
+    public function test_an_authorization_response_from_the_issuer_is_completed(): void
+    {
+        $provider = $this->callbackProvider(['handler' => HandlerStack::create(new MockHandler([
+            new Response(200, [], '{"access_token":"access","expires_in":3600}'),
+            new Response(200, [], '{"id":"42"}'),
+        ]))], 'https://my.uzairports.com');
+
+        $this->assertSame('42', $provider->user()->getId());
+    }
+
+    public function test_a_response_without_iss_is_completed_where_it_is_not_required(): void
+    {
+        config(['uzairports.require_iss' => false]);
+
+        $provider = $this->callbackProvider(['handler' => HandlerStack::create(new MockHandler([
+            new Response(200, [], '{"access_token":"access","expires_in":3600}'),
+            new Response(200, [], '{"id":"42"}'),
+        ]))], null);
+
+        $this->assertSame('42', $provider->user()->getId());
+    }
+
+    public function test_the_id_token_is_verified_and_its_session_kept(): void
+    {
+        config(['uzairports.oidc.enabled' => true]);
+
+        $user = $this->providerIssuing($this->signed($this->idTokenClaims()))->stateless()->user();
+
+        $this->assertSame('idp-session', $user->attributes['sid']);
+        $this->assertIsString($user->attributes['id_token']);
+    }
+
+    /**
+     * @param  array<string, mixed>  $claims
+     */
+    #[DataProvider('untrustworthyIdTokens')]
+    public function test_an_id_token_that_cannot_be_trusted_fails_the_sign_in_and_surrenders_the_grants(array $claims, string $key): void
+    {
+        config(['uzairports.oidc.enabled' => true]);
+
+        $revoker = Mockery::mock(UzairportsProvider::class);
+        $revoker->shouldReceive('logoutAsync')->with('issued-access')->once()->andReturn($this->revoked());
+        $revoker->shouldReceive('revokeRefreshTokenAsync')->with('issued-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
+
+        $provider = $this->providerIssuing($this->signed([...$this->idTokenClaims(), ...$claims], $key))->stateless();
+
+        try {
+            $provider->user();
+
+            $this->fail('An ID token that cannot be trusted must not sign anybody in.');
+        } catch (UnexpectedValueException|RuntimeException) {
+            $this->addToAssertionCount(1);
+        }
+    }
+
+    /**
+     * @return array<string, array{0: array<string, mixed>, 1: string}>
+     */
+    public static function untrustworthyIdTokens(): array
+    {
+        return [
+            'signed by another key' => [[], 'impostor'],
+            'naming another subject' => [['sub' => 'somebody-else'], 'identity-provider'],
+            'issued to another client' => [['aud' => 'another-client'], 'identity-provider'],
+            'issued by another provider' => [['iss' => 'https://evil.test'], 'identity-provider'],
+            'expired' => [['exp' => time() - 3600], 'identity-provider'],
+        ];
+    }
+
+    public function test_the_session_at_the_identity_provider_is_ended_through_its_end_session_endpoint(): void
+    {
+        $this->assertNull($this->provider()->endSessionUrl('https://app.test/'));
+
+        config(['uzairports.end_session_endpoint' => '/oauth/logout']);
+
+        $this->assertSame(
+            'https://my.uzairports.com/oauth/logout?client_id=test-client&post_logout_redirect_uri=https%3A%2F%2Fapp.test%2F&id_token_hint=the-id-token',
+            $this->provider()->endSessionUrl('https://app.test/', 'the-id-token'),
+        );
+    }
+
+    /**
+     * A provider answering a callback whose state matches.
+     *
+     * @param  array<string, mixed>  $guzzle
+     */
+    private function callbackProvider(array $guzzle, ?string $issuer): UzairportsProvider
+    {
+        $request = Request::create('/callback', 'GET', array_filter(['code' => 'code', 'state' => 'state', 'iss' => $issuer]));
+        $request->setLaravelSession(app('session.store'));
+        $request->session()->put('state', 'state');
+
+        return new UzairportsProvider($request, 'test-client', 'test-secret', 'https://app.test/callback', $guzzle);
+    }
+
+    /**
+     * A provider whose exchange issues the given ID token beside the grants.
+     */
+    private function providerIssuing(string $idToken): UzairportsProvider
+    {
+        return $this->provider(['handler' => HandlerStack::create(new MockHandler([
+            new Response(200, [], (string) json_encode([
+                'access_token' => 'issued-access',
+                'refresh_token' => 'issued-refresh',
+                'expires_in' => 3600,
+                'id_token' => $idToken,
+            ])),
+            new Response(200, [], '{"id":"42"}'),
+            new Response(200, [], (string) json_encode($this->keySet())),
+        ]))]);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function idTokenClaims(): array
+    {
+        return [
+            'iss' => 'https://my.uzairports.com',
+            'aud' => 'test-client',
+            'sub' => '42',
+            'sid' => 'idp-session',
+            'iat' => time(),
+            'exp' => time() + 300,
+        ];
     }
 
     /**

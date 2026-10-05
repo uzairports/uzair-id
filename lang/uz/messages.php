@@ -6,6 +6,8 @@ return [
 
     'authentication_failed' => 'Kirish amalga oshmadi. Qaytadan urinib ko‘ring.',
 
+    'access_denied' => 'Kirish bekor qilindi.',
+
     'handshake_lost' => 'Kirish yakunlanmadi: sessiya saqlanib qolmadi. Bitta sahifada qaytadan kiring.',
 
     'session_expired' => 'UzAirports ID sessiyasi muddati tugadi.',

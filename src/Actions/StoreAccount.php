@@ -5,10 +5,9 @@ namespace Uzairports\Uzairid\Actions;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
+use Illuminate\Database\Schema\Builder;
 use Illuminate\Database\UniqueConstraintViolationException;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Schema;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Throwable;
@@ -82,7 +81,7 @@ class StoreAccount
      */
     private function write(SocialiteUser $uzairUser): Authenticatable
     {
-        return DB::transaction(function () use ($uzairUser): Authenticatable {
+        return $this->accounts()->getConnection()->transaction(function () use ($uzairUser): Authenticatable {
             $user = ($this->resolveUser)($uzairUser);
 
             if (! $user instanceof Authenticatable) {
@@ -147,13 +146,14 @@ class StoreAccount
     private function accountsTableComplaints(): array
     {
         try {
-            $model = Uzair::userModel();
-            $table = (new $model)->getTable();
+            $accounts = $this->accounts();
+            $table = $accounts->getTable();
+            $schema = $accounts->getConnection()->getSchemaBuilder();
 
             return [
                 'accounts_table' => $table,
-                'email_is_unique' => Schema::hasIndex($table, ['email'], 'unique'),
-                'columns_needing_a_value' => $this->columnsNeedingAValue($table),
+                'email_is_unique' => $schema->hasIndex($table, ['email'], 'unique'),
+                'columns_needing_a_value' => $this->columnsNeedingAValue($schema, $table),
                 'remedy' => 'php artisan vendor:publish --tag=uzairid-user-migrations',
             ];
         } catch (Throwable) {
@@ -167,24 +167,33 @@ class StoreAccount
      *
      * @return list<string>
      */
-    private function columnsNeedingAValue(string $table): array
+    private function columnsNeedingAValue(Builder $schema, string $table): array
     {
         $written = ['uzair_id', 'name', 'email', 'created_at', 'updated_at'];
 
         $needed = [];
 
-        foreach (Schema::getColumns($table) as $column) {
-            $name = (string) $column['name'];
-
-            if (in_array($name, $written, true) || ($column['auto_increment'] ?? false) === true) {
+        foreach ($schema->getColumns($table) as $column) {
+            if (in_array($column['name'], $written, true) || $column['auto_increment']) {
                 continue;
             }
 
-            if (($column['nullable'] ?? true) === false && ($column['default'] ?? null) === null) {
-                $needed[] = $name;
+            if (! $column['nullable'] && $column['default'] === null) {
+                $needed[] = $column['name'];
             }
         }
 
         return $needed;
+    }
+
+    /**
+     * An empty account, for the connection and table the accounts live on —
+     * which need not be the application's default connection.
+     */
+    private function accounts(): Model
+    {
+        $model = Uzair::userModel();
+
+        return new $model;
     }
 }

@@ -6,6 +6,7 @@ use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Route as RegisteredRoute;
+use Illuminate\Routing\RouteRegistrar;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Laravel\Sanctum\Sanctum;
@@ -14,6 +15,8 @@ use RuntimeException;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Http\Controllers\UzairApiAuthController;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
+use Uzairports\Uzairid\Http\Controllers\UzairBackchannelLogoutController;
+use Uzairports\Uzairid\Http\Middleware\TreatRequestAsJson;
 use Uzairports\Uzairid\Models\OauthToken;
 
 class Uzair
@@ -93,6 +96,15 @@ class Uzair
         $guards = array_values(array_filter((array) config('sanctum.guard', ['web']), 'is_string'));
 
         return $guards[0] ?? (config('auth.guards.web') !== null ? 'web' : $guard);
+    }
+
+    /**
+     * Whether sign-in runs OpenID Connect: an ID token is asked for and
+     * verified, and each login is filed under the provider's `sid`.
+     */
+    public static function oidcEnabled(): bool
+    {
+        return config('uzairports.oidc.enabled', false) === true;
     }
 
     /**
@@ -493,29 +505,58 @@ class Uzair
      */
     public static function apiRoutes(array $options = []): void
     {
-        $prefix = $options['prefix'] ?? config('uzairports.api.prefix', 'auth');
-        $throttle = array_key_exists('throttle', $options) ? $options['throttle'] : 'uzairid';
         $controller = $options['controller'] ?? UzairApiAuthController::class;
 
-        $group = Route::prefix(is_string($prefix) ? $prefix : 'auth');
-
-        $middleware = (array) ($options['middleware'] ?? []);
-
-        if (is_string($throttle) && $throttle !== '') {
-            $middleware[] = "throttle:{$throttle}";
-        }
-
-        if (! empty($middleware)) {
-            $group->middleware($middleware);
-        }
-
-        $group->group(function () use ($controller): void {
+        self::jsonRouteGroup($options)->group(function () use ($controller): void {
             Route::post('token', [$controller, 'token'])->name('uzair.api.token');
             Route::post('logout', [$controller, 'logout'])->name('uzair.api.logout');
             Route::post('logout-device/{token}', [$controller, 'logoutDevice'])
                 ->whereNumber('token')
                 ->name('uzair.api.logoutDevice');
         });
+    }
+
+    /**
+     * Register the endpoint UzAirports ID calls when somebody signs out there
+     * (OpenID Connect Back-Channel Logout), `POST {prefix}/backchannel-logout`.
+     *
+     * Call from `routes/api.php`: the provider's server posts here with no
+     * session or CSRF token. Register the resulting URL with the client as its
+     * `backchannel_logout_uri`. Needs `uzairports.oidc.enabled`, since logins
+     * are found by the session id their ID token named.
+     *
+     * Throttling and options are the same as for `apiRoutes()`.
+     *
+     * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string}  $options
+     */
+    public static function backchannelLogoutRoutes(array $options = []): void
+    {
+        $controller = $options['controller'] ?? UzairBackchannelLogoutController::class;
+
+        self::jsonRouteGroup($options)->group(function () use ($controller): void {
+            Route::post('backchannel-logout', $controller)->name('uzair.backchannelLogout');
+        });
+    }
+
+    /**
+     * The group the sessionless endpoints share: answered in JSON, throttled
+     * by the `uzairid` limiter unless told otherwise.
+     *
+     * @param  array{prefix?: string, throttle?: string|null, middleware?: array<array-key, mixed>|string}  $options
+     */
+    private static function jsonRouteGroup(array $options): RouteRegistrar
+    {
+        $prefix = $options['prefix'] ?? config('uzairports.api.prefix', 'auth');
+        $throttle = array_key_exists('throttle', $options) ? $options['throttle'] : 'uzairid';
+
+        // First, so the throttle's 429 is answered in JSON too.
+        $middleware = [TreatRequestAsJson::class, ...(array) ($options['middleware'] ?? [])];
+
+        if (is_string($throttle) && $throttle !== '') {
+            $middleware[] = "throttle:{$throttle}";
+        }
+
+        return Route::prefix(is_string($prefix) ? $prefix : 'auth')->middleware($middleware);
     }
 
     /**

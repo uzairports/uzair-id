@@ -41,12 +41,96 @@ return [
     | in OAuth promises that retires the refresh token issued with it — one that
     | survives is a way back into the account for whoever holds a copy.
     |
-    | Empty means the identity provider offers no such endpoint and only the
-    | access token is given up. Accepts a full URL or a path on the host.
+    | UzAirports ID publishes it as `revocation_endpoint` in its metadata. Set
+    | it empty for an identity provider that offers no such endpoint, and only
+    | the access token is given up. Accepts a full URL or a path on the host.
     |
     */
 
-    'revoke_endpoint' => env('UZAIR_REVOKE_ENDPOINT'),
+    'revoke_endpoint' => env('UZAIR_REVOKE_ENDPOINT', '/oauth/revoke'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Issuer
+    |--------------------------------------------------------------------------
+    |
+    | The `issuer` of the identity provider's metadata. The callback refuses an
+    | authorization response whose `iss` parameter names anyone else (RFC
+    | 9207), which stops a code from another provider being redeemed here, and
+    | OpenID Connect tokens must be issued by it. Null means the host.
+    |
+    | UzAirports ID always sends `iss`, so a response without it is refused
+    | too. Turn `require_iss` off only for a provider that does not send it.
+    |
+    */
+
+    'issuer' => env('UZAIR_ISSUER'),
+
+    'require_iss' => (bool) env('UZAIR_REQUIRE_ISS', true),
+
+    /*
+    |--------------------------------------------------------------------------
+    | OpenID Connect
+    |--------------------------------------------------------------------------
+    |
+    | Turned on, sign-in asks for the `openid` scope beside the configured
+    | ones, verifies the ID token against the provider's keys, and files each
+    | login under the provider's session id (`sid`). That is what lets the
+    | provider end logins here when somebody signs out there — see
+    | `Uzair::backchannelLogoutRoutes()` — and lets signing out here end the
+    | session there. Needs the `sid` and `id_token` columns: publish and run
+    | the `uzairid-upgrade-migrations` on an existing installation.
+    |
+    | `leeway` is the clock skew, in seconds, allowed when reading a token's
+    | `exp` and `iat`. Signing keys are cached for `jwks_cache_ttl` seconds and
+    | fetched again as soon as a token names a key that is not among them.
+    |
+    */
+
+    'oidc' => [
+
+        'enabled' => (bool) env('UZAIR_OIDC', false),
+
+        'jwks_endpoint' => env('UZAIR_JWKS_ENDPOINT', '/oauth/jwks'),
+
+        'jwks_cache_ttl' => (int) env('UZAIR_JWKS_CACHE_TTL', 3600),
+
+        'leeway' => (int) env('UZAIR_OIDC_LEEWAY', 60),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Signing Out at the Identity Provider
+    |--------------------------------------------------------------------------
+    |
+    | Signing out ends this application's login, but the browser is still
+    | signed in at UzAirports ID, and the next sign-in goes straight through.
+    | With an endpoint here the browser is sent on to it after signing out,
+    | ending that session too, and comes back to `redirect_after_logout` —
+    | which must then be registered with the client as a post-logout redirect
+    | URI. The ID token is passed as `id_token_hint` when OpenID Connect is on.
+    |
+    | UzAirports ID publishes it as `end_session_endpoint` (`/oauth/logout`).
+    | Null keeps the identity provider's session. Accepts a full URL or a path.
+    |
+    */
+
+    'end_session_endpoint' => env('UZAIR_END_SESSION_ENDPOINT'),
+
+    /*
+    |--------------------------------------------------------------------------
+    | Revoke Grants on Back-Channel Logout
+    |--------------------------------------------------------------------------
+    |
+    | Whether logins the identity provider ended through back-channel logout
+    | still have their grants handed back. The provider ended its session, but
+    | nothing promises that retired the refresh token. Costs a revocation
+    | round-trip per login, in a request the provider is waiting on.
+    |
+    */
+
+    'revoke_on_backchannel_logout' => (bool) env('UZAIR_REVOKE_ON_BACKCHANNEL_LOGOUT', true),
 
     /*
     |--------------------------------------------------------------------------

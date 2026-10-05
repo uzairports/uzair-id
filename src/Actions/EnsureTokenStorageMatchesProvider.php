@@ -126,6 +126,10 @@ class EnsureTokenStorageMatchesProvider
             return 'The UzAirports token table predates personal_access_token_id. Run php artisan vendor:publish --tag=uzairid-upgrade-migrations and php artisan migrate.';
         }
 
+        if (Uzair::oidcEnabled() && ! $schema->hasColumns($token->getTable(), ['sid', 'id_token'])) {
+            return 'OpenID Connect is enabled, but the UzAirports token table has no sid and id_token columns. Run php artisan vendor:publish --tag=uzairid-upgrade-migrations and php artisan migrate.';
+        }
+
         [$expectedSchema, $expectedTable] = $schema->parseSchemaAndTable($user->getTable(), withDefaultSchema: true);
         $expected = $connection->getTablePrefix().$expectedTable;
 
@@ -182,6 +186,7 @@ class EnsureTokenStorageMatchesProvider
             $model,
             $user->getTable(),
             $user->getKeyName(),
+            Uzair::oidcEnabled() ? 'oidc' : 'oauth',
         ]);
     }
 

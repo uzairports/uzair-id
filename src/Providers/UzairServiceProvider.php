@@ -50,8 +50,15 @@ class UzairServiceProvider extends ServiceProvider
             $provider->setHost($config['host']);
         }
 
-        if (is_array($config['scopes'] ?? null) && $config['scopes'] !== []) {
-            $provider->setScopes($config['scopes']);
+        $scopes = is_array($config['scopes'] ?? null) ? $config['scopes'] : [];
+
+        // Without `openid` the provider issues no ID token to verify.
+        if (Uzair::oidcEnabled() && ! in_array('openid', $scopes, true)) {
+            $scopes = ['openid', ...$scopes];
+        }
+
+        if ($scopes !== []) {
+            $provider->setScopes($scopes);
         }
 
         if ($config['pkce'] ?? true) {
@@ -172,6 +179,7 @@ class UzairServiceProvider extends ServiceProvider
             'index_oauth_tokens_for_pruning',
             'index_oauth_tokens_by_session',
             'add_personal_access_token_id_to_oauth_tokens_table',
+            'add_oidc_columns_to_oauth_tokens_table',
         ], $time), 'uzairid-upgrade-migrations');
     }
 

@@ -23,7 +23,15 @@ php artisan vendor:publish --tag=uzairid-config
 | `client_secret` | `UZAIR_CLIENT_SECRET` | — | Секрет OAuth-клиента |
 | `redirect` | `UZAIR_CALLBACK_URL` | — | Адрес callback-маршрута |
 | `host` | `UZAIR_HOST` | `https://my.uzairports.com` | Адрес UzAirports ID; меняется для стенда |
-| `revoke_endpoint` | `UZAIR_REVOKE_ENDPOINT` | — (опционально, `/oauth/revoke`) | Эндпоинт RFC 7009 для отзыва refresh-токена |
+| `revoke_endpoint` | `UZAIR_REVOKE_ENDPOINT` | `/oauth/revoke` | Эндпоинт RFC 7009 для отзыва refresh-токена; пусто — не отзывать |
+| `issuer` | `UZAIR_ISSUER` | — (адрес `host`) | `issuer` провайдера: с ним сверяется `iss` в callback (RFC 9207) и в токенах OIDC |
+| `require_iss` | `UZAIR_REQUIRE_ISS` | `true` | Отклонять ли ответ авторизации без параметра `iss` |
+| `oidc.enabled` | `UZAIR_OIDC` | `false` | OpenID Connect: scope `openid`, проверка ID-токена, вход записывается под `sid` провайдера |
+| `oidc.jwks_endpoint` | `UZAIR_JWKS_ENDPOINT` | `/oauth/jwks` | Где провайдер публикует ключи подписи |
+| `oidc.jwks_cache_ttl` | `UZAIR_JWKS_CACHE_TTL` | `3600` | Сколько секунд кешировать ключи |
+| `oidc.leeway` | `UZAIR_OIDC_LEEWAY` | `60` | Допуск расхождения часов при проверке `iat`/`exp` (сек) |
+| `end_session_endpoint` | `UZAIR_END_SESSION_ENDPOINT` | — | Куда отправить браузер после выхода, чтобы завершить сессию и на UzAirports ID (`/oauth/logout`) |
+| `revoke_on_backchannel_logout` | `UZAIR_REVOKE_ON_BACKCHANNEL_LOGOUT` | `true` | Отзывать ли гранты входов, завершённых back-channel logout |
 | `logout_endpoint` | `UZAIR_LOGOUT_ENDPOINT` | `/api/oauth/logout` | Эндпоинт для отзыва access-токена при logout |
 | `user_endpoint` | `UZAIR_USER_ENDPOINT` | `/api/user` | Эндпоинт получения профиля пользователя |
 | `revoke_on_prune` | `UZAIR_REVOKE_ON_PRUNE` | `true` | Отдавать ли гранты SSO при уборке брошенных входов |

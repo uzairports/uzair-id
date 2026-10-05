@@ -6,6 +6,8 @@ return [
 
     'authentication_failed' => 'Не удалось войти. Попробуйте ещё раз.',
 
+    'access_denied' => 'Вход был отменён.',
+
     'handshake_lost' => 'Вход не был завершён: сессия не сохранилась. Начните вход заново, в одной вкладке.',
 
     'session_expired' => 'Сессия UzAirports ID истекла.',

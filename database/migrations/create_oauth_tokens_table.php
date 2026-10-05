@@ -47,6 +47,8 @@ return new class extends Migration
             $table->timestamp('expires_at')->nullable();
             $table->string('session_id')->nullable();
             $table->unsignedBigInteger('personal_access_token_id')->nullable()->unique();
+            $table->string('sid')->nullable()->index();
+            $table->text('id_token')->nullable();
             $table->string('ip_address', 45)->nullable();
             $table->text('user_agent')->nullable();
             $table->timestamps();

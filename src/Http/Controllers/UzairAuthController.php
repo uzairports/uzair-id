@@ -57,9 +57,7 @@ class UzairAuthController extends UzairController
         EndSessions $endSessions,
     ): RedirectResponse {
         if ($request->has('error')) {
-            Log::info('UzAirports OAuth callback returned an error.');
-
-            return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
+            return $this->authorizationRefused($request->query('error'));
         }
 
         $uzairUser = null;
@@ -163,6 +161,51 @@ class UzairAuthController extends UzairController
             'callback_host' => $request->getSchemeAndHttpHost(),
             'configured_redirect' => config('uzairports.redirect'),
         ]);
+    }
+
+    /**
+     * The RFC 6749 §4.1.2.1 codes an authorization request may be refused with.
+     *
+     * Only these are logged; anything else in the query string is the
+     * browser's to write and is logged as `other`.
+     *
+     * @var list<string>
+     */
+    private const array AUTHORIZATION_ERRORS = [
+        'access_denied',
+        'invalid_request',
+        'invalid_scope',
+        'server_error',
+        'temporarily_unavailable',
+        'unauthorized_client',
+        'unsupported_response_type',
+    ];
+
+    /**
+     * Answer a callback the identity provider sent back with an `error`.
+     *
+     * The user declining is ordinary and said so; the provider failing is
+     * told as an outage; anything else points at this application's
+     * registration, so it is a warning for an operator. `error_description`
+     * is never logged, since anyone can put anything in it.
+     */
+    private function authorizationRefused(mixed $error): RedirectResponse
+    {
+        $error = in_array($error, self::AUTHORIZATION_ERRORS, true) ? $error : 'other';
+
+        if ($error === 'access_denied') {
+            Log::info('UzAirports OAuth authorization was declined.');
+
+            return $this->handshakeFailed(__('uzairid::messages.access_denied'));
+        }
+
+        Log::warning('UzAirports OAuth callback returned an error.', ['oauth_error' => $error]);
+
+        if ($error === 'server_error' || $error === 'temporarily_unavailable') {
+            return $this->handshakeFailed(__('uzairid::messages.temporarily_unavailable'));
+        }
+
+        return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
     }
 
     private function handshakeFailed(string $message): RedirectResponse

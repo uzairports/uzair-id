@@ -12,6 +12,7 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
+use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
@@ -19,6 +20,7 @@ use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Socialite\UzairportsProvider;
 use Uzairports\Uzairid\Uzair;
 
 /**
@@ -44,6 +46,7 @@ abstract class UzairController
     public function logout(Request $request, EndSessions $endSessions): JsonResponse|RedirectResponse
     {
         $user = $this->authenticated();
+        $idTokenHint = null;
 
         if ($user !== null) {
             $accessTokenId = Uzair::accessTokenId($user);
@@ -58,6 +61,9 @@ abstract class UzairController
                 ->first();
 
             if ($token !== null) {
+                // Read before the row goes; the provider is told whose session to end.
+                $idTokenHint = Uzair::oidcEnabled() ? $token->readableIdToken() : null;
+
                 $endSessions->end($token);
             }
 
@@ -72,7 +78,7 @@ abstract class UzairController
             UzairLoggedOut::dispatch($user instanceof Model ? $user : null);
         }
 
-        return $this->finishLogout($request);
+        return $this->finishLogout($request, signedOut: $user !== null, idTokenHint: $idTokenHint);
     }
 
     /**
@@ -222,16 +228,56 @@ abstract class UzairController
 
     /**
      * Leave nothing of the current session behind and answer the caller.
+     *
+     * A browser that was signed in is sent on to end its session at the
+     * identity provider too, when `end_session_endpoint` is configured, and
+     * comes back to `redirect_after_logout` from there.
      */
-    private function finishLogout(Request $request): JsonResponse|RedirectResponse
+    private function finishLogout(Request $request, bool $signedOut, ?string $idTokenHint): JsonResponse|RedirectResponse
     {
         if ($request->hasSession()) {
             $request->session()->invalidate();
             $request->session()->regenerateToken();
         }
 
-        return $request->wantsJson()
-            ? new JsonResponse([], 204)
-            : redirect()->to($this->target(config('uzairports.redirect_after_logout', '/')));
+        if ($request->wantsJson()) {
+            return new JsonResponse([], 204);
+        }
+
+        $destination = $this->target(config('uzairports.redirect_after_logout', '/'));
+        $endSessionUrl = $signedOut ? $this->endSessionUrl($destination, $idTokenHint) : null;
+
+        return $endSessionUrl !== null
+            ? redirect()->away($endSessionUrl)
+            : redirect()->to($destination);
+    }
+
+    /**
+     * The identity provider's sign-out address, or null when there is none.
+     *
+     * Never raises: the browser is already signed out here, and a driver that
+     * cannot be built must not turn that into a 500.
+     */
+    private function endSessionUrl(string $postLogoutRedirectUri, ?string $idTokenHint): ?string
+    {
+        $endpoint = config('uzairports.end_session_endpoint');
+
+        if (! is_string($endpoint) || $endpoint === '') {
+            return null;
+        }
+
+        try {
+            $provider = Socialite::driver('uzairports');
+        } catch (Throwable $exception) {
+            Log::warning('The UzAirports session could not be ended at the identity provider.', [
+                'exception_class' => $exception::class,
+            ]);
+
+            return null;
+        }
+
+        return $provider instanceof UzairportsProvider
+            ? $provider->endSessionUrl($postLogoutRedirectUri, $idTokenHint)
+            : null;
     }
 }

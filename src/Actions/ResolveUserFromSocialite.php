@@ -72,7 +72,7 @@ class ResolveUserFromSocialite
      * The sign-in proceeds: the account is still the right one, only the
      * profile is stale. Attributes are reset so `Auth::login()` and its
      * listeners do not see unsaved values. A refused insert is handled by
-     * `UzairAuthController::writeAccount()`, which rejects non-existent models.
+     * `StoreAccount`, which rejects non-existent models.
      */
     private function reportRefusedProfile(Model $user): void
     {
@@ -93,7 +93,7 @@ class ResolveUserFromSocialite
      * `uzair_id` cannot stop two identities updating the same row. The update
      * is therefore conditional on `uzair_id` being null; a loser gets a new
      * account rather than sharing one. A concurrent callback for the same
-     * identity hits the unique index, and `UzairAuthController` retries once.
+     * identity hits the unique index, and `StoreAccount` retries once.
      */
     private function claimUnlinkedUserByEmail(?string $email, string $uzairId): ?Model
     {

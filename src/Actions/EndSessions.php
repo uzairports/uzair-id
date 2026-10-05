@@ -5,6 +5,7 @@ namespace Uzairports\Uzairid\Actions;
 use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Promise\Each;
 use GuzzleHttp\Promise\PromiseInterface;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Session\ArraySessionHandler;
 use Illuminate\Session\CookieSessionHandler;
@@ -56,6 +57,22 @@ class EndSessions
             ))
             ->when($exceptLoginId !== null, fn ($query) => $query->whereKeyNot($exceptLoginId));
 
+        return $this->endWhere($query, $revoke);
+    }
+
+    /**
+     * End every login a query matches, the way `__invoke()` ends an account's.
+     *
+     * For callers that name logins by something other than their account,
+     * such as the provider's session id in a back-channel logout.
+     *
+     * @param  EloquentBuilder<OauthToken>  $query
+     * @return int the number of logins ended
+     *
+     * @throws Throwable
+     */
+    public function endWhere(EloquentBuilder $query, bool $revoke = true): int
+    {
         if (! $revoke) {
             $rows = $query->getModel()->getConnection()->transaction(function () use ($query): SupportCollection {
                 $rows = (clone $query)->orderBy('id')->lockForUpdate()->toBase()->get(['id', 'session_id', 'personal_access_token_id']);

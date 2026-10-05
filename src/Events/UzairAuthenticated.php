@@ -49,6 +49,7 @@ class UzairAuthenticated
 
         $stripped->token = '';
         $stripped->refreshToken = '';
+        $stripped->attributes = array_diff_key($stripped->attributes, ['id_token' => true]);
 
         return $stripped;
     }

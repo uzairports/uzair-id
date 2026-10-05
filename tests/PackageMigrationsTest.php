@@ -76,7 +76,7 @@ class PackageMigrationsTest extends TestCase
     {
         $before = $this->shapeOfOauthTokens();
 
-        foreach (['make_oauth_tokens_per_session', 'add_session_id_to_oauth_tokens_table', 'add_personal_access_token_id_to_oauth_tokens_table'] as $migration) {
+        foreach (['make_oauth_tokens_per_session', 'add_session_id_to_oauth_tokens_table', 'add_personal_access_token_id_to_oauth_tokens_table', 'add_oidc_columns_to_oauth_tokens_table'] as $migration) {
             $this->migration($migration)->up();
             $this->migration($migration)->down();
         }
@@ -117,6 +117,42 @@ class PackageMigrationsTest extends TestCase
         $this->migration('add_personal_access_token_id_to_oauth_tokens_table')->down();
 
         $this->assertSame($before, $this->shapeOfOauthTokens());
+    }
+
+    public function test_the_oidc_columns_are_added_to_a_table_without_them_and_rolled_back_off_it(): void
+    {
+        Schema::table('oauth_tokens', function (Blueprint $table): void {
+            $table->dropIndex(['sid']);
+            $table->dropColumn(['sid', 'id_token']);
+        });
+
+        $before = $this->shapeOfOauthTokens();
+
+        $this->migration('add_oidc_columns_to_oauth_tokens_table')->up();
+
+        $this->assertTrue(Schema::hasColumns('oauth_tokens', ['sid', 'id_token']));
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['sid']));
+
+        $this->migration('add_oidc_columns_to_oauth_tokens_table')->down();
+
+        $this->assertSame($before, $this->shapeOfOauthTokens());
+    }
+
+    public function test_enabling_oidc_on_a_table_without_its_columns_is_reported_instead_of_queried(): void
+    {
+        Schema::table('oauth_tokens', function (Blueprint $table): void {
+            $table->dropIndex(['sid']);
+            $table->dropColumn(['sid', 'id_token']);
+        });
+
+        $this->assertNull(app(EnsureTokenStorageMatchesProvider::class)->problem());
+
+        config(['uzairports.oidc.enabled' => true]);
+
+        $this->assertStringContainsString(
+            'uzairid-upgrade-migrations',
+            (string) app(EnsureTokenStorageMatchesProvider::class)->problem(),
+        );
     }
 
     /**

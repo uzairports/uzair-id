@@ -55,6 +55,8 @@ php artisan vendor:publish --tag=uzairid-upgrade-migrations
   «один токен на аккаунт» на «одна строка — один вход»;
 - `add_personal_access_token_id_to_oauth_tokens_table` — колонка, под которой записан вход
   мобильного клиента с токеном Sanctum (см. [Мобильное приложение](mobile.md));
+- `add_oidc_columns_to_oauth_tokens_table` — колонки `sid` и `id_token` для OpenID Connect
+  (см. [Выход на стороне UzAirports ID](sessions.md#выход-на-стороне-uzairports-id-openid-connect));
 - `index_oauth_tokens_for_pruning` — индекс по `updated_at` для уборки (см. [Уборка](sessions.md#уборка));
 - `index_oauth_tokens_by_session` — индекс по `session_id`. Вход, который браузер держал
   до повторного входа, ищется по одному только `session_id`: строка может принадлежать

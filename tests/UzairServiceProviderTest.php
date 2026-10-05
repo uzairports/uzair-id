@@ -52,7 +52,7 @@ class UzairServiceProviderTest extends TestCase
             unlink($published);
         }
 
-        $this->assertCount(4, $destinations);
+        $this->assertCount(5, $destinations);
         $this->assertEmpty(array_filter($destinations, fn (string $path): bool => str_ends_with($path, '_index_oauth_tokens_by_session.php')));
     }
 

@@ -15,6 +15,8 @@ use Psr\Http\Message\ResponseInterface;
 use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
+use Uzairports\Uzairid\Actions\VerifyIdentityToken;
+use Uzairports\Uzairid\Uzair;
 
 class UzairportsProvider extends AbstractProvider implements ProviderInterface
 {
@@ -97,7 +99,50 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
             throw new InvalidStateException;
         }
 
+        $this->ensureTheResponseIsFromTheIssuer();
+
         return $this->exchange($this->getCode());
+    }
+
+    /**
+     * Refuse an authorization response another provider sent (RFC 9207).
+     *
+     * Checked before the code is spent, so a code from somewhere else never
+     * reaches this provider's token endpoint. Skipped where the state is,
+     * since a stateless exchange has no authorization response of its own.
+     *
+     * @throws RuntimeException when `iss` is missing or names someone else
+     */
+    private function ensureTheResponseIsFromTheIssuer(): void
+    {
+        if ($this->isStateless()) {
+            return;
+        }
+
+        $issuer = $this->request->query('iss');
+
+        if ($issuer === null && ! config('uzairports.require_iss', true)) {
+            return;
+        }
+
+        if ($issuer !== $this->issuer()) {
+            throw new RuntimeException('The authorization response was not issued by the configured UzAirports ID.');
+        }
+    }
+
+    /**
+     * The `issuer` the provider's tokens and responses must name.
+     */
+    public function issuer(): string
+    {
+        $issuer = config('uzairports.issuer');
+
+        return is_string($issuer) && $issuer !== '' ? rtrim($issuer, '/') : $this->getHost();
+    }
+
+    public function getClientId(): string
+    {
+        return (string) $this->clientId;
     }
 
     /**
@@ -142,13 +187,114 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         try {
             $profile = $this->getUserByToken($response['access_token']);
 
-            return $this->userInstance($response, $profile);
+            $user = $this->userInstance($response, $profile);
+
+            if (Uzair::oidcEnabled()) {
+                $this->attachIdentity($user, $response);
+            }
+
+            return $user;
         } catch (Throwable $exception) {
             $this->user = null;
             $this->surrenderIssuedGrants($response);
 
             throw $exception;
         }
+    }
+
+    /**
+     * Verify the ID token issued with the grants and keep what a login is
+     * filed under: the provider's session id (`sid`) and the token itself.
+     *
+     * The token must name the same subject as the profile, so a profile and
+     * an identity can never belong to two different people. A failure here
+     * surrenders the grants, like a profile that cannot be read.
+     *
+     * @param  array<array-key, mixed>  $response
+     *
+     * @throws Throwable when there is no ID token or it cannot be trusted
+     */
+    private function attachIdentity(User $user, array $response): void
+    {
+        $idToken = $response['id_token'] ?? null;
+
+        if (! is_string($idToken) || $idToken === '') {
+            throw new RuntimeException('UzAirports SSO issued no ID token, though OpenID Connect is enabled.');
+        }
+
+        $claims = app(VerifyIdentityToken::class)($idToken, $this);
+
+        if (($claims['sub'] ?? null) !== (string) $user->getId()) {
+            throw new RuntimeException('The UzAirports ID token names another subject than the profile.');
+        }
+
+        $sid = $claims['sid'] ?? null;
+
+        $user->map([
+            ...$user->attributes,
+            'sid' => is_string($sid) && $sid !== '' ? $sid : null,
+            'id_token' => $idToken,
+        ]);
+    }
+
+    /**
+     * Where the provider publishes its signing keys.
+     */
+    public function jwksUrl(): string
+    {
+        $endpoint = config('uzairports.oidc.jwks_endpoint', '/oauth/jwks');
+
+        return $this->absoluteUrl(is_string($endpoint) && $endpoint !== '' ? $endpoint : '/oauth/jwks');
+    }
+
+    /**
+     * The provider's signing keys, as a JSON Web Key Set.
+     *
+     * @return array<array-key, mixed>
+     *
+     * @throws GuzzleException
+     * @throws RuntimeException when the answer is not a key set
+     */
+    public function jwks(): array
+    {
+        $response = $this->getHttpClient()->get($this->jwksUrl(), [
+            RequestOptions::TIMEOUT => self::requestTimeout(),
+            RequestOptions::CONNECT_TIMEOUT => min($this->connectTimeout(), self::requestTimeout()),
+            RequestOptions::ALLOW_REDIRECTS => false,
+            RequestOptions::HEADERS => ['Accept' => 'application/json'],
+        ]);
+
+        $decoded = json_decode((string) $response->getBody(), true);
+
+        if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300
+            || ! is_array($decoded) || ! is_array($decoded['keys'] ?? null)) {
+            throw new RuntimeException('UzAirports SSO did not answer with its signing keys.');
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * Where to send a browser that signed out here to end its session there,
+     * or null when `end_session_endpoint` is not configured.
+     */
+    public function endSessionUrl(string $postLogoutRedirectUri, ?string $idTokenHint = null): ?string
+    {
+        $endpoint = config('uzairports.end_session_endpoint');
+
+        if (! is_string($endpoint) || $endpoint === '') {
+            return null;
+        }
+
+        $query = http_build_query(array_filter([
+            'client_id' => $this->getClientId(),
+            'post_logout_redirect_uri' => $postLogoutRedirectUri,
+            'id_token_hint' => $idTokenHint,
+        ], fn (?string $value): bool => $value !== null && $value !== ''));
+
+        $url = $this->absoluteUrl($endpoint);
+
+        return $url.(str_contains($url, '?') ? '&' : '?').$query;
     }
 
     /**

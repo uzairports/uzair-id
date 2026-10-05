@@ -19,6 +19,7 @@ use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\InvalidStateException;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use Mockery;
+use Mockery\MockInterface;
 use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Throwable;
@@ -415,7 +416,7 @@ class UzairAuthControllerTest extends TestCase
         $this->assertSame(0, OauthToken::query()->count());
     }
 
-    public function test_a_callback_with_an_error_parameter_is_handled_gracefully(): void
+    public function test_a_declined_authorization_is_told_as_a_cancellation(): void
     {
         Socialite::shouldReceive('driver')->never();
 
@@ -425,9 +426,33 @@ class UzairAuthControllerTest extends TestCase
         ]));
 
         $response->assertRedirect(url('/'));
-        $response->assertSessionHasErrors(['oauth' => __('uzairid::messages.authentication_failed')]);
+        $response->assertSessionHasErrors(['oauth' => __('uzairid::messages.access_denied')]);
 
         $this->assertGuest();
+    }
+
+    public function test_an_identity_provider_that_failed_is_told_as_an_outage(): void
+    {
+        Socialite::shouldReceive('driver')->never();
+
+        $this->get(route('uzair.callback', ['error' => 'temporarily_unavailable']))
+            ->assertRedirect(url('/'))
+            ->assertSessionHasErrors(['oauth' => __('uzairid::messages.temporarily_unavailable')]);
+    }
+
+    public function test_only_a_known_error_code_reaches_the_log(): void
+    {
+        Log::shouldReceive('warning')
+            ->once()
+            ->with('UzAirports OAuth callback returned an error.', ['oauth_error' => 'invalid_scope']);
+        Log::shouldReceive('warning')
+            ->once()
+            ->with('UzAirports OAuth callback returned an error.', ['oauth_error' => 'other']);
+
+        $this->get(route('uzair.callback', ['error' => 'invalid_scope', 'error_description' => 'secret']))
+            ->assertSessionHasErrors(['oauth' => __('uzairid::messages.authentication_failed')]);
+        $this->get(route('uzair.callback', ['error' => "forged\nline"]))
+            ->assertSessionHasErrors(['oauth' => __('uzairid::messages.authentication_failed')]);
     }
 
     /**
@@ -820,6 +845,59 @@ class UzairAuthControllerTest extends TestCase
 
         $this->assertGuest();
         $this->assertSame(0, $user->tokens()->count());
+    }
+
+    public function test_under_oidc_a_login_is_filed_under_the_identity_providers_session(): void
+    {
+        config(['uzairports.oidc.enabled' => true]);
+
+        $user = TestUser::create(['uzair_id' => '5014', 'name' => 'Federated']);
+        $this->fakeIdentity(['id' => '5014', 'sid' => 'idp-session', 'id_token' => 'the-id-token']);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $login = $user->tokens()->sole();
+
+        $this->assertSame('idp-session', $login->sid);
+        $this->assertSame('the-id-token', $login->readableIdToken());
+    }
+
+    public function test_logout_sends_the_browser_on_to_end_its_session_at_the_identity_provider(): void
+    {
+        config(['uzairports.oidc.enabled' => true, 'uzairports.end_session_endpoint' => '/oauth/logout']);
+
+        $user = TestUser::create(['uzair_id' => '5012', 'name' => 'Leaving Everywhere']);
+        $this->fakeIdentity(['id' => '5012', 'token' => 'this_devices_token']);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $login = $user->tokens()->firstOrFail();
+        $login->forceFill(['id_token' => 'the-id-token'])->save();
+
+        $provider = Socialite::driver('uzairports');
+        $this->assertInstanceOf(MockInterface::class, $provider);
+        $provider->shouldReceive('endSessionUrl')
+            ->with(url('/'), 'the-id-token')
+            ->once()
+            ->andReturn('https://my.uzairports.com/oauth/logout?client_id=test-client-id');
+
+        $this->onTheDeviceHolding($login)
+            ->post(route('uzair.logout'))
+            ->assertRedirect('https://my.uzairports.com/oauth/logout?client_id=test-client-id');
+
+        $this->assertGuest();
+    }
+
+    public function test_logout_keeps_the_identity_providers_session_without_an_end_session_endpoint(): void
+    {
+        $user = TestUser::create(['uzair_id' => '5013', 'name' => 'Leaving Here']);
+        $this->fakeIdentity(['id' => '5013', 'token' => 'this_devices_token']);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $this->onTheDeviceHolding($user->tokens()->firstOrFail())
+            ->post(route('uzair.logout'))
+            ->assertRedirect(url('/'));
     }
 
     public function test_logout_answers_an_api_client_with_204(): void

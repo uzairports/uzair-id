@@ -12,6 +12,7 @@ use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Uzair;
 
 /**
  * Record the grants of a sign-in as one login of the account.
@@ -72,6 +73,14 @@ class RecordLogin
         $token = OauthToken::query()->firstOrNew(['user_id' => $user->getKey(), ...$heldBy]);
 
         $records = (bool) config('uzairports.record_device', true);
+
+        // Written only under OpenID Connect, whose upgrade migration adds them.
+        if (Uzair::oidcEnabled()) {
+            $token->forceFill([
+                'sid' => $uzairUser->attributes['sid'] ?? null,
+                'id_token' => $uzairUser->attributes['id_token'] ?? null,
+            ]);
+        }
 
         $saved = $token->forceFill([
             'user_id' => $user->getKey(),

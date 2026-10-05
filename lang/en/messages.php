@@ -6,6 +6,8 @@ return [
 
     'authentication_failed' => 'Authentication failed. Please try again.',
 
+    'access_denied' => 'Sign-in was cancelled.',
+
     'handshake_lost' => 'The sign-in did not complete because its session was lost. Please start again, in a single tab.',
 
     'session_expired' => 'The UzAirports session has expired.',

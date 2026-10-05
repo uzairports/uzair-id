@@ -218,6 +218,18 @@ class UzairApiAuthControllerTest extends TestCase
         $this->assertSame(1, PersonalAccessToken::query()->count());
     }
 
+    public function test_a_client_that_sends_no_accept_header_is_still_answered_in_json(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7011']);
+        $plainTextToken = $user->createToken('phone')->plainTextToken;
+
+        $this->post(route('uzair.api.token'), $this->exchange(['redirect_uri' => 'https://evil.test/callback']))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('redirect_uri');
+
+        $this->withToken($plainTextToken)->post(route('uzair.api.logout'))->assertNoContent();
+    }
+
     public function test_signing_out_revokes_a_bearer_token_no_login_is_filed_under(): void
     {
         $user = SanctumUser::query()->create(['uzair_id' => '7010']);
