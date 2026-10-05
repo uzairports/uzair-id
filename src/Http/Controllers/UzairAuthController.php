@@ -156,13 +156,16 @@ class UzairAuthController
         $user = $this->authenticated();
 
         if ($user !== null) {
-            Uzair::followRegeneratedSession($request, $user->getAuthIdentifier());
+            $accessTokenId = Uzair::accessTokenId($user);
 
-            $tokens = OauthToken::query()->where('user_id', $user->getAuthIdentifier());
+            if ($accessTokenId === null) {
+                Uzair::followRegeneratedSession($request, $user->getAuthIdentifier());
+            }
 
-            $token = $request->hasSession()
-                ? $tokens->where('session_id', $this->sessionId($request))->first()
-                : $tokens->whereNull('session_id')->latest('id')->first();
+            $token = OauthToken::query()
+                ->where('user_id', $user->getAuthIdentifier())
+                ->heldBy($this->sessionId($request), $accessTokenId)
+                ->first();
 
             if ($token !== null) {
                 $endSessions->end($token);
@@ -228,7 +231,7 @@ class UzairAuthController
             throw new NotFoundHttpException;
         }
 
-        if ($login->session_id !== null && $login->session_id === $this->sessionId($request)) {
+        if ($this->isTheCallersOwn($request, $user, $login)) {
             return $this->logout($request, $endSessions);
         }
 
@@ -240,6 +243,32 @@ class UzairAuthController
     }
 
     /**
+     * Whether a login is the one this request is running on.
+     *
+     * A mobile client is known by its Sanctum token, a browser by its session.
+     * The token is asked first, the way `OauthToken::scopeHeldBy()` asks it.
+     */
+    private function isTheCallersOwn(Request $request, Authenticatable $user, OauthToken $login): bool
+    {
+        $accessTokenId = Uzair::accessTokenId($user);
+
+        if ($accessTokenId !== null) {
+            return $login->personal_access_token_id !== null
+                && (string) $login->personal_access_token_id === (string) $accessTokenId;
+        }
+
+        return $login->session_id !== null && $login->session_id === $this->sessionId($request);
+    }
+
+    /**
+     * The guard these endpoints read the account off.
+     */
+    protected function guardName(): ?string
+    {
+        return Uzair::guard();
+    }
+
+    /**
      * The account the endpoints of this controller answer for.
      *
      * The guard is `uzairports.guard`, and null there is the application's
@@ -247,9 +276,9 @@ class UzairAuthController
      * authenticating through a guard of its own had the callback sign a browser
      * in on the default one and `logout` then find nobody to sign out.
      */
-    private function authenticated(): ?Authenticatable
+    protected function authenticated(): ?Authenticatable
     {
-        $user = app(AuthFactory::class)->guard(Uzair::guard())->user();
+        $user = app(AuthFactory::class)->guard($this->guardName())->user();
 
         if ($user !== null) {
             app(EnsureTokenStorageMatchesProvider::class)->forUser($user);
@@ -300,7 +329,7 @@ class UzairAuthController
      */
     private function sessionGuard(): ?StatefulGuard
     {
-        $guard = app(AuthFactory::class)->guard(Uzair::guard());
+        $guard = app(AuthFactory::class)->guard($this->guardName());
 
         return $guard instanceof StatefulGuard ? $guard : null;
     }
@@ -320,7 +349,7 @@ class UzairAuthController
      *
      * @throws RuntimeException when the authenticated user has no usable key
      */
-    private function accountKey(Authenticatable $user): int|string
+    protected function accountKey(Authenticatable $user): int|string
     {
         $key = $user->getAuthIdentifier();
 
@@ -351,7 +380,7 @@ class UzairAuthController
      * exception, which is the one worth reading; `EndSessions` already reports
      * a revocation that would not go through.
      */
-    private function surrenderIssuedGrants(EndSessions $endSessions, ?SocialiteUser $uzairUser): void
+    protected function surrenderIssuedGrants(EndSessions $endSessions, ?SocialiteUser $uzairUser): void
     {
         if ($uzairUser === null) {
             return;
@@ -524,7 +553,7 @@ class UzairAuthController
      *
      * @throws Throwable
      */
-    private function storeAccount(SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): Authenticatable
+    protected function storeAccount(SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): Authenticatable
     {
         try {
             return $this->writeAccount($uzairUser, $resolveUser);
@@ -812,7 +841,7 @@ class UzairAuthController
      * which is the older behavior and still the honest one — there is nothing
      * left to write.
      */
-    private function expiresAt(SocialiteUser $uzairUser): ?CarbonInterface
+    protected function expiresAt(SocialiteUser $uzairUser): ?CarbonInterface
     {
         // Cast rather than tested: Socialite types `expiresIn` as an int, and
         // an identity provider that sends no `expires_in` leaves it null all
@@ -830,7 +859,7 @@ class UzairAuthController
     /**
      * The session this request belongs to, if it belongs to one at all.
      */
-    private function sessionId(Request $request): ?string
+    protected function sessionId(Request $request): ?string
     {
         return $request->hasSession() ? $request->session()->getId() : null;
     }

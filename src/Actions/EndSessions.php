@@ -18,6 +18,7 @@ use SessionHandlerInterface;
 use Throwable;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
+use Uzairports\Uzairid\Uzair;
 
 class EndSessions
 {
@@ -39,7 +40,13 @@ class EndSessions
      *   rest through their own handler — except `cookie` and `array`, which
      *   hold nothing another browser's session could be dropped from.
      *
-     * Pass `$exceptSessionId` to keep the browser in front of you signed in.
+     * Pass `$exceptSessionId` to keep the browser in front of you signed in, or
+     * `$exceptLoginId` to keep one login by its row — which is how a mobile
+     * client, holding no session to name, is spared.
+     *
+     * A login issued to a mobile client takes its Sanctum token with it, the
+     * way a browser's takes its session: otherwise the client would go on
+     * authenticating on every route not carrying `uzair.token`.
      *
      * `$revoke` is the one part of this that costs a round-trip. The grants go
      * out together rather than one after the next — see `revokeAll()` — so the
@@ -74,17 +81,18 @@ class EndSessions
      *
      * @throws Throwable
      */
-    public function __invoke(int|string $userId, ?string $exceptSessionId = null, bool $revoke = true): int
+    public function __invoke(int|string $userId, ?string $exceptSessionId = null, bool $revoke = true, int|string|null $exceptLoginId = null): int
     {
         $query = OauthToken::query()
             ->where('user_id', $userId)
             ->when($exceptSessionId !== null, fn ($query) => $query->where(
                 fn ($q) => $q->whereNull('session_id')->orWhere('session_id', '!=', $exceptSessionId)
-            ));
+            ))
+            ->when($exceptLoginId !== null, fn ($query) => $query->whereKeyNot($exceptLoginId));
 
         if (! $revoke) {
             $rows = $query->getModel()->getConnection()->transaction(function () use ($query): SupportCollection {
-                $rows = (clone $query)->orderBy('id')->lockForUpdate()->toBase()->get(['id', 'session_id']);
+                $rows = (clone $query)->orderBy('id')->lockForUpdate()->toBase()->get(['id', 'session_id', 'personal_access_token_id']);
 
                 if ($rows->isNotEmpty()) {
                     (clone $query)->whereKey($rows->pluck('id')->all())->delete();
@@ -103,6 +111,7 @@ class EndSessions
 
             $this->deleteStoredSessionsById($sessionIds);
             $this->forgetResolvedLogins($sessionIds);
+            $this->dropAccessTokens($rows->pluck('personal_access_token_id')->all());
 
             return $rows->count();
         }
@@ -111,7 +120,7 @@ class EndSessions
             $locked = $query
                 ->orderBy('id')
                 ->lockForUpdate()
-                ->get(['id', 'user_id', 'session_id', 'access_token', 'refresh_token']);
+                ->get(['id', 'user_id', 'session_id', 'personal_access_token_id', 'access_token', 'refresh_token']);
 
             // Deleted one apiece so the model's own events fire, and only what
             // actually went is carried out of the transaction: a row an
@@ -137,6 +146,7 @@ class EndSessions
         try {
             $this->deleteStoredSessionsById($sessionIds);
             $this->forgetResolvedLogins($sessionIds);
+            $this->dropAccessTokens($tokens->pluck('personal_access_token_id')->all());
         } finally {
             $this->revokeAll($tokens);
         }
@@ -180,6 +190,9 @@ class EndSessions
         /** @var array<string, true> $sessionIds */
         $sessionIds = [];
 
+        /** @var list<int|string> $accessTokenIds */
+        $accessTokenIds = [];
+
         try {
             foreach ($tokens as $token) {
                 $deleted = $token->getConnection()->transaction(function () use ($token): bool {
@@ -204,6 +217,10 @@ class EndSessions
                     $sessionIds[$sessionId] = true;
                 }
 
+                if ($token->personal_access_token_id !== null) {
+                    $accessTokenIds[] = $token->personal_access_token_id;
+                }
+
                 $ended[] = $token;
             }
         } finally {
@@ -211,6 +228,7 @@ class EndSessions
                 try {
                     $this->deleteStoredSessionsById(array_keys($sessionIds));
                     $this->forgetResolvedLogins(array_keys($sessionIds));
+                    $this->dropAccessTokens($accessTokenIds);
                 } finally {
                     $this->revokeAll($ended);
                 }
@@ -235,6 +253,44 @@ class EndSessions
     private function forgetResolvedLogins(array $sessionIds): void
     {
         OauthToken::forgetLogins($sessionIds);
+    }
+
+    /**
+     * Delete the Sanctum tokens the ended logins were issued under.
+     *
+     * The rows are gone by the time any caller reaches this, so a token left
+     * behind would authenticate a client whose login no longer exists. It is
+     * deleted by key, in one statement, through whichever model the
+     * application told Sanctum to use; without Sanctum there is nothing to
+     * delete.
+     *
+     * A failure is reported and never raised, for the reason
+     * `deleteStoredSessionsById()` gives: the rest of the ending — handing the
+     * grants back — must not be skipped over it. `uzair.token` refuses the
+     * client on its next request either way, since its login is gone.
+     *
+     * @param  array<array-key, mixed>  $accessTokenIds
+     */
+    public function dropAccessTokens(array $accessTokenIds): void
+    {
+        $accessTokenIds = array_values(array_unique(array_filter(
+            $accessTokenIds,
+            fn (mixed $id): bool => is_int($id) || (is_string($id) && $id !== ''),
+        )));
+
+        $model = Uzair::accessTokenModel();
+
+        if ($accessTokenIds === [] || $model === null) {
+            return;
+        }
+
+        try {
+            $model::query()->whereKey($accessTokenIds)->delete();
+        } catch (Throwable $e) {
+            Log::warning('Failed to delete the Sanctum token of an ended UzAirports login.', [
+                'exception_class' => $e::class,
+            ]);
+        }
     }
 
     /**

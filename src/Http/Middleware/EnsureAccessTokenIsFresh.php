@@ -74,12 +74,16 @@ class EnsureAccessTokenIsFresh
         app(EnsureTokenStorageMatchesProvider::class)->forUser($user);
 
         $leeway = $this->leewayInSeconds();
+        $accessTokenId = Uzair::accessTokenId($user);
 
-        if ($this->alreadyResolvedAsFresh($request, $user, $leeway)) {
+        // The cached answer is keyed by session, and a mobile client's login is
+        // not filed under one: a Sanctum token sent to a route that also starts
+        // a session must not be let through on that session's login.
+        if ($accessTokenId === null && $this->alreadyResolvedAsFresh($request, $user, $leeway)) {
             return $next($request);
         }
 
-        $token = $this->tokenFor($request, $user);
+        $token = $this->tokenFor($request, $user, $accessTokenId);
 
         if ($token === null) {
             if (! $this->isUzairUser($user) || Uzair::requestIsLocal($request)) {
@@ -97,13 +101,13 @@ class EnsureAccessTokenIsFresh
 
         if (! $token->expiresWithin($leeway)) {
             $token->keepAlive();
-            $this->rememberResolved($request, $token);
+            $this->rememberResolved($request, $token, $accessTokenId);
 
             return $next($request);
         }
 
         if (($this->refreshAccessToken)($token, $leeway)) {
-            $this->rememberResolved($request, $token);
+            $this->rememberResolved($request, $token, $accessTokenId);
 
             return $next($request);
         }
@@ -154,6 +158,10 @@ class EnsureAccessTokenIsFresh
      * The unique pair does not collapse several null session ids, so the most
      * recent of them is taken.
      *
+     * A mobile client authenticated by a Sanctum token is matched by that token
+     * instead, before anything else — see `OauthToken::scopeHeldBy()`. Two
+     * phones of one account hold two rows, and neither is handed the other's.
+     *
      * The session is read off the request this middleware was handed rather
      * than off the global one: they are the same object in an ordinary HTTP
      * request, but nothing guarantees it, and the request in hand is the one
@@ -173,37 +181,38 @@ class EnsureAccessTokenIsFresh
      * hand-off, which left an API client's controller unable to reach a token
      * this method had just resolved for it.
      */
-    private function tokenFor(Request $request, Authenticatable $user): ?OauthToken
+    private function tokenFor(Request $request, Authenticatable $user, int|string|null $accessTokenId): ?OauthToken
     {
         $sessionId = $request->hasSession() ? $request->session()->getId() : null;
 
-        $token = $this->lookUpToken($user, $sessionId);
+        $token = $this->lookUpToken($user, $sessionId, $accessTokenId);
 
-        if ($token === null && $sessionId !== null && Uzair::followRegeneratedSession($request, $user->getAuthIdentifier())) {
-            $token = $this->lookUpToken($user, $sessionId);
+        $followsTheSession = $sessionId !== null && $accessTokenId === null;
+
+        if ($token === null && $followsTheSession && Uzair::followRegeneratedSession($request, $user->getAuthIdentifier())) {
+            $token = $this->lookUpToken($user, $sessionId, null);
         }
 
-        if ($token !== null && $sessionId !== null) {
+        if ($token !== null && $followsTheSession) {
             Uzair::rememberSession($request);
         }
 
         if (method_exists($user, 'rememberCurrentToken')) {
-            $user->rememberCurrentToken($token, $sessionId);
+            $user->rememberCurrentToken($token, $sessionId, $accessTokenId);
         }
 
         return $token;
     }
 
     /**
-     * The account's login for a session id, or for naming none.
+     * The account's login for a Sanctum token, a session id, or for naming neither.
      */
-    private function lookUpToken(Authenticatable $user, ?string $sessionId): ?OauthToken
+    private function lookUpToken(Authenticatable $user, ?string $sessionId, int|string|null $accessTokenId): ?OauthToken
     {
-        $tokens = OauthToken::query()->where('user_id', $user->getAuthIdentifier());
-
-        return $sessionId === null
-            ? $tokens->whereNull('session_id')->latest('id')->first()
-            : $tokens->where('session_id', $sessionId)->first();
+        return OauthToken::query()
+            ->where('user_id', $user->getAuthIdentifier())
+            ->heldBy($sessionId, $accessTokenId)
+            ->first();
     }
 
     /**
@@ -253,9 +262,9 @@ class EnsureAccessTokenIsFresh
      *
      * @throws Throwable
      */
-    private function rememberResolved(Request $request, OauthToken $token): void
+    private function rememberResolved(Request $request, OauthToken $token, int|string|null $accessTokenId): void
     {
-        if ($request->hasSession()) {
+        if ($accessTokenId === null && $request->hasSession()) {
             $token->cacheLogin($request->session()->getId());
         }
     }

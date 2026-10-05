@@ -6,7 +6,22 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`uzair.token` за `auth:sanctum` отвечал `503`.** `auth:sanctum` делает `sanctum` guard'ом по
+  умолчанию, а у него нет provider'а, и `Uzair::userModel()` не находил модель аккаунтов. Теперь
+  для guard'а Sanctum модель берётся у guard'а из `sanctum.guard`.
+
 ### Added
+
+- **Вход мобильного приложения через Sanctum.** `Uzair::apiRoutes()` регистрирует
+  `POST /auth/token`: приложение отдаёт код авторизации, полученный с PKCE, сервер обменивает
+  его с `client_secret` и выдаёт токен Sanctum. Вход записывается под этим токеном (новая
+  колонка `oauth_tokens.personal_access_token_id`, upgrade-миграция
+  `add_personal_access_token_id_to_oauth_tokens_table`), `uzair.token` находит по нему вход
+  своего устройства, а любое завершение входа удаляет и токен Sanctum. `laravel/sanctum` — в
+  `suggest`. У `HasUzairToken` появился `uzairTokens()`, потому что `tokens()` занят
+  `HasApiTokens`. См. `docs/mobile.md`.
 
 - **Guard настраивается.** Всё, что пакет делает с аутентификацией, шло через guard приложения
   по умолчанию и нигде этого не говорило. Приложение со своим guard получало callback, который
@@ -68,6 +83,15 @@
 [Установка → Обновление со старых версий](docs/installation.md).
 
 ### Added
+
+- **Вход мобильного приложения через Sanctum.** `Uzair::apiRoutes()` регистрирует
+  `POST /auth/token`: приложение отдаёт код авторизации, полученный с PKCE, сервер обменивает
+  его с `client_secret` и выдаёт токен Sanctum. Вход записывается под этим токеном (новая
+  колонка `oauth_tokens.personal_access_token_id`, upgrade-миграция
+  `add_personal_access_token_id_to_oauth_tokens_table`), `uzair.token` находит по нему вход
+  своего устройства, а любое завершение входа удаляет и токен Sanctum. `laravel/sanctum` — в
+  `suggest`. У `HasUzairToken` появился `uzairTokens()`, потому что `tokens()` занят
+  `HasApiTokens`. См. `docs/mobile.md`.
 
 - **Маршруты и контроллер.** `Uzair::routes()` в `routes/web.php` регистрирует
   `GET {prefix}/redirect` (имя — значение `login_route`), `GET {prefix}/callback`,

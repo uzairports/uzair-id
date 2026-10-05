@@ -108,7 +108,55 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
             throw new InvalidStateException;
         }
 
-        $response = $this->getAccessTokenResponse($this->getCode());
+        return $this->exchange($this->getCode());
+    }
+
+    /**
+     * Exchange an authorization code a mobile client obtained by itself.
+     *
+     * The client ran the authorization request — with its own `state` and its
+     * own PKCE verifier, against this application's `client_id` — and hands
+     * over the code, the redirect URI it used and the verifier. Nothing of that
+     * is in a session here, so the state is the client's to have checked, and
+     * the verifier is sent as given: without it an intercepted code could be
+     * redeemed through this endpoint by anybody.
+     *
+     * The work is done on a copy. Socialite keeps one driver instance per
+     * process, and the browser flow sharing it must not find a redirect URI or
+     * a verifier left behind by an API request.
+     *
+     * @throws GuzzleException
+     * @throws Throwable
+     */
+    public function userFromCode(string $code, string $redirectUri, ?string $codeVerifier): User
+    {
+        $exchange = clone $this;
+
+        $exchange->user = null;
+        $exchange->stateless = true;
+        $exchange->redirectUrl = $redirectUri;
+        // Socialite would pull the verifier out of a session there is none of.
+        // The client's own goes with the other extra fields of the exchange.
+        $exchange->usesPKCE = false;
+
+        if ($codeVerifier !== null && $codeVerifier !== '') {
+            $exchange->parameters = array_merge($exchange->parameters, ['code_verifier' => $codeVerifier]);
+        }
+
+        return $exchange->exchange($code);
+    }
+
+    /**
+     * Exchange the code and read the profile behind it.
+     *
+     * @param  string  $code  as Socialite reads it off the request, which may be null
+     *
+     * @throws GuzzleException
+     * @throws Throwable
+     */
+    private function exchange($code): User
+    {
+        $response = $this->getAccessTokenResponse($code);
 
         try {
             $profile = $this->getUserByToken($response['access_token']);

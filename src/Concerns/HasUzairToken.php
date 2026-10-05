@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Uzair;
 
 /**
  * The SSO identity behind an account, and the logins it holds.
@@ -44,13 +45,42 @@ trait HasUzairToken
     protected bool $currentTokenWasResolved = false;
 
     /**
-     * Every SSO login the account currently holds — one per browser session.
+     * The Sanctum token `$resolvedCurrentToken` was resolved for, if any.
+     */
+    protected int|string|null $resolvedForAccessTokenId = null;
+
+    /**
+     * Every SSO login the account currently holds — one per browser session or
+     * mobile client.
+     *
+     * Everything in this trait goes through this name rather than `tokens()`,
+     * because Sanctum's `HasApiTokens` declares a `tokens()` of its own. A model
+     * carrying both keeps Sanctum's — `createToken()` relies on it — and reads
+     * its logins here:
+     *
+     * ```php
+     * use HasApiTokens, HasUzairToken {
+     *     HasApiTokens::tokens insteadof HasUzairToken;
+     * }
+     * ```
+     *
+     * @return HasMany<OauthToken, $this>
+     */
+    public function uzairTokens(): HasMany
+    {
+        return $this->hasMany(OauthToken::class, 'user_id');
+    }
+
+    /**
+     * Every SSO login the account currently holds, under its original name.
+     *
+     * Kept for models that do not carry Sanctum; see `uzairTokens()`.
      *
      * @return HasMany<OauthToken, $this>
      */
     public function tokens(): HasMany
     {
-        return $this->hasMany(OauthToken::class, 'user_id');
+        return $this->uzairTokens();
     }
 
     /**
@@ -89,24 +119,27 @@ trait HasUzairToken
      * it is the answer the middleware acts on, and re-reading it would mean a
      * query on every ask.
      *
-     * The unique pair does not collapse several null session ids, so the most
-     * recent of them is taken — the same rule `uzair.token` goes by.
+     * A mobile client is answered by the login filed under the Sanctum token it
+     * authenticated with — see `OauthToken::scopeHeldBy()`, which is the rule
+     * `uzair.token` goes by as well.
      */
     public function currentToken(): ?OauthToken
     {
         app(EnsureTokenStorageMatchesProvider::class)->forUser($this);
 
         $sessionId = $this->currentSessionId();
+        $accessTokenId = Uzair::accessTokenId($this);
 
-        if ($this->currentTokenWasResolved && $this->resolvedForSessionId === $sessionId) {
+        if ($this->currentTokenWasResolved
+            && $this->resolvedForSessionId === $sessionId
+            && $this->resolvedForAccessTokenId === $accessTokenId) {
             return $this->resolvedCurrentToken;
         }
 
-        $token = $sessionId === null
-            ? $this->tokens()->whereNull('session_id')->latest('id')->first()
-            : $this->tokens()->firstWhere('session_id', $sessionId);
+        /** @var OauthToken|null $token */
+        $token = $this->uzairTokens()->heldBy($sessionId, $accessTokenId)->first();
 
-        $this->rememberCurrentToken($token, $sessionId);
+        $this->rememberCurrentToken($token, $sessionId, $accessTokenId);
 
         return $token;
     }
@@ -124,10 +157,11 @@ trait HasUzairToken
      * middleware resolved a sessionless request against, and dropping it here
      * was what made an API client pay a query for a lookup already made.
      */
-    public function rememberCurrentToken(?OauthToken $token, ?string $sessionId): static
+    public function rememberCurrentToken(?OauthToken $token, ?string $sessionId, int|string|null $accessTokenId = null): static
     {
         $this->resolvedCurrentToken = $token;
         $this->resolvedForSessionId = $sessionId;
+        $this->resolvedForAccessTokenId = $accessTokenId;
         $this->currentTokenWasResolved = true;
 
         return $this;

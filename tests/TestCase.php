@@ -161,6 +161,7 @@ abstract class TestCase extends Orchestra
         Schema::disableForeignKeyConstraints();
 
         Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('personal_access_tokens');
         Schema::dropIfExists('sessions');
         Schema::dropIfExists('users');
 
@@ -181,6 +182,7 @@ abstract class TestCase extends Orchestra
             $table->text('refresh_token')->nullable();
             $table->timestamp('expires_at')->nullable();
             $table->string('session_id')->nullable();
+            $table->unsignedBigInteger('personal_access_token_id')->nullable()->unique();
             $table->string('ip_address', 45)->nullable();
             $table->text('user_agent')->nullable();
             $table->timestamps();
@@ -188,6 +190,17 @@ abstract class TestCase extends Orchestra
             $table->unique(['user_id', 'session_id']);
             $table->index('updated_at');
             $table->index('session_id');
+        });
+
+        Schema::create('personal_access_tokens', function (Blueprint $table) {
+            $table->id();
+            $table->morphs('tokenable');
+            $table->text('name');
+            $table->string('token', 64)->unique();
+            $table->text('abilities')->nullable();
+            $table->timestamp('last_used_at')->nullable();
+            $table->timestamp('expires_at')->nullable()->index();
+            $table->timestamps();
         });
 
         Schema::create('sessions', function (Blueprint $table) {

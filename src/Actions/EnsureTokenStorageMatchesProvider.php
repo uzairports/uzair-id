@@ -57,6 +57,12 @@ class EnsureTokenStorageMatchesProvider
             return 'The UzAirports token table is missing. Publish and run the package migrations.';
         }
 
+        // Every lookup names this column, so a table predating it would answer
+        // the first request with a database error instead of this line.
+        if (! $schema->hasColumn($token->getTable(), 'personal_access_token_id')) {
+            return 'The UzAirports token table predates personal_access_token_id. Run php artisan vendor:publish --tag=uzairid-upgrade-migrations and php artisan migrate.';
+        }
+
         [$expectedSchema, $expectedTable] = $schema->parseSchemaAndTable($user->getTable(), withDefaultSchema: true);
         $expected = $connection->getTablePrefix().$expectedTable;
 

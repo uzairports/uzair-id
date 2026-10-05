@@ -42,6 +42,9 @@ php artisan vendor:publish --tag=uzairid-config
 | `link_by_email` | `UZAIR_LINK_BY_EMAIL` | `false` | Связывать ли старые локальные аккаунты по email |
 | `routes.prefix` | `UZAIR_ROUTE_PREFIX` | `auth` | Префикс маршрутов пакета |
 | `routes.throttle` | `UZAIR_ROUTE_THROTTLE` | `60,1` | Лимит запросов на SSO-эндпоинты (`попыток,минут`), на браузер |
+| `api.prefix` | `UZAIR_API_ROUTE_PREFIX` | `auth` | Префикс маршрутов `Uzair::apiRoutes()` (внутри `routes/api.php`) |
+| `api.guard` | `UZAIR_API_GUARD` | `sanctum` | Guard, которым аутентифицируются токены мобильных клиентов |
+| `api.redirect_uris` | `UZAIR_API_REDIRECT_URIS` | — | Redirect URI мобильных клиентов через запятую; пусто — обмен кода отклоняется |
 | `routes.ip_throttle` | `UZAIR_ROUTE_IP_THROTTLE` | `120,1` | Потолок запросов на адрес (`попыток,минут`) для защиты от ротации cookie |
 | `timeout` | `UZAIR_TIMEOUT` | `10` | Таймаут HTTP-запросов к SSO (сек) |
 | `connect_timeout` | `UZAIR_CONNECT_TIMEOUT` | `5` | Таймаут соединения с SSO (сек) |

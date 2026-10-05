@@ -44,6 +44,12 @@ return new class extends Migration
      * `session_id` is nullable because a token can be issued outside a session
      * — an API client, a console command.
      *
+     * `personal_access_token_id` names the Sanctum token a mobile client was
+     * handed for its login, which is what such a client is told apart by in
+     * place of a session. It is unique — one Sanctum token is one login — and
+     * deliberately not a foreign key: Sanctum is optional, and a cascade would
+     * end the login underneath `EndSessions` without surrendering its grant.
+     *
      * `ip_address` and `user_agent` are what a person recognizes their own
      * device by when they are shown the list of their logins.
      *
@@ -74,6 +80,7 @@ return new class extends Migration
             $table->text('refresh_token')->nullable();
             $table->timestamp('expires_at')->nullable();
             $table->string('session_id')->nullable();
+            $table->unsignedBigInteger('personal_access_token_id')->nullable()->unique();
             $table->string('ip_address', 45)->nullable();
             $table->text('user_agent')->nullable();
             $table->timestamps();

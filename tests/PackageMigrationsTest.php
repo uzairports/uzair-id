@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
+use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 
 /**
  * @method void up()
@@ -75,15 +76,47 @@ class PackageMigrationsTest extends TestCase
     {
         $before = $this->shapeOfOauthTokens();
 
-        foreach (['make_oauth_tokens_per_session', 'add_session_id_to_oauth_tokens_table'] as $migration) {
+        foreach (['make_oauth_tokens_per_session', 'add_session_id_to_oauth_tokens_table', 'add_personal_access_token_id_to_oauth_tokens_table'] as $migration) {
             $this->migration($migration)->up();
             $this->migration($migration)->down();
         }
 
         $this->assertSame($before, $this->shapeOfOauthTokens());
-        $this->assertTrue(Schema::hasColumns('oauth_tokens', ['session_id', 'ip_address', 'user_agent']));
+        $this->assertTrue(Schema::hasColumns('oauth_tokens', ['session_id', 'personal_access_token_id', 'ip_address', 'user_agent']));
         $this->assertTrue($this->hasIndexOn('oauth_tokens', ['user_id', 'session_id']));
         $this->assertFalse($this->hasIndexOn('oauth_tokens', ['user_id']));
+    }
+
+    public function test_a_token_table_without_the_sanctum_token_column_is_reported_instead_of_queried(): void
+    {
+        Schema::table('oauth_tokens', function (Blueprint $table): void {
+            $table->dropUnique(['personal_access_token_id']);
+            $table->dropColumn('personal_access_token_id');
+        });
+
+        $this->assertStringContainsString(
+            'uzairid-upgrade-migrations',
+            (string) app(EnsureTokenStorageMatchesProvider::class)->problem(),
+        );
+    }
+
+    public function test_the_sanctum_token_column_is_added_to_a_table_without_it_and_rolled_back_off_it(): void
+    {
+        Schema::table('oauth_tokens', function (Blueprint $table): void {
+            $table->dropUnique(['personal_access_token_id']);
+            $table->dropColumn('personal_access_token_id');
+        });
+
+        $before = $this->shapeOfOauthTokens();
+
+        $this->migration('add_personal_access_token_id_to_oauth_tokens_table')->up();
+
+        $this->assertTrue(Schema::hasColumn('oauth_tokens', 'personal_access_token_id'));
+        $this->assertTrue($this->hasIndexOn('oauth_tokens', ['personal_access_token_id']));
+
+        $this->migration('add_personal_access_token_id_to_oauth_tokens_table')->down();
+
+        $this->assertSame($before, $this->shapeOfOauthTokens());
     }
 
     /**

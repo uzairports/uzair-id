@@ -264,6 +264,40 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Mobile Clients (Sanctum Tokens)
+    |--------------------------------------------------------------------------
+    |
+    | Defaults for the routes `Uzair::apiRoutes()` registers, through which a
+    | mobile client trades an authorization code it obtained itself for a
+    | Sanctum token. The code is exchanged here, with the client secret, so the
+    | refresh token never leaves the server and `uzair.token` keeps renewing it.
+    |
+    | `redirect_uris` lists the redirect URIs a client may say it used — a
+    | comma-separated list in the environment, such as `myapp://auth/callback`.
+    | Every one of them has to be registered for this client at UzAirports ID.
+    | Empty, every exchange is refused: an unlisted URI is not something to
+    | pass on to the identity provider on a client's word.
+    |
+    | `guard` is the guard that authenticates those tokens, and the one the
+    | endpoints read the account off.
+    |
+    */
+
+    'api' => [
+
+        'prefix' => env('UZAIR_API_ROUTE_PREFIX', 'auth'),
+
+        'guard' => env('UZAIR_API_GUARD', 'sanctum'),
+
+        'redirect_uris' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('UZAIR_API_REDIRECT_URIS', '')),
+        ))),
+
+    ],
+
+    /*
+    |--------------------------------------------------------------------------
     | Single Active Session
     |--------------------------------------------------------------------------
     |

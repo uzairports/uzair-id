@@ -45,11 +45,15 @@
     "require-dev": {
         "larastan/larastan": "^3.11",
         "laravel/pint": "^1.31",
+        "laravel/sanctum": "^4.2",
         "mockery/mockery": "^1.6.15",
         "orchestra/testbench": "^11.2",
         "pestphp/pest": "^5.1",
         "pestphp/pest-plugin-laravel": "^5.0",
         "pestphp/pest-plugin-phpstan": "^5.2"
+    },
+    "suggest": {
+        "laravel/sanctum": "Required to issue tokens to mobile clients through Uzair::apiRoutes() (^4.2)."
     },
     "autoload": {
         "psr-4": {

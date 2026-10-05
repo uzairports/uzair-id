@@ -72,6 +72,39 @@ class UzairportsProviderTest extends TestCase
         ], $provider->getAccessTokenResponse('authorization-code'));
     }
 
+    public function test_a_clients_code_is_exchanged_with_its_own_verifier_and_redirect_uri_without_a_session(): void
+    {
+        $stack = HandlerStack::create(new MockHandler([
+            function (RequestInterface $request): Response {
+                parse_str((string) $request->getBody(), $fields);
+
+                $this->assertSame('authorization_code', $fields['grant_type']);
+                $this->assertSame('test-secret', $fields['client_secret']);
+                $this->assertSame('client-code', $fields['code']);
+                $this->assertSame('uzapp://auth/callback', $fields['redirect_uri']);
+                $this->assertSame('client-verifier', $fields['code_verifier']);
+
+                return new Response(200, [], '{"access_token":"access","refresh_token":"refresh","expires_in":3600}');
+            },
+            new Response(200, [], '{"id":"42","name":"Pilot"}'),
+        ]));
+        $request = Request::create('/');
+        $request->setLaravelSession(app('session.store'));
+        $provider = new UzairportsProvider($request, 'test-client', 'test-secret', 'https://app.test/callback', ['handler' => $stack]);
+        $provider->enablePKCE();
+
+        $user = $provider->userFromCode('client-code', 'uzapp://auth/callback', 'client-verifier');
+
+        $this->assertSame('42', $user->getId());
+        $this->assertSame('refresh', $user->refreshToken);
+
+        // The instance Socialite keeps for the browser flow is left as it was.
+        $this->assertStringContainsString(
+            'redirect_uri='.urlencode('https://app.test/callback'),
+            $provider->stateless()->redirect()->getTargetUrl(),
+        );
+    }
+
     public function test_provider_generates_auth_url(): void
     {
         $provider = $this->provider();

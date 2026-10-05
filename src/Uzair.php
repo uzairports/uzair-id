@@ -8,9 +8,11 @@ use Illuminate\Http\Request;
 use Illuminate\Routing\Route as RegisteredRoute;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
+use Laravel\Sanctum\Sanctum;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
+use Uzairports\Uzairid\Http\Controllers\UzairApiAuthController;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Models\OauthToken;
 
@@ -68,7 +70,7 @@ class Uzair
      */
     public static function userModel(): string
     {
-        $guard = self::guard() ?? config('auth.defaults.guard');
+        $guard = self::accountGuard(self::guard() ?? config('auth.defaults.guard'));
         $provider = is_string($guard) ? config("auth.guards.{$guard}.provider") : null;
         $model = is_string($provider) ? config("auth.providers.{$provider}.model") : null;
 
@@ -77,6 +79,97 @@ class Uzair
         }
 
         return $model;
+    }
+
+    /**
+     * The guard whose provider names the accounts behind the given one.
+     *
+     * Sanctum's guard has no provider of its own — it is null in Sanctum's
+     * configuration on purpose — and reads accounts through the guards listed
+     * in `sanctum.guard`. A route behind `auth:sanctum` makes it the default
+     * guard for the rest of the request, so without this every such route
+     * carrying `uzair.token` was answered with a 503.
+     */
+    private static function accountGuard(mixed $guard): mixed
+    {
+        if (! is_string($guard)
+            || config("auth.guards.{$guard}.driver") !== 'sanctum'
+            || config("auth.guards.{$guard}.provider") !== null) {
+            return $guard;
+        }
+
+        $guards = (array) config('sanctum.guard', ['web']);
+
+        return $guards[array_key_first($guards)] ?? $guard;
+    }
+
+    /**
+     * The guard that authenticates the Sanctum tokens issued to mobile clients.
+     *
+     * The endpoints `apiRoutes()` registers read the account off it, the way
+     * the browser endpoints read it off `guard()`.
+     */
+    public static function apiGuard(): string
+    {
+        $guard = config('uzairports.api.guard', 'sanctum');
+
+        return is_string($guard) && $guard !== '' ? $guard : 'sanctum';
+    }
+
+    /**
+     * The redirect URIs a mobile client may say it obtained its code with.
+     *
+     * @return list<string>
+     */
+    public static function apiRedirectUris(): array
+    {
+        $uris = config('uzairports.api.redirect_uris', []);
+
+        if (! is_array($uris)) {
+            return [];
+        }
+
+        return array_values(array_filter($uris, fn (mixed $uri): bool => is_string($uri) && $uri !== ''));
+    }
+
+    /**
+     * The Sanctum token model, or null where Sanctum is not installed.
+     *
+     * Sanctum is suggested rather than required, so it is looked for by name and
+     * nothing in the package refers to it otherwise. An application that swapped
+     * the model through `Sanctum::usePersonalAccessTokenModel()` is answered with
+     * its own.
+     *
+     * @return class-string<Model>|null
+     */
+    public static function accessTokenModel(): ?string
+    {
+        return class_exists(Sanctum::class) ? Sanctum::personalAccessTokenModel() : null;
+    }
+
+    /**
+     * The key of the Sanctum token the account authenticated this request with.
+     *
+     * A mobile client's login is filed under that token, as a browser's is filed
+     * under its session. Null for anything else: a session, a console command,
+     * and Sanctum's own `TransientToken` — which is what an SPA authenticated by
+     * its session cookie carries, and which names no row at all.
+     */
+    public static function accessTokenId(?Authenticatable $user): int|string|null
+    {
+        if ($user === null || ! method_exists($user, 'currentAccessToken')) {
+            return null;
+        }
+
+        $token = $user->currentAccessToken();
+
+        if (! $token instanceof Model || ! $token->exists) {
+            return null;
+        }
+
+        $key = $token->getKey();
+
+        return is_int($key) || is_string($key) ? $key : null;
     }
 
     public static function accountMatchesProvider(Authenticatable $user): bool
@@ -480,6 +573,50 @@ class Uzair
         if ($redirect instanceof RegisteredRoute) {
             self::reportIfTheNameIsTakenElsewhere($redirect, $loginRoute, $controller);
         }
+    }
+
+    /**
+     * Register the endpoints a mobile client signs in and out through.
+     *
+     * Call this from the application's `routes/api.php`: the client holds no
+     * session and no CSRF token, and authenticates with the Sanctum token
+     * `token` hands it. The browser endpoints of `routes()` stay where they are,
+     * so an SPA signed in by its session cookie is not affected.
+     *
+     * The client runs the authorization request itself — with PKCE, against the
+     * same `client_id` — and posts the code here. The exchange is made with the
+     * client secret, so the refresh token stays on the server.
+     *
+     * The routes sit behind the same `uzairid` limiter as the browser ones; the
+     * options are the same as there.
+     *
+     * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string}  $options
+     */
+    public static function apiRoutes(array $options = []): void
+    {
+        $prefix = $options['prefix'] ?? config('uzairports.api.prefix', 'auth');
+        $throttle = array_key_exists('throttle', $options) ? $options['throttle'] : 'uzairid';
+        $controller = $options['controller'] ?? UzairApiAuthController::class;
+
+        $group = Route::prefix(is_string($prefix) ? $prefix : 'auth');
+
+        $middleware = (array) ($options['middleware'] ?? []);
+
+        if (is_string($throttle) && $throttle !== '') {
+            $middleware[] = "throttle:{$throttle}";
+        }
+
+        if (! empty($middleware)) {
+            $group->middleware($middleware);
+        }
+
+        $group->group(function () use ($controller): void {
+            Route::post('token', [$controller, 'token'])->name('uzair.api.token');
+            Route::post('logout', [$controller, 'logout'])->name('uzair.api.logout');
+            Route::post('logout-device/{token}', [$controller, 'logoutDevice'])
+                ->whereNumber('token')
+                ->name('uzair.api.logoutDevice');
+        });
     }
 
     /**

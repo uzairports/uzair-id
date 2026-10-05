@@ -176,7 +176,7 @@ access- и refresh-токена выполняются независимо, п�
 ## Список активных входов
 
 ```blade
-@foreach ($user->tokens as $login)
+@foreach ($user->uzairTokens as $login)
     {{ $login->deviceLabel() }} · {{ $login->ip_address }} · {{ $login->created_at }}
     @if ($login->is($user->currentToken())) (это устройство) @endif
 @endforeach
@@ -252,4 +252,4 @@ UZAIR_SINGLE_SESSION=true
 
 ---
 
-Далее: [События](events.md)
+Далее: [Мобильное приложение](mobile.md)

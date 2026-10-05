@@ -36,6 +36,7 @@ use Uzairports\Uzairid\Uzair;
  * @property string|null $refresh_token
  * @property Carbon|null $expires_at
  * @property string|null $session_id
+ * @property int|string|null $personal_access_token_id
  * @property string|null $ip_address
  * @property string|null $user_agent
  * @property Carbon|null $created_at
@@ -126,6 +127,39 @@ class OauthToken extends Model
     }
 
     /**
+     * Narrow a query to the login held by one caller.
+     *
+     * A caller is one of three things, asked in this order:
+     *
+     * - A mobile client, named by the Sanctum token it authenticated with. It
+     *   comes first because a token may be sent to a route that also starts a
+     *   session, and that session is not what the login was filed under;
+     * - A browser, named by its session;
+     * - Anything else holding no session — a console command, an integration
+     *   given a row by hand — which is matched only against logins naming
+     *   neither, so it never borrows a phone's grant. The unique pair does not
+     *   collapse several such rows, so the most recent is taken.
+     *
+     * @param  Builder<OauthToken>  $query
+     */
+    public function scopeHeldBy(Builder $query, ?string $sessionId, int|string|null $accessTokenId = null): void
+    {
+        if ($accessTokenId !== null) {
+            $query->where('personal_access_token_id', $accessTokenId);
+
+            return;
+        }
+
+        if ($sessionId !== null) {
+            $query->where('session_id', $sessionId);
+
+            return;
+        }
+
+        $query->whereNull('session_id')->whereNull('personal_access_token_id')->latest('id');
+    }
+
+    /**
      * @return BelongsTo<Model, $this>
      */
     public function user(): BelongsTo
@@ -173,7 +207,14 @@ class OauthToken extends Model
      * on a timer. Those are ended deliberately, through `uzair.logoutDevice` or
      * `EndSessions`, the way a credential is.
      *
-     * The two are one bracketed group, not two clauses side by side. Callers
+     * A mobile client's login goes the moment its Sanctum token does. The token
+     * may expire under `sanctum.expiration`, or be deleted by the application
+     * or by `sanctum:prune-expired`, and nothing of this package hears about
+     * it: the row would otherwise keep its refresh token, and so its grant, for
+     * good. The check is a subquery, so it assumes the tokens live on the same
+     * connection as the logins, which is how Sanctum ships.
+     *
+     * The measures are one bracketed group, not clauses side by side. Callers
      * narrow this query further — `deleteForPruning()` adds `whereKey()` — and
      * `A OR B AND key = ?` is not what any of them mean.
      *
@@ -191,6 +232,8 @@ class OauthToken extends Model
     public function prunable(): Builder
     {
         $abandoned = now()->subMinutes(self::sessionLifetime() * 2);
+        $accessTokenModel = Uzair::accessTokenModel();
+        $accessToken = $accessTokenModel !== null ? new $accessTokenModel : null;
 
         return $this->newQuery()->where(
             fn (Builder $query) => $query
@@ -213,7 +256,26 @@ class OauthToken extends Model
                                 ->orWhere('expires_at', '<', now())
                         )
                 )
+                ->when($accessToken, fn (Builder $query, Model $accessToken) => $query->orWhere(
+                    fn (Builder $orphaned) => $this->withoutItsAccessToken($orphaned, $accessToken)
+                ))
         );
+    }
+
+    /**
+     * Narrow to the logins whose Sanctum token is no longer there.
+     *
+     * @param  Builder<covariant OauthToken>  $query
+     */
+    private function withoutItsAccessToken(Builder $query, Model $accessToken): void
+    {
+        $query
+            ->whereNotNull('personal_access_token_id')
+            ->whereNotExists(
+                fn ($tokens) => $tokens
+                    ->from($accessToken->getTable())
+                    ->whereColumn($accessToken->getQualifiedKeyName(), $this->qualifyColumn('personal_access_token_id'))
+            );
     }
 
     protected static ?EndSessions $pruner = null;
@@ -293,6 +355,9 @@ class OauthToken extends Model
         /** @var array<string, true> $sessionIds */
         $sessionIds = [];
 
+        /** @var list<int|string> $accessTokenIds */
+        $accessTokenIds = [];
+
         try {
             foreach ($tokens as $token) {
                 try {
@@ -312,10 +377,15 @@ class OauthToken extends Model
                 if (is_string($sessionId) && $sessionId !== '') {
                     $sessionIds[$sessionId] = true;
                 }
+
+                if ($token->personal_access_token_id !== null) {
+                    $accessTokenIds[] = $token->personal_access_token_id;
+                }
             }
         } finally {
             try {
                 static::forgetLogins(array_keys($sessionIds));
+                (static::$pruner ??= app(EndSessions::class))->dropAccessTokens($accessTokenIds);
             } finally {
                 if ($pruned !== [] && config('uzairports.revoke_on_prune', true)) {
                     (static::$pruner ??= app(EndSessions::class))->surrenderAll($pruned);
@@ -341,6 +411,10 @@ class OauthToken extends Model
 
         try {
             static::forgetLogin($this->session_id);
+
+            if ($this->personal_access_token_id !== null) {
+                (static::$pruner ??= app(EndSessions::class))->dropAccessTokens([$this->personal_access_token_id]);
+            }
         } finally {
             if (config('uzairports.revoke_on_prune', true)) {
                 (static::$pruner ??= app(EndSessions::class))->surrender($this);
