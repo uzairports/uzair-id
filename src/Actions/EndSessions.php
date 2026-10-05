@@ -25,57 +25,23 @@ class EndSessions
     /**
      * End the account's logins, optionally sparing one.
      *
-     * Three things have to go for a device to actually be signed out, and each
-     * covers a gap the others leave:
+     * Ending a login does three things:
      *
-     * - The token is revoked at UzAirports ID. Without this the device is only
-     *   sent back through `login`, where the identity provider — which still
-     *   holds a session for that browser — answers with a fresh authorization
-     *   code and lets it straight back in;
-     * - The row is deleted, so `uzair.token` refuses that session on its next
-     *   request whatever the session driver is;
-     * - The session itself is deleted from the store, so a device that never
-     *   reaches the middleware loses its session too. Every driver that keeps a
-     *   session somewhere is reached — the database one by a statement, the
-     *   rest through their own handler — except `cookie` and `array`, which
-     *   hold nothing another browser's session could be dropped from.
+     * - revokes its grants at UzAirports ID, so the identity provider cannot
+     *   silently sign the device back in;
+     * - deletes the row, so `uzair.token` refuses the session on its next request;
+     * - drops the stored session (database table or session handler) and, for a
+     *   mobile login, its Sanctum token, so routes without `uzair.token` refuse it too.
      *
-     * Pass `$exceptSessionId` to keep the browser in front of you signed in, or
-     * `$exceptLoginId` to keep one login by its row — which is how a mobile
-     * client, holding no session to name, is spared.
+     * `$exceptSessionId` spares the current browser; `$exceptLoginId` spares one
+     * login by its row, which is how a mobile client is spared.
      *
-     * A login issued to a mobile client takes its Sanctum token with it, the
-     * way a browser's takes its session: otherwise the client would go on
-     * authenticating on every route not carrying `uzair.token`.
-     *
-     * `$revoke` is the one part of this that costs a round-trip. The grants go
-     * out together rather than one after the next — see `revokeAll()` — so the
-     * wait is the slowest of them and not the sum, but it is still a wait on an
-     * identity provider, and there is no telling in advance how many logins an
-     * account holds. Where it is being paid by a browser — signing in under
-     * `single_session` — it can be given up. The first two steps still happen,
-     * so the account is signed out here either way; what is surrendered is the
-     * promise that its grants stop being honored at UzAirports ID before they
-     * expire on their own.
-     *
-     * On the revoking path the rows are deleted one apiece, the way `endAll()`
-     * and the pruning sweep delete them, so anything observing the model hears
-     * about every login that ends here. It used to be one statement for all of
-     * them, which is an Eloquent builder delete and fires nothing: an
-     * application auditing logouts through an observer saw every ending except
-     * the ones `single_session` made, which are the ones nobody asked for and
-     * so the ones most worth hearing about. The models are hydrated for their
-     * grants anyway, so what this costs is a statement per row inside the one
-     * transaction already holding them all locked.
-     *
-     * A row a `deleting` observer refuses is left standing, and its grant is
-     * not surrendered — the login is still there to spend it.
-     *
-     * When revocation is declined, there are no models at all: the rows go in
-     * one statement, and the session ids are plucked without hydrating Eloquent
-     * or decrypting a credential. That is the whole point of asking for that
-     * path, and it is the one ending in this package that model observers do
-     * not hear about.
+     * With `$revoke`, rows are deleted one by one so model events fire, and only
+     * rows that actually deleted have their grants revoked: a row a `deleting`
+     * observer refuses keeps its grant. With `$revoke = false` the rows go in a
+     * single statement without hydrating models or decrypting credentials; this
+     * path is deliberately invisible to model observers. The local sign-out
+     * happens either way.
      *
      * @return int the number of logins ended
      *
@@ -122,9 +88,7 @@ class EndSessions
                 ->lockForUpdate()
                 ->get(['id', 'user_id', 'session_id', 'personal_access_token_id', 'access_token', 'refresh_token']);
 
-            // Deleted one apiece so the model's own events fire, and only what
-            // actually went is carried out of the transaction: a row an
-            // observer refused still holds its grant.
+            // One delete per row so model events fire; only deleted rows are revoked.
             return $locked
                 ->filter(fn (OauthToken $token): bool => $token->delete() === true)
                 ->values();
@@ -139,10 +103,7 @@ class EndSessions
             }
         }
 
-        // The rows are committed by the time this runs, so the grants they held
-        // have nothing left pointing at them: whatever the cleanup before it
-        // does, the revocation is the last chance to stop the identity provider
-        // honoring them. `endAll()` holds the same guarantee the same way.
+        // The rows are already deleted, so revocation must run even if cleanup fails.
         try {
             $this->deleteStoredSessionsById($sessionIds);
             $this->forgetResolvedLogins($sessionIds);
@@ -165,18 +126,11 @@ class EndSessions
     }
 
     /**
-     * End several named logins, paying one wait for all of their grants.
+     * End several named logins, revoking all of their grants in one batch.
      *
-     * `end()` in a loop would settle each login's revocations on its own, so a
-     * caller holding a handful of rows waited out one batch after the next when
-     * none of those calls decides any of the others. Here the rows go first —
-     * each by its own delete, so anything observing the model still hears about
-     * it — and every grant they held is handed back together.
-     *
-     * The sessions they named are dropped in one statement rather than one
-     * apiece, and a session named twice is dropped once: rows found by session
-     * id may belong to different accounts, and the same id would otherwise be
-     * deleted from the store as many times as there are accounts holding it.
+     * Each row is deleted on its own so model events fire. Session ids are
+     * deduplicated, since rows of different accounts may share one. Cleanup and
+     * revocation still run for rows already deleted if a later deletion throws.
      *
      * @param  iterable<array-key, OauthToken>  $tokens
      *
@@ -237,16 +191,10 @@ class EndSessions
     }
 
     /**
-     * Stop the ended logins standing in for rows that are no longer there.
+     * Forget the cached logins of the ended sessions.
      *
-     * `uzair.token` may let a request through on what it last resolved for a
-     * session, so a login ended here has to take that answer with it — the
-     * device would otherwise keep being let through until the entry lapsed.
-     *
-     * The model reports a store that will not answer rather than raising it:
-     * the rows are already gone by the time any caller reaches this, and what
-     * follows — dropping the sessions, surrendering the grants — must not be
-     * skipped over a cache.
+     * Otherwise `uzair.token` keeps trusting the cache until it expires. Cache
+     * failures are reported by the model, never raised.
      *
      * @param  array<array-key, string>  $sessionIds
      */
@@ -258,16 +206,9 @@ class EndSessions
     /**
      * Delete the Sanctum tokens the ended logins were issued under.
      *
-     * The rows are gone by the time any caller reaches this, so a token left
-     * behind would authenticate a client whose login no longer exists. It is
-     * deleted by key, in one statement, through whichever model the
-     * application told Sanctum to use; without Sanctum there is nothing to
-     * delete.
-     *
-     * A failure is reported and never raised, for the reason
-     * `deleteStoredSessionsById()` gives: the rest of the ending — handing the
-     * grants back — must not be skipped over it. `uzair.token` refuses the
-     * client on its next request either way, since its login is gone.
+     * Deleted by key in one statement through the application's Sanctum token
+     * model; a no-op without Sanctum. Failures are reported, never raised, so
+     * revocation is not skipped.
      *
      * @param  array<array-key, mixed>  $accessTokenIds
      */
@@ -294,12 +235,9 @@ class EndSessions
     }
 
     /**
-     * Give a login's grant up at the identity provider, leaving the row alone.
+     * Revoke a login's grants at the identity provider, leaving the row alone.
      *
-     * This is what pruning needs. The sweep deletes the row itself. The
-     * store collected the session it named long before the sweep
-     * reached it — so all that is left is to stop the identity provider
-     * honoring a grant nobody is holding anymore.
+     * Used by pruning, which deletes the row itself.
      */
     public function surrender(OauthToken $token): void
     {
@@ -307,20 +245,12 @@ class EndSessions
     }
 
     /**
-     * Hand back grants that no row was ever written for.
+     * Revoke grants that were issued but never stored.
      *
-     * A sign-in exchanges the authorization code before anything can be stored,
-     * so a handshake that fails between those two moments is holding a live
-     * access token and a live refresh token that nothing will ever point at:
-     * there is no row for the account to end and none for `model:prune` to
-     * sweep, and they would stay honored at UzAirports ID until they expired on
-     * their own. Both places that can be left holding them — the driver, when
-     * the profile request fails, and the controller, when the account or the
-     * login cannot be written — hand them here.
-     *
-     * The values go onto an unsaved model because that is what the revocation
-     * path reads them off, and the encrypted casts round-trip them unchanged.
-     * Nothing is written and nothing is deleted.
+     * Called when sign-in fails after the code exchange (profile request, or
+     * writing the account or login), since no row exists for anything to end.
+     * The values go onto an unsaved model only because revocation reads them
+     * from one; nothing is written.
      */
     public function surrenderIssued(mixed $accessToken, mixed $refreshToken): void
     {
@@ -337,14 +267,7 @@ class EndSessions
     }
 
     /**
-     * Give several logins' grants up at once, leaving their rows alone.
-     *
-     * `surrender()` settles its own revocations, so a sweep calling it per row
-     * waited out one batch after the next: a command dropping thousands of
-     * rows spent a revocation timeout on each of them, in turn, and the sweep
-     * took as long as the sum of them all. A whole chunk goes on the wire
-     * together here and is waited on once — the same bargain every other bulk
-     * path in this package already makes.
+     * Revoke several logins' grants in one batch, leaving their rows alone.
      *
      * @param  iterable<array-key, OauthToken>  $tokens
      */
@@ -354,24 +277,11 @@ class EndSessions
     }
 
     /**
-     * Hand every grant back at once and wait for the answers together.
+     * Revoke every grant concurrently and wait once for all of them.
      *
-     * Each revocation carries the provider's revocation timeout, and there are
-     * up to two per login. Waited on one at a time they add up along both axes:
-     * an account on a dozen devices spent up to two dozen timeouts inside the
-     * request a browser was holding, and even a single logout paid the access
-     * token's wait and the refresh token's wait end to end. None of those calls
-     * decides any of the others, so they go on the wire together and the caller
-     * waits once — for the slowest, not for the sum.
-     *
-     * `revocation_concurrency` bounds how many are in flight at a time, so a
-     * sweep of an account with an unusual number of logins does not open an
-     * unbounded number of sockets at once.
-     *
-     * A token that will not open is anything this can hand over, and the model
-     * has already recorded why — so a login holding only unreadable values is
-     * ended locally, and the identity provider is asked for nothing. An account
-     * holding no readable grant at all does not even resolve the driver.
+     * Up to `revocation_concurrency` requests are in flight at a time. Grants
+     * that cannot be decrypted are skipped, and the driver is not resolved when
+     * none are readable. Failures are reported, never raised.
      *
      * @param  iterable<array-key, OauthToken>  $tokens
      */
@@ -405,11 +315,7 @@ class EndSessions
             return;
         }
 
-        // A driver registered under this name that is not this package's is
-        // nothing these grants can be handed to. Ending a login is the one
-        // thing that must not fail on it: a misconfiguration here would have
-        // answered the logout the user asked for with a 500, leaving them
-        // looking signed in.
+        // A foreign driver is reported, not raised: a logout must never answer with a 500.
         if (! $provider instanceof UzairportsProvider) {
             $misconfigured = new RuntimeException('The [uzairports] Socialite driver is not '.UzairportsProvider::class.'.');
 
@@ -439,16 +345,11 @@ class EndSessions
     }
 
     /**
-     * Put one batch of revocations on the wire and account for what came back.
+     * Send one batch of revocations and settle them together.
      *
-     * A call that fails before it is even sent is reported where it happens;
-     * everything that did go out is settled together, so one refusal neither
-     * hides nor cancels the rest.
-     *
-     * A 401 on an access token is the provider saying it no longer honors what
-     * it was being asked to stop honoring, which is the outcome being asked
-     * for. It is spared the log; a refresh token refused the same way is not,
-     * because that endpoint answers 200 to a token it has already retired.
+     * One failure neither hides nor cancels the rest. A 401 on an access token
+     * means it is already invalid and is not logged; a 401 on a refresh token
+     * is, because that endpoint answers 200 for already-retired tokens.
      *
      * @param  list<array{token: OauthToken, access: string|null, refresh: string|null}>  $grants
      */
@@ -500,10 +401,7 @@ class EndSessions
     }
 
     /**
-     * Start one revocation, reporting a call that could not even be made.
-     *
-     * Null says there was nothing to send — no endpoint is configured for it,
-     * or the attempt failed outright and has been logged.
+     * Start one revocation; null when there is no endpoint or the call failed (and was logged).
      *
      * @param  callable(): (PromiseInterface|null)  $start
      */
@@ -521,8 +419,7 @@ class EndSessions
     /**
      * How many revocations may be in flight at once.
      *
-     * A batch of none is not a smaller batch, it is no progress at all, so a
-     * misconfigured value falls back to sending them one at a time.
+     * Values below 1 fall back to 1.
      *
      * @return int<1, max>
      */
@@ -546,31 +443,14 @@ class EndSessions
     /**
      * Drop the named sessions from the session store.
      *
-     * The database driver keeps its sessions in a table this can reach, so they
-     * go in one statement — a session named twice is named once here, since
-     * rows found by session id may belong to different accounts.
+     * The database driver's sessions go in one statement (ids deduplicated);
+     * every other driver is reached through its handler's `destroy()`.
      *
-     * Every other driver is reached through its own handler, which is what the
-     * whole of `SessionHandlerInterface` exists for: `destroy()` takes an id and
-     * drops that session, whether it is a file, a key in Redis or an item in
-     * Memcached. Only the database driver used to be reached at all, so a
-     * deployment on Redis sessions — the one this package's own locking notes
-     * assume, since it is the one running several processes — signed a device
-     * out of its login and left its session standing in the store. What saved it
-     * was the row being gone, which `uzair.token` refuses on the next request;
-     * a route not carrying the middleware saw a browser that was still signed
-     * in.
+     * The array and cookie handlers are skipped: the array handler holds only
+     * this process's sessions, and the cookie handler's `destroy()` would queue
+     * a cookie onto the current browser's response, not the one being signed out.
      *
-     * Two handlers are deliberately not asked. `ArraySessionHandler` holds the
-     * sessions of one process, so it has none of another browser's to drop. The
-     * `cookie` driver keeps nothing at all — the session travels in the browser's
-     * own cookie — and its `destroy()` queues a cookie onto the response of the
-     * request in hand, which is this browser's, not the one being signed out.
-     *
-     * A handler that will not answer is reported once for the whole batch and
-     * never raised: the rows are gone by the time any caller reaches this, and
-     * the rest of the ending — surrendering the grants — must not be skipped
-     * over a session store.
+     * Failures are reported once per batch, never raised, so revocation is not skipped.
      *
      * @param  array<array-key, string>  $sessionIds
      */
@@ -622,12 +502,10 @@ class EndSessions
     }
 
     /**
-     * The handler holding the sessions of browsers other than this one.
+     * The handler holding other browsers' sessions.
      *
-     * Null where there is none to ask: a driver that keeps nothing this process
-     * can reach, or a session manager that cannot be built at all — which is an
-     * ordinary state for a console command in an application configured without
-     * sessions, and no reason to fail the ending that is running.
+     * Null for the array and cookie handlers, or when no session manager can be
+     * built (e.g. a console command in an app without sessions).
      */
     private function sessionHandler(): ?SessionHandlerInterface
     {

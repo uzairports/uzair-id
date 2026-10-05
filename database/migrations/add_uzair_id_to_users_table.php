@@ -11,22 +11,10 @@ return new class extends Migration
     /**
      * Run the migrations.
      *
-     * The SSO id is the only stable identifier of an account: the user can change
-     * the name and e-mail address at any time on the identity provider. It is
-     * stored as a string because the provider treats it as an opaque value, and
-     * it is nullable so that accounts created before the package was installed
-     * can be linked on their owner's next sign-in.
-     *
-     * The column is guarded because this table belongs to the host application,
-     * which may already carry it.
-     *
-     * Which table that is, and what its key is called, are read off the
-     * configured model rather than assumed — the same way
-     * `create_oauth_tokens_table` reads them. Both were spelled `users` and `id`
-     * here, and an application that keeps its accounts anywhere else had this
-     * migration reach for a table it does not have. On MySQL the key was worse
-     * than the table: `after('id')` is emitted into the statement, so a model
-     * keyed by anything but `id` failed the migration outright with error 1054.
+     * Adds the SSO id, the account's only stable identifier: an opaque string,
+     * nullable so existing accounts link on their next sign-in. The table and
+     * key come from the configured user model, and the column is skipped when
+     * the table is missing or already has it.
      */
     public function up(): void
     {
@@ -65,12 +53,7 @@ return new class extends Migration
     }
 
     /**
-     * The table the host application keeps its accounts in.
-     *
-     * Null where there is nothing to alter: the table is the application's to
-     * publish, and a migration that runs before it exists has no column to add
-     * to it. Laravel's own `users` stand in wherever the configured model
-     * cannot be read, which is what this migration always assumed.
+     * The configured model's accounts table, or null when it does not exist yet.
      */
     private function accountsTable(): ?string
     {
@@ -82,12 +65,9 @@ return new class extends Migration
     }
 
     /**
-     * The column the SSO id is written besides, where there is one to name.
-     *
-     * Position is cosmetic, and MySQL is the only driver given it, but naming a
-     * column that is not there is no cosmetic at all: MySQL refuses the whole
-     * statement. So the key is asked for by name and then checked, and a table
-     * whose key this migration cannot find simply gets the column appended.
+     * The model's key column to place the SSO id after, or null when it does
+     * not exist. MySQL fails the whole statement on `after()` naming a missing
+     * column, so only a verified column is returned.
      */
     private function keyColumn(string $table): ?string
     {
@@ -99,7 +79,7 @@ return new class extends Migration
     }
 
     /**
-     * The configured user model, or null where the application names none.
+     * An instance of the configured user model.
      */
     private function userModel(): Model
     {

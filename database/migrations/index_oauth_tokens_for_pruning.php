@@ -9,13 +9,8 @@ return new class extends Migration
     /**
      * Run the migrations.
      *
-     * `OauthToken::prunable()` is the one query the package makes without a
-     * `user_id` beside it: it sweeps the table by `updated_at` alone. Every
-     * other query names the account and is served by the unique pair, so on a
-     * table of any size the nightly `model:prune` was the only full scan left.
-     *
-     * Installations created after this release already have the index from the
-     * creation migration, so it is added only where it is missing.
+     * Indexes `updated_at` for `OauthToken::prunable()`, which queries without
+     * `user_id`. Skipped when an equivalent index exists.
      */
     public function up(): void
     {
@@ -31,8 +26,7 @@ return new class extends Migration
     /**
      * Reverse the migrations.
      *
-     * Drop only the index named for this upgrade. A pre-existing index may
-     * belong to the creation migration, an older release, or the application.
+     * Drops only the index carrying this upgrade's dedicated name.
      */
     public function down(): void
     {
@@ -46,11 +40,7 @@ return new class extends Migration
     }
 
     /**
-     * Whether some index already covers `updated_at` on its own.
-     *
-     * The name is not what is looked for: an installation may have added the
-     * index by hand under a name of its own, and adding a second one under
-     * Laravel's would cost a writing on every row for nothing.
+     * Whether any index, under any name, covers exactly `['updated_at']`.
      */
     private function hasPruningIndex(): bool
     {

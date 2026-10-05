@@ -44,17 +44,9 @@ class Uzair
     /**
      * The guard this package signs in, signs out, and reads the account off.
      *
-     * Null means the application's default one, which is what every
-     * `Auth::user()` and `$request->user()` in the package used to mean without
-     * saying so. An application authenticating through a guard of its own —
-     * `auth:admin`, a second `users` provider — had this package sign a browser
-     * in on one guard and the middleware then look for the account on another,
-     * which is a user who is signed in and refused on the same request.
-     *
-     * The `uzair.token` middleware takes a guard as its own parameter
-     * (`uzair.token:admin`), which is what a route carrying `auth:admin` wants;
-     * this setting is what the endpoints in `UzairAuthController` go by, since
-     * a route registered by `Uzair::routes()` carries no such parameter.
+     * Null means the application's default guard. The endpoints in
+     * `UzairAuthController` use this setting; the `uzair.token` middleware
+     * takes its own guard parameter (`uzair.token:admin`) instead.
      */
     public static function guard(): ?string
     {
@@ -84,11 +76,9 @@ class Uzair
     /**
      * The guard whose provider names the accounts behind the given one.
      *
-     * Sanctum's guard has no provider of its own — it is null in Sanctum's
-     * configuration on purpose — and reads accounts through the guards listed
-     * in `sanctum.guard`. A route behind `auth:sanctum` makes it the default
-     * guard for the rest of the request, so without this every such route
-     * carrying `uzair.token` was answered with a 503.
+     * Sanctum's guard has no provider and reads accounts through the guards
+     * listed in `sanctum.guard`, so the first of those is used instead.
+     * `auth:sanctum` makes Sanctum the default guard for the rest of the request.
      */
     private static function accountGuard(mixed $guard): mixed
     {
@@ -104,10 +94,8 @@ class Uzair
     }
 
     /**
-     * The guard that authenticates the Sanctum tokens issued to mobile clients.
-     *
-     * The endpoints `apiRoutes()` registers read the account off it, the way
-     * the browser endpoints read it off `guard()`.
+     * The guard that authenticates the Sanctum tokens issued to mobile clients,
+     * used by the endpoints `apiRoutes()` registers.
      */
     public static function apiGuard(): string
     {
@@ -135,10 +123,8 @@ class Uzair
     /**
      * The Sanctum token model, or null where Sanctum is not installed.
      *
-     * Sanctum is suggested rather than required, so it is looked for by name and
-     * nothing in the package refers to it otherwise. An application that swapped
-     * the model through `Sanctum::usePersonalAccessTokenModel()` is answered with
-     * its own.
+     * Sanctum is suggested, not required. Honours a model swapped through
+     * `Sanctum::usePersonalAccessTokenModel()`.
      *
      * @return class-string<Model>|null
      */
@@ -150,10 +136,9 @@ class Uzair
     /**
      * The key of the Sanctum token the account authenticated this request with.
      *
-     * A mobile client's login is filed under that token, as a browser's is filed
-     * under its session. Null for anything else: a session, a console command,
-     * and Sanctum's own `TransientToken` — which is what an SPA authenticated by
-     * its session cookie carries, and which names no row at all.
+     * A mobile client's login is filed under that token. Null for a session, a
+     * console command, or Sanctum's `TransientToken` (an SPA authenticated by
+     * its session cookie), which names no row.
      */
     public static function accessTokenId(?Authenticatable $user): int|string|null
     {
@@ -184,28 +169,16 @@ class Uzair
     }
 
     /**
-     * Drop the static state that must not outlive the request that filled it.
+     * Drop the static state that must not outlive a request on a long-lived
+     * worker: the container-resolved `OauthToken` pruner and the once-per-process
+     * warning registers (login cache, lock store, login route).
      *
-     * Under PHP-FPM the process ends with the response and takes it along;
-     * under a long-lived worker — Octane, FrankenPHP — the same worker serves
-     * the next request with everything the last one left behind. Three fields
-     * are affected:
+     * The user and local-request resolvers are deliberately kept: they are
+     * registered once at boot, and a worker that dropped them would serve every
+     * later request without them.
      *
-     * - `OauthToken::$pruner`, an action resolved out of the container, which
-     *   after a rebinding is holding dependencies the application has replaced;
-     * - The three registers behind the once-per-process warnings about the
-     *   login cache, the lock store, and an unregistered login route, which
-     *   otherwise stays marked for the life of the worker — so a setting
-     *   misconfigured after a deployment is reported once in days rather than once
-     *   per boot.
-     *
-     * The user resolver is deliberately not among them. It is registered once
-     * while the application boots, the way a route or a binding is, and a
-     * worker that dropped it would serve every later request without it.
-     *
-     * `UzairServiceProvider` calls this on Octane's terminating events. An
-     * application on another long-lived runtime should call it wherever that
-     * runtime says a request is over.
+     * `UzairServiceProvider` calls this on Octane's terminating events; other
+     * long-lived runtimes should call it at the end of each request.
      */
     public static function flushState(): void
     {
@@ -218,32 +191,14 @@ class Uzair
     /**
      * Where a browser is sent to sign in through UzAirports ID.
      *
-     * The `redirect` endpoint is named by `uzairports.login_route`, and that is
-     * deliberate — it is the sign-in page, and both `redirectGuestsTo()` and
-     * Laravel's own `Authenticate` look for `login`. What it leaves an
-     * application without is a name it can write down: one that keeps its own
-     * `login` route points the setting somewhere else, and then every template
-     * linking to SSO has to know what it was pointed at. `route('uzair.redirect')`
-     * is not that name and never will be, because Laravel gives a route one
-     * name — `Route::name()` appends rather than aliases — and a second route on
-     * the same URI to carry an alias is a trick that reads as a mistake later.
+     * The `redirect` endpoint is named by `uzairports.login_route` (default
+     * `login`, which `redirectGuestsTo()` and `Authenticate` look for). A route
+     * carries only one name, so there is no fixed alias; templates call this
+     * instead of `route()`.
      *
-     * So the name is resolved here instead, and a template asks for the URL
-     * rather than for a name. A setting naming no registered route answers with
-     * the site root: a broken sign-in link is worth less than the 500 that
-     * `route()` would raise at the one moment somebody is trying to sign in.
-     *
-     * This is the only place the setting is turned into a URL. `uzair.token`
-     * resolved it a second time for the redirect it hands an
-     * `AuthenticationException`, which is the same three lines and the same
-     * fallback — and a second copy of a decision is a second place for it to
-     * drift.
-     *
-     * A name that resolves to nothing is worth a line in the log, since what
-     * follows is a user quietly landing on the site root instead of signing in.
-     * It is said once per process: the setting is misconfigured for as long as
-     * it is misconfigured, and a template calling this on every page would
-     * otherwise write the line on every request.
+     * This is the only place the setting becomes a URL; `uzair.token` uses it
+     * too. An unregistered name falls back to the site root rather than a 500,
+     * and is logged once per process since templates may call this on every page.
      *
      * @phpstan-impure
      */
@@ -276,10 +231,7 @@ class Uzair
     protected static array $reportedAboutTheLoginRoute = [];
 
     /**
-     * Let the warning be said again, for a suite that asserts on it.
-     *
-     * Reached between requests on a long-lived runtime through `flushState()`,
-     * which is where the reason is written down.
+     * Let the warning be logged again. Called by `flushState()` and by tests.
      */
     public static function flushLoginRouteWarnings(): void
     {
@@ -287,22 +239,21 @@ class Uzair
     }
 
     /**
-     * Where the session notes the id the login it holds is filed under.
+     * Session key holding the id this browser's login is filed under.
      */
     private const string SESSION_KEY = 'uzairid.session';
 
     /**
-     * Where the session notes that this application authenticated it itself.
+     * Session/request attribute key marking local (non-SSO) authentication.
      */
     private const string LOCAL_KEY = 'uzairid.local';
 
     /**
      * Note the session id this browser's login is filed under.
      *
-     * The note is what `followRegeneratedSession()` compares against, and it
-     * lives in the session payload — the application's own store, which the
-     * browser holds a key to and never writes. Rewritten only when the id has
-     * changed, so an unchanged session is not marked dirty by being read.
+     * `followRegeneratedSession()` compares against this note. It lives in the
+     * server-side session payload, which the browser cannot write. Written only
+     * when the id changed, so reading does not mark the session dirty.
      */
     public static function rememberSession(Request $request): void
     {
@@ -343,22 +294,13 @@ class Uzair
     /**
      * Take the login with the browser when its session is given a new id.
      *
-     * `regenerate()` keeps the payload and changes the id, so the note written
-     * by `rememberSession()` still holds the id the login was filed under while
-     * the session answers to a new one. That difference is the whole signal:
-     * the browser is the same browser, and the row is moved to the id it
-     * carries now. Laravel fires nothing on a regeneration, and the alternative
-     * — a login found by nothing at all — signs a signed-in user out.
+     * `regenerate()` keeps the payload but changes the id, so a note differing
+     * from the current id means the same browser; its login row is moved to the
+     * new id. Laravel fires no event on regeneration.
      *
-     * The account is passed in, and the move is scoped to it because the note
-     * says which session this is and not whose login it is. `getAuthIdentifier()`
-     * promises nothing about what it hands back, and a key that is neither an
-     * integer nor a string names no account to scope by, so nothing is moved
-     * for it.
-     *
-     * The note is brought up to date whatever the move did. A session whose
-     * login has genuinely gone must not spend a statement looking for it again
-     * on every request for as long as the browser keeps it.
+     * The move is scoped to the account, because the note identifies a session,
+     * not its owner; a non-int/string key moves nothing. The note is updated
+     * regardless, so a login that is really gone is not searched for again.
      *
      * @param  mixed  $userId  the key of the account the session is signed in as
      * @return bool whether a login may now be found under the current id
@@ -384,25 +326,11 @@ class Uzair
     /**
      * Say that this session was authenticated by the application itself.
      *
-     * `uzair.token` refuses a session holding no login when the account carries
-     * a `uzair_id`, and it is right to: the login was ended somewhere, and what
-     * is left is a session with nothing behind it. An account that has ever
-     * signed in through SSO carries that column for good, though, so the same
-     * refusal met a hybrid application's own password sign-in — a user who used
-     * SSO once could never be signed in by the application again, on any route
-     * carrying the middleware.
-     *
-     * The mark says the difference the column cannot: this session's
-     * authentication does not come from UzAirports ID and must not be measured
-     * against a login row. Call it from wherever the application signs a
-     * browser in itself, after it has done so — `Auth::attempt()` migrates the
-     * session, and a mark written before that is written into the session that
-     * is about to be replaced.
-     *
-     * It is a statement about how this browser was authenticated, so only the
-     * application making that statement may write it, and only into a session
-     * it has just authenticated. It ends with the session: signing out
-     * invalidates it, and signing in through SSO takes it off.
+     * `uzair.token` refuses a session with no login row when the account has a
+     * `uzair_id`; this mark exempts sessions the application authenticated
+     * itself (e.g. a password sign-in in a hybrid app). Call it after signing
+     * the browser in, since `Auth::attempt()` migrates the session. The mark
+     * ends with the session and is removed by an SSO sign-in.
      */
     public static function markSessionAsLocal(Request $request): void
     {
@@ -422,17 +350,9 @@ class Uzair
     /**
      * Say how a request with no session of its own was authenticated.
      *
-     * `markSessionAsLocal()` is written into the session payload, so it has
-     * nothing to say about a request that carries no session — an API client
-     * holding a Sanctum token, a console command. Such a request was left with
-     * the one answer the middleware gives an account carrying `uzair_id` and
-     * holding no login: refused. An application whose API authenticates its own
-     * way therefore could not put `uzair.token` on an API route at all, while
-     * the documentation was telling it to write a login row by hand.
-     *
-     * The callback is asked about the request in front of it and answers
-     * whether this application authenticated it itself. A Sanctum deployment
-     * says so by the token the request carries:
+     * The sessionless counterpart of `markSessionAsLocal()`, for API clients
+     * and console commands. The callback answers whether the application
+     * authenticated the request itself, e.g. by its Sanctum token:
      *
      * ```php
      * Uzair::treatRequestsAsLocalWhen(
@@ -440,10 +360,7 @@ class Uzair
      * );
      * ```
      *
-     * Registered once while the application boots, the way the user resolver is
-     * — and, like it, deliberately not dropped by `flushState()`: a worker that
-     * forgot it would serve every later request as though the application had
-     * never said anything.
+     * Registered once at boot and deliberately not dropped by `flushState()`.
      *
      * @param  (callable(Request): bool)|null  $callback
      */
@@ -455,10 +372,9 @@ class Uzair
     /**
      * Say that this one request was authenticated by the application itself.
      *
-     * The imperative form of the callback above, for an application that
-     * decides it in a middleware of its own rather than by a rule. It lives in
-     * the request's attribute bag, so it says nothing about any other request
-     * and nothing at all once this one is answered.
+     * The imperative form of `treatRequestsAsLocalWhen()`, e.g. from the
+     * application's own middleware. Stored in the request's attribute bag, so
+     * it applies to this request only.
      */
     public static function markRequestAsLocal(Request $request): void
     {
@@ -468,9 +384,8 @@ class Uzair
     /**
      * Whether this request's authentication comes from somewhere but SSO.
      *
-     * The three ways of saying so are asked in the order of what they cost: the
-     * session payload this request is already holding, the attribute bag of the
-     * request itself, then the application's own callback.
+     * Checked cheapest first: session mark, request attribute, then the
+     * application's callback.
      */
     public static function requestIsLocal(Request $request): bool
     {
@@ -493,10 +408,8 @@ class Uzair
     /**
      * Stop a session counting as one the application authenticated itself.
      *
-     * The callback calls this: a browser that signs in through SSO holds a
-     * login row from that moment, and a mark left over from a password sign-in
-     * in the same session would go on exempting it from the one check that
-     * notices the login being ended.
+     * Called on SSO sign-in: the session now has a login row, and a leftover
+     * local mark would exempt it from the check that notices the login ending.
      */
     public static function forgetLocalSession(Request $request): void
     {
@@ -508,30 +421,18 @@ class Uzair
     /**
      * Register the SSO endpoints.
      *
-     * Call this from the application's `routes/web.php`, so the routes inherit
-     * the session and CSRF middleware the OAuth flow needs. The name of the
-     * redirect route is read from `uzairports.login_route`, which is also where
-     * the refresh middleware sends a session it can no longer renew — naming
-     * them apart would send the user to a page that cannot sign them in.
+     * Call from `routes/web.php` so the routes get the session and CSRF
+     * middleware. The redirect route is named by `uzairports.login_route`, the
+     * same place `uzair.token` sends a session it can no longer renew.
      *
-     * The routes sit behind the `uzairid` limiter, which reads its budget from
-     * `uzairports.routes.throttle` and counts it per browser. Pass `throttle`
-     * to name a different limiter, or an `attempts,minutes` pair to be counted
-     * by Laravel's default key instead; pass null to register without a limit.
+     * Routes use the `uzairid` limiter by default; `throttle` takes another
+     * limiter name, an `attempts,minutes` pair, or null for no limit.
      *
-     * There is no "sign-out everywhere" endpoint. Ending an account's logins
-     * means surrendering each grant to the identity provider in turn, and one
-     * request cannot answer for an unbounded number of them: an account signed
-     * in on a dozen devices would spend a dozen revocation timeouts before the
-     * browser heard anything back. `logout-device` ends them one at a time,
-     * off the list of devices the account can already see, and each request
-     * costs one login's worth of waiting.
-     *
-     * `logout-device` names a login by its row id, which is always an integer,
-     * so the parameter is constrained to digits. Without that a request for
-     * `/logout-device/abc` would reach the query and be compared against a
-     * `bigint` column — a 404 on SQLite and MySQL, but a type error, and so a
-     * 500, on PostgreSQL.
+     * There is deliberately no "sign out everywhere" endpoint: each login costs
+     * a revocation round-trip, and one request cannot pay for an unbounded
+     * number. `logout-device` ends one login per request, and its id is
+     * constrained to digits so a non-numeric value never reaches the `bigint`
+     * comparison (a 500 on PostgreSQL).
      *
      * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string}  $options
      */
@@ -578,17 +479,12 @@ class Uzair
     /**
      * Register the endpoints a mobile client signs in and out through.
      *
-     * Call this from the application's `routes/api.php`: the client holds no
-     * session and no CSRF token, and authenticates with the Sanctum token
-     * `token` hands it. The browser endpoints of `routes()` stay where they are,
-     * so an SPA signed in by its session cookie is not affected.
-     *
-     * The client runs the authorization request itself — with PKCE, against the
-     * same `client_id` — and posts the code here. The exchange is made with the
+     * Call from `routes/api.php`: the client has no session or CSRF token and
+     * authenticates with the Sanctum token `token` issues. The client runs the
+     * PKCE authorization itself and posts the code here; the exchange uses the
      * client secret, so the refresh token stays on the server.
      *
-     * The routes sit behind the same `uzairid` limiter as the browser ones; the
-     * options are the same as there.
+     * Throttling and options are the same as for `routes()`.
      *
      * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string}  $options
      */
@@ -620,38 +516,17 @@ class Uzair
     }
 
     /**
-     * Say so if something else ends up answering to the sign-in route's name.
+     * Warn if another route carries the sign-in route's name.
      *
-     * Two routes may carry one name, and Laravel says nothing about it: the name
-     * list simply keeps whichever was registered last. An application with its
-     * own `login` — Breeze, Jetstream, Fortify, a handwritten form — and
-     * `login_route` left at the default therefore has one of two things happen
-     * silently, and both look like a bug somewhere else entirely. If this
-     * package wins, a guest opening the application's sign-in page is thrown
-     * straight into SSO and never sees the form. If the application wins,
-     * `Uzair::loginUrl()` and `redirectGuestsTo()` resolve to that form — so the
-     * "sign in through UzAirports ID" button on it leads back to the page it is
-     * on, which is a loop nobody can read their way out of.
+     * Laravel silently keeps whichever same-named route registered last, so
+     * either guests are sent into SSO instead of the app's form, or
+     * `loginUrl()` loops back to that form. The check runs in `app()->booted()`
+     * because route file order is outside this package's control, and asks
+     * whether any other route carries the name, not which one won, so both
+     * directions are caught.
      *
-     * The check is deferred to the end of boot because route files run in an
-     * order this package does not control: asked at registration, it would only
-     * catch the applications that registered theirs first.
-     *
-     * What is asked is whether anything else carries the name at all, not which
-     * of them the name list happens to hold. Either way round is a problem, and
-     * only one of them is visible from the name list: whoever registered last
-     * holds it, so asking "is it mine?" would report the application's route
-     * winning and say nothing when this package's route wins — which is the
-     * half that throws a guest into SSO instead of showing them the form.
-     *
-     * Routes registered by this package are not counted against each other. An
-     * application registering the endpoints twice, under two prefixes is doing
-     * nothing wrong and must hear nothing.
-     *
-     * Nothing is refused over it. Which route should hold the name is the
-     * application's to decide — the note on `login_route` gives both ways of
-     * deciding — and a package that started throwing here would break the
-     * deployments that have already chosen.
+     * This package's own redirect routes (e.g. under two prefixes) are not
+     * counted. Nothing is thrown; which route keeps the name is the app's call.
      *
      * @param  class-string  $controller
      */
@@ -679,7 +554,7 @@ class Uzair
     }
 
     /**
-     * Whether a route is a sign-in redirect, this package registered.
+     * Whether a route is a sign-in redirect this package registered.
      *
      * @param  class-string  $controller
      */

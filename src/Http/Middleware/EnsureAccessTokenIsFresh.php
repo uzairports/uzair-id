@@ -26,35 +26,20 @@ class EnsureAccessTokenIsFresh
     ) {}
 
     /**
-     * Refresh this session's UzAirports access token before it expires and
-     * refuse a session whose login has been ended.
+     * Refresh the caller's UzAirports access token before it expires and refuse
+     * a caller whose login has been ended or can no longer be renewed. A refusal
+     * ends the session and raises an authentication failure, so the application
+     * answers it like any other unauthenticated request.
      *
-     * A login belongs to one browser session, so the pair looks up the token:
-     * another device's row is none of this request's business. When the
-     * refresh token is no longer accepted, or the login was ended elsewhere —
-     * signed out on this device from another, or dropped by
-     * `uzairports.single_session` when the account signed in again — the
-     * session is dropped and an authentication failure raised, so the
-     * request is answered the way the application answers any other
-     * unauthenticated one: a redirect back through SSO for a browser, a 401 for
-     * an API client.
+     * Callers holding no login are let through when the account was never linked
+     * (no `uzair_id`) or the application marked the session/request as local
+     * (`Uzair::markSessionAsLocal()`, `treatRequestsAsLocalWhen()`,
+     * `markRequestAsLocal()`). The mark is checked only after the row lookup, so
+     * a caller that holds a login still has it renewed.
      *
-     * Two callers holding no login are let through rather than refused. One
-     * belongs to an account this package never linked, which is a local account
-     * living as it always did. The other was authenticated by the application
-     * itself and says so — `Uzair::markSessionAsLocal()` for a browser,
-     * `Uzair::treatRequestsAsLocalWhen()` or `Uzair::markRequestAsLocal()` for a
-     * request that carries no session — which is the only thing that tells a
-     * hybrid application's own sign-in apart from a login that was ended, since
-     * an account that ever signed in through SSO carries `uzair_id` for good.
-     * The mark is asked for only once no login was found, so a caller that
-     * holds one still has its token renewed on the ordinary path.
-     *
-     * The guard is the route's to name — `uzair.token:admin` beside
-     * `auth:admin` — and falls back to `uzairports.guard`, then to the
-     * application's default. Asking the default guard for the account on a
-     * route authenticated by another one reads every such request as a guest,
-     * or as somebody else.
+     * The guard comes from the route (`uzair.token:admin`), then
+     * `uzairports.guard`, then the application default; it must match the guard
+     * that authenticated the route.
      *
      * @param  Closure(Request): Response  $next
      *
@@ -76,9 +61,8 @@ class EnsureAccessTokenIsFresh
         $leeway = $this->leewayInSeconds();
         $accessTokenId = Uzair::accessTokenId($user);
 
-        // The cached answer is keyed by session, and a mobile client's login is
-        // not filed under one: a Sanctum token sent to a route that also starts
-        // a session must not be let through on that session's login.
+        // The cache is keyed by session; a Sanctum-token caller must not pass on
+        // a session's cached login.
         if ($accessTokenId === null && $this->alreadyResolvedAsFresh($request, $user, $leeway)) {
             return $next($request);
         }
@@ -112,21 +96,10 @@ class EnsureAccessTokenIsFresh
             return $next($request);
         }
 
-        // The row is this caller's own either way — the session that made it,
-        // or a login that names no session for a request that names none
-        // either — so a login that can no longer be renewed goes with the
-        // refusal. It used to be somebody else's, and dropping it would have
-        // signed that device out over a call it never made; `tokenFor()` no
-        // longer hands out a browser's login to a request without a session.
-        //
-        // It goes the way every other ending in this package goes, rather than
-        // by deleting the row here. What the exchange was refused is the
-        // refresh token; the access token beside it is good for up to the
-        // leeway this renewal was started within, and dropping the row alone
-        // left that much of a live grant behind with nothing left pointing at
-        // it to ever surrender it. `end()` hands both back, and a row another
-        // request has already deleted is found to be gone rather than revoked
-        // on a stale snapshot.
+        // The row is always this caller's own, so an unrenewable login ends
+        // with the refusal. It goes through `end()`, not a bare delete: the
+        // access token may still be live, and `end()` surrenders both grants
+        // and skips a row another request already deleted.
         $this->endSessions->end($token);
 
         $this->endSession($request, $user, $guard);
@@ -139,47 +112,16 @@ class EnsureAccessTokenIsFresh
     }
 
     /**
-     * The login this request is running on.
+     * The login this request is running on, looked up in order: by Sanctum
+     * token (see `OauthToken::scopeHeldBy()`), by the session id of the request
+     * in hand, or, for a request with neither, the most recent login that names
+     * no session. A sessionless request never reads or renews a browser's login.
      *
-     * A request without a session — an API client, a console command — names no
-     * browser, so it is matched against the logins that name no browser either:
-     * `session_id` is nullable precisely because a token can be issued outside
-     * a session, and such a row is the caller's own.
+     * When nothing is found, a regenerated session is followed to its previous
+     * id (`Uzair::followRegeneratedSession()`) and looked up again.
      *
-     * It used to be handed the account's most recent login instead, which is
-     * whichever browser signed in last — somebody else's row. Reading a token
-     * through it was the least of it: the request went on to keep that login
-     * alive on every call, so an abandoned browser's row never aged into
-     * `prunable()` and the grant behind it was never surrendered, and it spent
-     * that browser's rotating refresh token to renew a token the caller had no
-     * supported way to read. A request that names no browser now neither reads
-     * nor writes a login belonging to one.
-     *
-     * The unique pair does not collapse several null session ids, so the most
-     * recent of them is taken.
-     *
-     * A mobile client authenticated by a Sanctum token is matched by that token
-     * instead, before anything else — see `OauthToken::scopeHeldBy()`. Two
-     * phones of one account hold two rows, and neither is handed the other's.
-     *
-     * The session is read off the request this middleware was handed rather
-     * than off the global one: they are the same object in an ordinary HTTP
-     * request, but nothing guarantees it, and the request in hand is the one
-     * whose session this decision is about.
-     *
-     * A browser whose session was given a new id is still the same browser.
-     * Its login is moved to that id rather than lost with the old one — see
-     * `Uzair::followRegeneratedSession()`, which is asked only once the lookup
-     * has come back with nothing. Finding a login is the common answer and the
-     * inexpensive one; a session that carries no note of an earlier id answers
-     * without a statement completely.
-     *
-     * What is found is handed to a user model carrying `HasUzairToken`,
-     * whichever kind of request it was, so that anything downstream asking the
-     * user for its login — a controller, a view — reads what was looked up here
-     * instead of repeating the query. The sessionless branch used to skip that
-     * hand-off, which left an API client's controller unable to reach a token
-     * this method had just resolved for it.
+     * The result is handed to a `HasUzairToken` user for every kind of request,
+     * so downstream code reads it without repeating the query.
      */
     private function tokenFor(Request $request, Authenticatable $user, int|string|null $accessTokenId): ?OauthToken
     {
@@ -216,22 +158,12 @@ class EnsureAccessTokenIsFresh
     }
 
     /**
-     * Whether this request may go through on a login already resolved for it.
+     * Whether a login cached for this session within `uzairports.login_cache_ttl`
+     * (zero by default) lets the request through without reading the row.
      *
-     * Every request through this middleware reads `oauth_tokens` to ask two
-     * questions of one row — is the login still there, and is its token still
-     * good — and for a browser clicking around an application, the answer is the
-     * same on almost all of them. `uzairports.login_cache_ttl` lets the answer
-     * stand for a few seconds, so those requests cost nothing, and it is zero by
-     * default, which is the behavior of reading the row every time.
-     *
-     * What the entry cannot be trusted for is who it belongs to. A session id
-     * is not proof of an account — the browser holding it now may not be the
-     * one it was written for — so the account is compared before the entry is
-     * used, and a mismatch falls through to the row.
-     *
-     * Unknown expiry is not freshness: `expiresWithin()` treats it as
-     * expired, so a login stored without one is renewed rather than let past.
+     * A session id is not proof of an account, so the cached account is compared
+     * first and a mismatch falls through to the row. An unknown expiry is never
+     * treated as fresh.
      */
     private function alreadyResolvedAsFresh(Request $request, Authenticatable $user, int $leeway): bool
     {
@@ -245,9 +177,7 @@ class EnsureAccessTokenIsFresh
             return false;
         }
 
-        // `getAuthIdentifier()` promises nothing about what it hands back, and
-        // a key that is neither an integer nor a string names no account to
-        // compare against. The row answers instead.
+        // A key that is neither int nor string cannot be compared; the row answers.
         $key = $user->getAuthIdentifier();
 
         if ((! is_int($key) && ! is_string($key)) || $resolved['user'] !== (string) $key) {
@@ -277,30 +207,17 @@ class EnsureAccessTokenIsFresh
     /**
      * Leave nothing of the current session behind.
      *
-     * The cached login is forgotten before the session is invalidated, not
-     * after: invalidating regenerates the id, and the entry is keyed by the id
-     * the browser was actually holding. `forgetLogin()` reports a store that
-     * will not answer rather than raising it, so the invalidation below happens
-     * whatever the cache does — a session left standing here is a browser still
-     * carrying a session this request has just decided to refuse.
+     * The cached login is forgotten before invalidation, which regenerates the
+     * session id the entry is keyed by; `forgetLogin()` does not throw, so the
+     * session is always invalidated. Only stateful guards are logged out, since
+     * token guards have no `logout()`.
      *
-     * Only a guard that holds a session can be signed out of one. A guard that
-     * authenticates each request on its own — a token guard, Sanctum — has no
-     * `logout()` at all, and the bare `Auth::logout()` that used to stand here
-     * answered such an application with a `BadMethodCallException` instead of
-     * the 401 the refusal means.
-     *
-     * `UzairLoggedOut` is dispatched here as well as by the controller. This is
-     * the other half of the ways a login ends — it was ended on another device,
-     * or it can no longer be renewed — and an application listening for its
-     * users signing out heard only the half they asked for themselves.
+     * `UzairLoggedOut` is dispatched here too, so listeners also hear about
+     * logins ended elsewhere or no longer renewable.
      */
     private function endSession(Request $request, Authenticatable $user, ?string $guard): void
     {
-        // Asked for through the contract rather than the facade, which is
-        // annotated as though it always answered with a guard that holds a
-        // session. What it actually hands back is whatever the application
-        // registered under the name.
+        // The contract, not the facade: the guard may not be stateful.
         $authenticator = app(AuthFactory::class)->guard($guard);
 
         if ($authenticator instanceof StatefulGuard) {
@@ -320,9 +237,7 @@ class EnsureAccessTokenIsFresh
     /**
      * How long before the actual expiry the token should be renewed.
      *
-     * A leeway that is not a number is a misconfiguration, and casting one
-     * would read as no leeway at all — leaving every token to expire in the
-     * middle of the request that was using it. The default stands instead.
+     * A non-numeric value falls back to the default rather than casting to zero.
      */
     private function leewayInSeconds(): int
     {

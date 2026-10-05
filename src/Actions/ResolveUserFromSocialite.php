@@ -14,20 +14,12 @@ class ResolveUserFromSocialite
     /**
      * Resolve the local account behind an UzAirports identity and refresh its profile.
      *
-     * Only the SSO `id` is a stable identifier: the user can change the name and
-     * e-mail address at any time on the identity provider, the address may be
-     * shared between accounts, and it may be missing entirely. Matching by e-mail
-     * is therefore just a one-off migration path for accounts created before the
-     * package was installed.
+     * Only the SSO `id` is a stable identifier; the e-mail address can change,
+     * be shared or be missing. Matching by e-mail is only a migration path for
+     * accounts created before the package was installed.
      *
-     * What the identity provider leaves out is not an answer about the account.
-     * The name and the e-mail address are optional on its side, and a sign-in
-     * that arrives without one says nothing more than that it was not sent — so
-     * the stored value stands rather than being overwritten with nothing. An
-     * address that actually changed still arrives as an address, and is written.
-     *
-     * The profile is written with `forceFill()` so that the host model does not
-     * have to expose these columns for mass assignment.
+     * A name or e-mail the provider omits keeps the stored value. `forceFill()`
+     * avoids requiring the host model to make these columns mass assignable.
      *
      * @throws RuntimeException when the identity provider omits the user id
      */
@@ -74,24 +66,13 @@ class ResolveUserFromSocialite
     }
 
     /**
-     * Say that the profile writing did not happen and hand back what is stored.
+     * Log a profile write refused by a `saving` listener and restore the stored
+     * attributes.
      *
-     * `save()` answers false rather than raising when a `saving` listener
-     * refuses the writing, and that answer was being dropped. The account behind
-     * the identity is still the right one — it is found by `uzair_id`, or it
-     * has just been linked by a statement of its own that model events do not
-     * reach — so the sign-in is not refused over this. What was lost is a name
-     * and an address the identity provider reported, and a host application
-     * that refuses the writing is asking for exactly that.
-     *
-     * An account that is not in the database at all is a different matter and
-     * is not settled here: `UzairAuthController::writeAccount()` refuses to
-     * sign in a model that does not exist, so a refused insert still fails the
-     * handshake.
-     *
-     * The attributes are put back to what is stored. Filled and unsaved, they
-     * would have `Auth::login()` and every listener behind it read a name this
-     * request did not write, and the next one will not find.
+     * The sign-in proceeds: the account is still the right one, only the
+     * profile is stale. Attributes are reset so `Auth::login()` and its
+     * listeners do not see unsaved values. A refused insert is handled by
+     * `UzairAuthController::writeAccount()`, which rejects non-existent models.
      */
     private function reportRefusedProfile(Model $user): void
     {
@@ -106,27 +87,13 @@ class ResolveUserFromSocialite
     }
 
     /**
-     * Take an account created before the package was installed, if it is still
-     * there to be taken.
+     * Link a pre-existing account by e-mail, only if it is still unlinked.
      *
-     * Finding the account and claiming it are two statements, and an account
-     * nobody has linked is exactly the kind another identity may be linking at
-     * the same moment. Both would see `uzair_id` empty, both would write, and
-     * the unique index cannot refuse either of them — it is one row, written
-     * twice, so the second writing is an ordinary update. Two people would then
-     * be signed in to one local account, which is the worst outcome this action
-     * has: the whole reason `uzair_id` is the only identifier trusted here is
-     * that an address is not proof of who owns it.
-     *
-     * So the claim is made conditional on the account still being unlinked, and
-     * whoever finds it already taken does not argue: an address the identity
-     * provider never promised to have verified is not enough to take an account
-     * from whoever got there first. The loser gets a new account, which is what
-     * linking being off would have given it anyway.
-     *
-     * A second callback for the same identity that arrives here loses the claim
-     * too, and its new account is refused by the unique index on `uzair_id` —
-     * `UzairAuthController` retries once and finds the row the winner linked.
+     * Finding and claiming are separate statements, and the unique index on
+     * `uzair_id` cannot stop two identities updating the same row. The update
+     * is therefore conditional on `uzair_id` being null; a loser gets a new
+     * account rather than sharing one. A concurrent callback for the same
+     * identity hits the unique index, and `UzairAuthController` retries once.
      */
     private function claimUnlinkedUserByEmail(?string $email, string $uzairId): ?Model
     {
@@ -147,15 +114,9 @@ class ResolveUserFromSocialite
     /**
      * Find an account created before the package was installed.
      *
-     * An account without an e-mail address carries no evidence of who owns it,
-     * so it is never claimed this way. Neither is an address more than one
-     * unclaimed account carries: the migrations drop the unique index on
-     * `users.email`, so duplicates are expected, and picking one of them would
-     * hand the identity whichever row the database happened to return first.
-     *
-     * Linking is off unless the host application turns it on, because the
-     * identity provider does not promise that the address it reports was ever
-     * verified, and an unverified address is enough to claim the account.
+     * Requires `link_by_email` (off by default, since the provider does not
+     * guarantee verified addresses), a non-empty e-mail, and exactly one
+     * unlinked match; `users.email` is not unique, so duplicates are ambiguous.
      */
     private function findUnlinkedUserByEmail(?string $email): ?Model
     {

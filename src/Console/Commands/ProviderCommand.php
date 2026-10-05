@@ -34,6 +34,7 @@ class ProviderCommand extends Command
 
                 if ($this->option('rebuild-empty')) {
                     $this->rebuildEmptyTable();
+                    $check->forgetVerified();
 
                     return self::SUCCESS;
                 }

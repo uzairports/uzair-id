@@ -9,12 +9,8 @@ return new class extends Migration
     /**
      * Run the migrations.
      *
-     * The column names the session that signed in last, which is what lets the
-     * refresh middleware tell the current browser from one whose login has
-     * since been superseded.
-     *
-     * It is guarded because installations that published `oauth_tokens` after
-     * this release already have the column from the creation migration.
+     * Adds the browser session a login belongs to, skipped when the column
+     * already exists.
      */
     public function up(): void
     {
@@ -30,21 +26,9 @@ return new class extends Migration
     /**
      * Reverse the migrations, but only where they were the ones applied.
      *
-     * `up()` leaves a table that already has the column alone, and this has to
-     * leave the same tables alone: a migration that changed nothing must not
-     * roll back by dropping the column every login in the table is named by.
-     *
-     * What says the column is not this migration's to drop is that something
-     * else is built on it. An installation whose creation migration wrote
-     * `session_id` wrote `unique(user_id, session_id)` and the session index
-     * over it in the same breath, and neither is this migration to take
-     * apart. The legacy shape this does reverse has no such thing: the pair
-     * arrives with `make_oauth_tokens_per_session`, whose own `down()` takes it
-     * back off first — a full rollback therefore reaches here with nothing left
-     * standing on the column, and drops it.
-     *
-     * This is also simply true of the column: a driver will not drop one an
-     * index still names.
+     * There is no marker index, so the column is dropped only while no index
+     * uses it: the create migration always indexes it, while on an upgraded
+     * table `make_oauth_tokens_per_session::down()` has already removed the pair.
      */
     public function down(): void
     {

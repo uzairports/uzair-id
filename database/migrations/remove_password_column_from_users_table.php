@@ -10,14 +10,8 @@ return new class extends Migration
     /**
      * Run the migrations.
      *
-     * Credentials live on the identity provider, so the column has nothing to
-     * hold. It is guarded because this table belongs to the host application,
-     * which may already have dropped it.
-     *
-     * Which table that is comes off the configured model, not from the name
-     * `users` — an application keeping its accounts in `members` or `staff`
-     * had this migration fail on a table it does not have. See
-     * `create_oauth_tokens_table`, which has read the model all along.
+     * Drops `password`, since credentials live on the identity provider.
+     * Skipped when the table or column is missing.
      */
     public function up(): void
     {
@@ -49,11 +43,7 @@ return new class extends Migration
     }
 
     /**
-     * The table the host application keeps its accounts in.
-     *
-     * Null where there is nothing to alter: the table is the application's to
-     * publish, and a migration that runs before it exists has no column to drop
-     * from it.
+     * The configured model's accounts table, or null when it does not exist yet.
      */
     private function accountsTable(): ?string
     {

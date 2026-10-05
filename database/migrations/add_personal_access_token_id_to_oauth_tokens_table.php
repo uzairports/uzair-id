@@ -7,28 +7,17 @@ use Illuminate\Support\Facades\Schema;
 return new class extends Migration
 {
     /**
-     * The name this upgrade gives the index it adds beside the column.
-     *
-     * It is the evidence `down()` goes by: the creation migration spells the
-     * same column with Laravel's conventional index name, and a column cannot
-     * be asked which migration wrote it.
+     * The marker index name `down()` relies on to prove this migration added
+     * the column; the create migration uses Laravel's conventional name.
      */
     private const string UPGRADE_UNIQUE = 'uzairid_access_token_upgrade_unique';
 
     /**
      * Run the migrations.
      *
-     * A login issued to a mobile client names no browser session — it names the
-     * Sanctum token the client was handed for it instead. Without the column a
-     * request carrying such a token could only be matched against "the most
-     * recent login without a session", which is whichever phone signed in last:
-     * two devices of one account would share, and spend, one grant.
-     *
-     * Unique, because one Sanctum token stands for one login. Several nulls are
-     * not collapsed by it, so the browser logins beside it are untouched.
-     *
-     * Installations created after this release already have the column from
-     * the creation migration, so it is added only where it is missing.
+     * Adds the Sanctum token id that identifies a mobile login in place of a
+     * browser session. It is unique (one Sanctum token is one login; nulls do
+     * not collide) and is skipped when the column already exists.
      */
     public function up(): void
     {
@@ -45,10 +34,8 @@ return new class extends Migration
     /**
      * Reverse the migrations, but only where they were the ones applied.
      *
-     * `up()` skips a table that already has the column, so this skips the same
-     * tables: without the upgrade's own index name there is no proof this
-     * migration wrote the column, and dropping one the creation migration wrote
-     * would sign every mobile client out.
+     * Acts only when the marker index exists, so a column written by the
+     * create migration is never dropped.
      */
     public function down(): void
     {

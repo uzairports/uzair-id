@@ -5,6 +5,7 @@ namespace Uzairports\Uzairid\Tests;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Response;
+use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -14,6 +15,8 @@ use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\SocialiteServiceProvider;
 use Mockery;
 use Orchestra\Testbench\TestCase as Orchestra;
+use RuntimeException;
+use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Concerns\HasUzairToken;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Providers\UzairServiceProvider;
@@ -25,6 +28,8 @@ abstract class TestCase extends Orchestra
     protected function setUp(): void
     {
         parent::setUp();
+
+        EnsureTokenStorageMatchesProvider::flushVerified();
 
         $this->setUpDatabase();
     }
@@ -167,41 +172,20 @@ abstract class TestCase extends Orchestra
 
         Schema::enableForeignKeyConstraints();
 
+        // The accounts table belongs to the host application, so it is written
+        // here in the shape the package's user migrations leave it in. Every
+        // table the package or Sanctum owns comes from its own migration, so the
+        // suite runs against the schema an installation actually gets.
         Schema::create('users', function (Blueprint $table) {
             $table->id();
-            $table->string('uzair_id')->nullable()->unique();
             $table->string('name')->nullable();
             $table->string('email')->nullable();
             $table->timestamps();
         });
 
-        Schema::create('oauth_tokens', function (Blueprint $table) {
-            $table->id();
-            $table->foreignId('user_id')->constrained()->cascadeOnDelete()->cascadeOnUpdate();
-            $table->text('access_token');
-            $table->text('refresh_token')->nullable();
-            $table->timestamp('expires_at')->nullable();
-            $table->string('session_id')->nullable();
-            $table->unsignedBigInteger('personal_access_token_id')->nullable()->unique();
-            $table->string('ip_address', 45)->nullable();
-            $table->text('user_agent')->nullable();
-            $table->timestamps();
-
-            $table->unique(['user_id', 'session_id']);
-            $table->index('updated_at');
-            $table->index('session_id');
-        });
-
-        Schema::create('personal_access_tokens', function (Blueprint $table) {
-            $table->id();
-            $table->morphs('tokenable');
-            $table->text('name');
-            $table->string('token', 64)->unique();
-            $table->text('abilities')->nullable();
-            $table->timestamp('last_used_at')->nullable();
-            $table->timestamp('expires_at')->nullable()->index();
-            $table->timestamps();
-        });
+        $this->runMigration(__DIR__.'/../database/migrations/add_uzair_id_to_users_table.php');
+        $this->runMigration(__DIR__.'/../database/migrations/create_oauth_tokens_table.php');
+        $this->runMigration(__DIR__.'/../vendor/laravel/sanctum/database/migrations/2019_12_14_000001_create_personal_access_tokens_table.php');
 
         Schema::create('sessions', function (Blueprint $table) {
             $table->string('id')->primary();
@@ -211,6 +195,17 @@ abstract class TestCase extends Orchestra
             $table->longText('payload');
             $table->integer('last_activity')->index();
         });
+    }
+
+    private function runMigration(string $path): void
+    {
+        $migration = require $path;
+
+        if (! $migration instanceof Migration || ! method_exists($migration, 'up')) {
+            throw new RuntimeException("[{$path}] is not a runnable migration.");
+        }
+
+        $migration->up();
     }
 }
 

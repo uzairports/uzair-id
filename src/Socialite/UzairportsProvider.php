@@ -78,21 +78,10 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Complete the handshake, giving the grants up if the profile cannot be read.
      *
-     * This is Socialite's own `user()` with one thing added, and it is added
-     * here because there is nowhere else it can go. The exchange happens first
-     * and the profile request second, so a provider that answers the first and
-     * fails the second has already issued a live access token and a live
-     * refresh token — and `user()` throws instead of returning them, so the
-     * caller never sees the grants it would have to hand back. They exist only
-     * as a local variable in this method.
-     *
-     * Both halves of a callback that cannot be completed are answered the same
-     * way now: the driver surrenders what fails here, and
-     * `UzairAuthController` surrenders what fails after it has a user.
-     *
-     * The profile request is the likelier of the two to fail — it is a second
-     * round trip to the identity provider, with its own timeout — so leaving it
-     * uncovered left the more common failure leaking grants.
+     * Overrides Socialite's `user()`: when the profile request fails after a
+     * successful exchange, the issued grants exist only here, so they are
+     * surrendered before the failure is rethrown. Failures after a user exists
+     * are handled by `UzairAuthController`.
      *
      * @throws InvalidStateException when the callback carries no matching state
      * @throws GuzzleException
@@ -114,16 +103,9 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Exchange an authorization code a mobile client obtained by itself.
      *
-     * The client ran the authorization request — with its own `state` and its
-     * own PKCE verifier, against this application's `client_id` — and hands
-     * over the code, the redirect URI it used and the verifier. Nothing of that
-     * is in a session here, so the state is the client's to have checked, and
-     * the verifier is sent as given: without it an intercepted code could be
-     * redeemed through this endpoint by anybody.
-     *
-     * The work is done on a copy. Socialite keeps one driver instance per
-     * process, and the browser flow sharing it must not find a redirect URI or
-     * a verifier left behind by an API request.
+     * The client checked its own `state`; its PKCE verifier is passed through so
+     * an intercepted code cannot be redeemed here. The exchange runs on a clone
+     * so the shared driver instance keeps no redirect URI or verifier.
      *
      * @throws GuzzleException
      * @throws Throwable
@@ -135,8 +117,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         $exchange->user = null;
         $exchange->stateless = true;
         $exchange->redirectUrl = $redirectUri;
-        // Socialite would pull the verifier out of a session there is none of.
-        // The client's own goes with the other extra fields of the exchange.
+        // No session verifier; the client's is sent as an extra field instead.
         $exchange->usesPKCE = false;
 
         if ($codeVerifier !== null && $codeVerifier !== '') {
@@ -173,10 +154,8 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Give up the grants of a handshake that got no further than the exchange.
      *
-     * Routed through `EndSessions` like every other revocation in the package,
-     * so both grants go on the wire together, and a refusal is reported the same
-     * way. Nothing raises: the caller is about to be handed the failure that
-     * brought it here, which is the one worth reading.
+     * Routed through `EndSessions` so both grants are revoked together. Never
+     * throws, so the original failure is what the caller sees.
      *
      * @param  array<array-key, mixed>  $response
      */
@@ -256,23 +235,9 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Read the profile behind an access token.
      *
-     * Two things are asked of the answer, and the token exchange beside this
-     * has always asked both — see `decodeTokenResponse()`.
-     *
-     * The status comes first. Guzzle raises a 4xx or a 5xx on its own only
-     * while `http_errors` is left on, and `uzairports.guzzle` is merged into the
-     * client, so an application is free to turn it off. A redirect is not
-     * covered by that setting at all: these requests carry
-     * `ALLOW_REDIRECTS => false`, so a 302 comes back as an ordinary response —
-     * and a gateway in front of the identity provider answering one with a body
-     * of its own was mapped into a user and signed in. Whatever a non-2xx
-     * carries, it is not a profile this provider vouched for.
-     *
-     * Then the body. Anything that is not a JSON object — an empty response, a
-     * bare string, a page of HTML — decodes to something this method cannot
-     * map, and is reported as such rather than handed on as a malformed
-     * profile. The account behind it is still refused twice over:
-     * `ResolveUserFromSocialite` turns down a profile carrying no id.
+     * Like every request here, redirects are disallowed and the answer must be
+     * a 2xx JSON object. The status is checked explicitly because `http_errors`
+     * may be turned off and a 3xx comes back as an ordinary response.
      *
      * @return array<array-key, mixed>
      *
@@ -324,14 +289,8 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Hand the access token back without waiting for the answer.
      *
-     * Ending several logins at once means one of these per login, and each
-     * carries the provider's revocation timeout. Waited on in turn they add up:
-     * an account signed in on a dozen devices spent a dozen timeouts inside the
-     * request a browser was holding. Handed back as a promise they are put on
-     * the wire together and the caller waits once, for the slowest.
-     *
-     * Null means there is no endpoint configured to call, which is not a
-     * failure — the identity provider simply offers no such endpoint.
+     * Returned as a promise so revocations for many logins run concurrently and
+     * the caller waits once. Null means no endpoint is configured.
      */
     public function logoutAsync(string $token): ?PromiseInterface
     {
@@ -349,18 +308,9 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Give a refresh token up at the identity provider, per RFC 7009.
      *
-     * `logout()` hands back the access token, which is all the identity
-     * provider is told about. Whether that also retires the refresh token
-     * issued alongside it is the provider's business. Nothing in the
-     * protocol promises it does — so where a revocation endpoint exists, the
-     * refresh token is surrendered explicitly rather than left to a cascade
-     * that may not happen. A refresh token that survives a logout is a way back
-     * into the account for whoever holds a copy of it.
-     *
-     * The endpoint is not guessed: without `uzairports.revoke_endpoint` there
-     * is nothing to call, and the method says so by returning null, so a
-     * deployment whose provider offers no such endpoint pays no failed request
-     * on every logout.
+     * Revoking the access token does not guarantee the refresh token is
+     * retired, so it is revoked explicitly. The endpoint is not guessed: without
+     * `uzairports.revoke_endpoint` this returns null.
      */
     public function revokeRefreshToken(string $refreshToken): ?ResponseInterface
     {
@@ -370,10 +320,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Surrender the refresh token without waiting for the answer.
      *
-     * The access token and the refresh token of one login are surrendered
-     * independently — neither answer decides the other — so they travel
-     * together rather than one after the next. See `logoutAsync()` for why the
-     * waiting is done once, by the caller.
+     * Sent alongside the access-token revocation; see `logoutAsync()`.
      */
     public function revokeRefreshTokenAsync(string $refreshToken): ?PromiseInterface
     {
@@ -402,9 +349,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     /**
      * Hold the promise to the same answer the waited-on call demanded.
      *
-     * A 2xx is what says the grant was actually given up. Anything else is
-     * turned into a rejection here rather than at the point of waiting, so a
-     * caller settling many of these reads one kind of outcome for all of them.
+     * Only a 2xx confirms revocation; anything else rejects the promise.
      */
     private function confirmed(PromiseInterface $promise): PromiseInterface
     {

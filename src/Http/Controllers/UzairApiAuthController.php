@@ -7,7 +7,6 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\NewAccessToken;
@@ -17,7 +16,9 @@ use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
+use Uzairports\Uzairid\Actions\RecordLogin;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
+use Uzairports\Uzairid\Actions\StoreAccount;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -31,9 +32,9 @@ use Uzairports\Uzairid\Uzair;
  * token the way a browser's is filed under its session — so `uzair.token`
  * renews it, `logoutDevice` lists and ends it, and ending it deletes the token.
  *
- * `logout` and `logoutDevice` are the browser endpoints, read off the API guard.
+ * `logout` and `logoutDevice` are the shared ones, read off the API guard.
  */
-class UzairApiAuthController extends UzairAuthController
+class UzairApiAuthController extends UzairController
 {
     /**
      * Trade an authorization code the client obtained for a Sanctum token.
@@ -64,6 +65,7 @@ class UzairApiAuthController extends UzairAuthController
         ]);
 
         $uzairUser = null;
+        $storeAccount = app(StoreAccount::class, ['resolveUser' => $resolveUser]);
 
         try {
             app(EnsureTokenStorageMatchesProvider::class)();
@@ -76,7 +78,7 @@ class UzairApiAuthController extends UzairAuthController
                 $validated['code_verifier'] ?? null,
             );
 
-            $user = $this->storeAccount($uzairUser, $resolveUser);
+            $user = $storeAccount($uzairUser);
 
             ['login' => $login, 'plainTextToken' => $plainTextToken] = $this->issueAccessToken(
                 $request, $uzairUser, $user, $validated['device_name'],
@@ -95,7 +97,7 @@ class UzairApiAuthController extends UzairAuthController
         // browsers and phones alike, and spares the one just written by its row.
         if (config('uzairports.single_session', false)) {
             $endSessions(
-                $this->accountKey($user),
+                $storeAccount->keyOf($user),
                 revoke: (bool) config('uzairports.revoke_on_single_session', true),
                 exceptLoginId: $login->id,
             );
@@ -152,8 +154,8 @@ class UzairApiAuthController extends UzairAuthController
     /**
      * Write the Sanctum token and the login filed under it, together.
      *
-     * A refused `save()` raises, for the reason `writeToken()` gives, and takes
-     * the Sanctum token back with the transaction.
+     * One transaction, so a login that cannot be recorded takes its Sanctum
+     * token back with it.
      *
      * @param  Authenticatable&Model  $user
      * @return array{login: OauthToken, plainTextToken: string}
@@ -169,22 +171,13 @@ class UzairApiAuthController extends UzairAuthController
                 throw new RuntimeException('The account model did not issue a Sanctum token.');
             }
 
-            $records = (bool) config('uzairports.record_device', true);
+            $accessTokenId = $accessToken->accessToken->getKey();
 
-            $login = (new OauthToken)->forceFill([
-                'user_id' => $user->getKey(),
-                'session_id' => null,
-                'personal_access_token_id' => $accessToken->accessToken->getKey(),
-                'access_token' => $uzairUser->token,
-                'refresh_token' => $uzairUser->refreshToken,
-                'expires_at' => $this->expiresAt($uzairUser),
-                'ip_address' => $records ? $request->ip() : null,
-                'user_agent' => $records ? Str::limit((string) $request->userAgent(), 500, '') : null,
-            ]);
-
-            if (! $login->save()) {
-                throw new RuntimeException('The UzAirports login was refused by a model listener and not recorded.');
+            if (! is_int($accessTokenId) && ! is_string($accessTokenId)) {
+                throw new RuntimeException('The issued Sanctum token has no key a login can be filed under.');
             }
+
+            $login = app(RecordLogin::class)($request, $uzairUser, $user, null, $accessTokenId);
 
             return ['login' => $login, 'plainTextToken' => $accessToken->plainTextToken];
         });

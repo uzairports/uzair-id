@@ -10,21 +10,10 @@ return new class extends Migration
     /**
      * Run the migrations.
      *
-     * The identity provider does not guarantee an e-mail address at all. The
-     * same address may be reused by more than one account, so the constraints
-     * Laravel ships on `users.email` no longer hold once accounts are identified
-     * by their SSO id.
-     *
-     * Both steps are guarded: this table belongs to the host application, which
-     * may already have dropped the index or relaxed the column. Skipping the
-     * change in that case also preserves a custom column definition, since
-     * `change()` rewrites the column from the definition given here.
-     *
-     * Which table it is comes off the configured model, not from the name
-     * `users` — an application keeping its accounts in `members` or `staff`
-     * had this migration fail on a table it does not have. A table carrying no
-     * `email` column at all is left alone for the same reason: it is the
-     * application's, and this migration has nothing to relax in it.
+     * Drops the unique index on `email` and makes it nullable, since the
+     * identity provider guarantees neither presence nor uniqueness. Each step
+     * is skipped when already done, which also preserves a custom column
+     * definition that `change()` would overwrite.
      */
     public function up(): void
     {
@@ -89,8 +78,8 @@ return new class extends Migration
     }
 
     /**
-     * The table the host application keeps its accounts in, if it has an
-     * address column there to relax.
+     * The configured model's accounts table, or null when it or its `email`
+     * column does not exist.
      */
     private function accountsTable(): ?string
     {

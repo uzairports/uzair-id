@@ -24,28 +24,16 @@ class RefreshAccessToken
     /**
      * Exchange the stored refresh token for a fresh access token.
      *
-     * The identity provider rotates the refresh token, so it may only be spent
-     * once: two requests exchanging the same one would leave the loser holding a
-     * token the provider has already invalidated. The exchange therefore runs
-     * behind a lock, and whoever waited for it reads the token the winner stored
-     * instead of spending it again — `$leeway` is the same margin the caller used
-     * to decide the token needed renewing.
+     * The provider rotates refresh tokens, so each may be spent only once. The
+     * exchange runs behind a lock; a request that waited reads the token the
+     * winner stored instead of spending it again. `$leeway` is the margin the
+     * caller used to decide the token needed renewing.
      *
-     * Returns false when the SSO server refuses the exchange, in which case the
-     * user has to authenticate again.
-     *
-     * An identity provider that has just failed to answer is left alone for a
-     * moment first — see `providerIsUnreachable()`. That check comes before the
-     * lock, because the waiting is the thing being spared: a request that would
-     * only queue behind an exchange running out its own timeout is answered
-     * from what is stored, or told to come back, without holding a worker for
-     * either.
-     *
-     * A store that will not hand the lock over is answered the same way a lock
-     * wait is, and never by exchanging unguarded — see
-     * `refuseOverTheLockStore()`. What the store does is told apart from what
-     * the exchange does: a failure raised by the work under the lock belongs to
-     * the caller and goes back to it untouched.
+     * Returns false when the provider refuses the grant; the user must sign in
+     * again. The cooldown check (`providerIsUnreachable()`) runs before the lock
+     * so that requests do not hold workers waiting on a failing provider. A lock
+     * store failure is answered from the row, never by exchanging unguarded,
+     * while failures from the exchange itself propagate to the caller untouched.
      *
      * @throws Throwable
      */
@@ -65,12 +53,9 @@ class RefreshAccessToken
             return $this->exchange($token, $leeway);
         }
 
-        // Taking the lock and doing the work under it are kept apart, rather
-        // than handing the work to `block()` as a callback. Only then can a
-        // store that will not answer be told from an exchange that failed:
-        // wrapped together, one `catch` sees both, and answering a login that
-        // could not be stored as though the cache had hiccuped would lose the
-        // failure the caller has to hear.
+        // Acquisition and work are kept apart (not a `block()` callback) so a
+        // lock store failure is never confused with a failed exchange, whose
+        // error the caller must receive.
         try {
             /** @var Lock $lock */
             $lock = $store->lock($this->lockKey($token), self::lockTtl());
@@ -90,18 +75,11 @@ class RefreshAccessToken
     }
 
     /**
-     * Let the lock go, without letting that undo the exchange.
+     * Release the lock, reporting rather than raising a store failure.
      *
-     * The lock is released in a `finally`, so a store that went away while the
-     * exchange was running would otherwise rise from there — and a `finally`
-     * raises over whatever the block was already doing. That is a 500 on a
-     * request whose token has just been renewed and stored, sending its owner
-     * back through SSO for a grant they are holding; and where the exchange
-     * failed, it is that failure replaced by a cache error on the way out.
-     *
-     * Nothing is lost by letting go quietly. The lock expires on its own —
-     * `lockTtl()` outlives the exchange by design — so the worst of it is that
-     * one login's renewals wait for that to happen.
+     * This runs in a `finally`, where an exception would replace the result of
+     * the exchange (a successful renewal or the real failure). The lock expires
+     * on its own after `lockTtl()`, so swallowing the error is safe.
      */
     private function release(Lock $lock): void
     {
@@ -115,28 +93,13 @@ class RefreshAccessToken
     }
 
     /**
-     * Answer from the row when the lock could not be taken at all.
+     * Answer from the row when the lock store fails (unreachable, misnamed).
      *
-     * Only `LockTimeoutException` was caught here, so a store that would not
-     * answer — a Redis that stopped, a `lock_store` naming nothing — came out
-     * of `acquire()` as an ordinary failure and left the middleware raising a
-     * 500 on every request holding an expiring token. That is the outage taking
-     * the whole application down, which is precisely what this class refuses to
-     * let an unreachable identity provider do, and what every other cache call
-     * in it is already written to prevent.
-     *
-     * The answer is the one a lock wait already gets, and for the same reason:
-     * `answerWithoutCalling()` adopts a login another process renewed, reports
-     * one that is gone, and otherwise says 503. What it never does is spend the
-     * refresh token. Running the exchange unguarded would be the worst reading
-     * of a store outage there is — nobody holds a lock while the store is down,
-     * so every process renewing at that moment would spend the same rotating
-     * token, and the losers would all be signed out.
-     *
-     * `lockStore()` returning null is a different thing and keeps its own
-     * answer: a store that works and offers no atomic locks is a standing
-     * misconfiguration an operator reads once in the log, not a moment when
-     * every worker is unguarded at once.
+     * Same answer as a lock timeout, via `answerWithoutCalling()`. Never fall
+     * back to an unguarded exchange: while the store is down nobody holds the
+     * lock, so every concurrent renewal would spend the same rotating token.
+     * This differs from `lockStore()` returning null, which is a standing
+     * misconfiguration logged once, not a transient outage.
      *
      * @throws ServiceUnavailableHttpException when the login is still due a renewal
      */
@@ -150,20 +113,12 @@ class RefreshAccessToken
     }
 
     /**
-     * Answer the caller from the row alone, without spending the refresh token.
+     * Answer from the row alone, without spending the refresh token.
      *
-     * Both callers arrive here having decided not to make the exchange — one
-     * waited out the request already making it, the other found the identity
-     * provider not answering — and what is stored decides between the three
-     * things that can be said. Somebody else may have renewed the login in the
-     *  meantime or ended it; only where neither happened is the caller told to
-     * come back.
-     *
-     * The 503 is deliberate, and so is what it is not. Answering `false` would
-     * send the middleware on to end the login, which is to say that a provider
-     * briefly unreachable would sign every one of its users out — and they
-     * could not sign back in either, because signing in needs the same
-     * provider. A grant that was never refused is kept.
+     * Adopts a login another process renewed, returns false for one that is
+     * gone, and otherwise throws 503. Never return false for a still-due login:
+     * the middleware would end it, so a brief outage would sign out every user,
+     * who could not sign back in through the same provider.
      *
      * @throws ServiceUnavailableHttpException when the login is still due a renewal
      */
@@ -179,57 +134,29 @@ class RefreshAccessToken
     }
 
     /**
-     * The entry saying the identity provider is being left alone.
+     * Cache key marking the provider as in cooldown.
      */
     private const string PROVIDER_FAILURE_KEY = 'uzairid:provider-unreachable';
 
     /**
-     * The entry counting the failures that have not yet added up to an outage.
+     * Cache key counting consecutive provider failures below the threshold.
      */
     private const string PROVIDER_FAILURE_COUNT_KEY = 'uzairid:provider-failures';
 
     /**
-     * Whether the identity provider is being left alone after a recent failure.
+     * Whether the provider is in cooldown after repeated failures.
      *
-     * Every renewal is its own lock and its own exchange, so nothing here
-     * queues behind anything else: when the identity provider stops answering,
-     * every request holding an expiring token pays the full request timeout on
-     * its own before being told to come back, and one arriving behind a renewal
-     * already running pays the lock wait on top. Those waits are held in
-     * workers. There are far fewer workers than there are requests during a
-     * wave of expiry — so an identity provider that is merely unreachable
-     * took the whole application down with it, including every page that never
-     * needed a token.
+     * An unreachable provider would otherwise cost every request with an
+     * expiring token a full request timeout held in a worker, exhausting
+     * workers during a wave of expiries. After `provider_failure_threshold`
+     * failures, the exchange is skipped for `provider_cooldown` seconds and
+     * requests are answered from the row.
      *
-     * Enough failures in a row therefore stand for the ones that would have
-     * followed them. For `provider_cooldown` seconds afterward, the exchange is
-     * not attempted at all, and the requests that would have queued are
-     * answered from the row immediately — many of them by adopting a login
-     * somebody else renewed just before the outage began.
-     *
-     * It takes `provider_failure_threshold` of them, not one. A single refusal
-     * to answer is an ordinary thing — a dropped connection, a rate limit, a
-     * response that arrived malformed — and it costs one request one timeout.
-     * Standing every one of those up as an outage would be the worse bargain by
-     * far: the whole application would stop renewing logins for a cooldown
-     * every time the identity provider hiccuped, which is a self-inflicted
-     * version of the failure this is here to prevent. An exchange that succeeds
-     * clears the count, so blips never accumulate into one.
-     *
-     * There is no half-open probe: the entry simply lapses, traffic reaches the
-     * provider again, and the first request to fail writes it back. That is why
-     * the cooldown wants to be several times the request timeout — the window
-     * in which traffic flows is one timeout long, so a cooldown shorter than
-     * that spares almost nothing. The default is 30 seconds against a
-     * 10-second timeout.
-     *
-     * The store is the one the lock is taken in, because this is the same
-     * concern: what the processes serving the application do about one identity
-     * provider. A store held in the memory of one process is worth having here
-     * even so — unlike a lock, which guards nothing unless every process sees
-     * it, this only ever spares work, and a process sparing its own is a real
-     * saving. Nothing is said about such a store because nothing is wrong with
-     * it.
+     * A single failure never trips the breaker: blips (dropped connections,
+     * rate limits) are normal, and a successful exchange clears the count.
+     * There is no half-open probe; the entry lapses, so the cooldown should be
+     * several times the request timeout. A per-process store is acceptable
+     * here because the breaker only spares work.
      */
     private function providerIsUnreachable(): bool
     {
@@ -240,23 +167,17 @@ class RefreshAccessToken
         try {
             return $this->breakerCache()?->has(self::PROVIDER_FAILURE_KEY) === true;
         } catch (Throwable) {
-            // A renewal is never refused over a cache setting. A store that
-            // cannot be read simply has nothing to say about the provider.
+            // Never refuse a renewal over the cache; treat it as no cooldown.
             return false;
         }
     }
 
     /**
-     * Count one failure and leave the provider alone once they add up.
+     * Count a failure to answer and start the cooldown at the threshold.
      *
-     * Only a provider that did not answer is counted. One that refused the
-     * grant answered perfectly well — that login is over, and the next request
-     * has to reach the provider to start a new one.
-     *
-     * The count is given the cooldown's own lifetime, so failures spread wider
-     * apart than that never meet. `add()` before `increment()` is what puts a
-     * lifetime on it completely: incrementing a key that is not there creates one
-     * that outlives every window on some stores.
+     * Refused grants are not counted; the provider answered. The count lives
+     * for one cooldown, and `add()` precedes `increment()` because incrementing
+     * a missing key creates it without a TTL on some stores.
      */
     private function recordProviderFailure(): void
     {
@@ -285,18 +206,13 @@ class RefreshAccessToken
 
             $cache->put(self::PROVIDER_FAILURE_KEY, true, $cooldown);
         } catch (Throwable) {
-            // Nothing here is worth failing a renewal over either: without the
-            //  entry, the next request simply makes the call this one made.
+            // Never fail a renewal over the breaker.
         }
     }
 
     /**
-     * Take back what has been counted against the identity provider.
-     *
-     * An exchange that succeeded is the whole answer to the question the count
-     * was asking, so the failures behind it are dropped rather than left to
-     * lapse: a provider that fails once an hour must never reach the threshold,
-     * however, long it stays up in between.
+     * Clear the failure count after a successful exchange, so isolated
+     * failures never accumulate into a cooldown.
      */
     private function forgetProviderFailures(): void
     {
@@ -310,14 +226,12 @@ class RefreshAccessToken
             $cache?->forget(self::PROVIDER_FAILURE_COUNT_KEY);
             $cache?->forget(self::PROVIDER_FAILURE_KEY);
         } catch (Throwable) {
-            // A store that will not answer has anything recorded in it either.
+            // An unreachable store holds nothing to clear.
         }
     }
 
     /**
-     * How many failures within a cooldown make an outage.
-     *
-     * One is allowed and means the first failure stands for the outage.
+     * Failures within one cooldown that start it (minimum 1).
      */
     private static function providerFailureThreshold(): int
     {
@@ -327,10 +241,7 @@ class RefreshAccessToken
     }
 
     /**
-     * Let the identity provider be called again at once.
-     *
-     * The entry lapses on its own, so this is for an operator who has just
-     * fixed the provider and for a suite that asserts on the cooldown.
+     * End the cooldown immediately (for operators and tests).
      */
     public static function forgetProviderFailure(): void
     {
@@ -340,15 +251,12 @@ class RefreshAccessToken
             $cache?->forget(self::PROVIDER_FAILURE_COUNT_KEY);
             $cache?->forget(self::PROVIDER_FAILURE_KEY);
         } catch (Throwable) {
-            // Nothing to forget in a store that will not answer.
+            // An unreachable store holds nothing to clear.
         }
     }
 
     /**
-     * How long the identity provider is left alone after it fails to answer.
-     *
-     * Zero switches it off, which is the behavior of calling the provider on
-     * every renewal; however, it answered the last one.
+     * Cooldown length in seconds; zero disables the breaker.
      */
     private static function providerCooldown(): int
     {
@@ -358,17 +266,11 @@ class RefreshAccessToken
     }
 
     /**
-     * What `lock_store` names, resolved once for the life of this action.
+     * The `lock_store` store, resolved once and shared by the lock and the
+     * breaker.
      *
-     * The lock and the note about the identity provider are the same concern
-     * and live in the same store. One renewal asks for it up to three times
-     * — before the lock, for the lock, and again if the exchange fails.
-     * Resolving a store is inexpensive but not free, and it is the same store every
-     * time, so it is asked for once.
-     *
-     * The type is what the facade promises rather than what it returns: a host
-     * application is free to bind something else, and both readers below check
-     * what they were actually handed before using it.
+     * Typed `mixed` because a host may bind anything; `lockStore()` and
+     * `breakerCache()` check what they receive.
      */
     private mixed $configuredStore = null;
 
@@ -390,12 +292,8 @@ class RefreshAccessToken
     }
 
     /**
-     * The store the note about the identity provider is kept in.
-     *
-     * Null where what `lock_store` names cannot hold an entry at all — a bare
-     * lock provider, or whatever else a host application has bound. The
-     * cooldown is given up rather than insisted on; see `providerIsUnreachable()`
-     * for why nothing here is worth refusing a renewal over.
+     * The store holding the breaker entries, or null when `lock_store` is not
+     * a cache repository, in which case the breaker is disabled.
      */
     private function breakerCache(): ?CacheRepository
     {
@@ -407,32 +305,17 @@ class RefreshAccessToken
     /**
      * The store the exchange is guarded in, or null if it cannot be guarded.
      *
-     * The whole reason the exchange runs behind a lock is that the refresh
-     * token rotates and may only be spent once. That promise is only as good as
-     * the store the lock is taken in, and the store was being taken on faith:
-     * one offering no atomic locks answered the call with a fatal error rather
-     * than a lock, and one held in the memory of a single process answered with
-     * a lock that no other process can see — which is not a lock at all in any
-     * deployment running more than one worker, and `lock_store` is null by
-     * default, so whatever the application caches in is what guards this.
-     *
-     * Neither is worth failing a sign-in over: a request that cannot take the
-     * lock still has a token to renew, and refusing to renew it would sign the
-     * user out over a cache setting. Both are said out loud instead — once per
-     * process, because this sits on the hot path — and the exchange runs
-     * unguarded, which is what it was already doing in the second case.
-     *
-     * A store that is shared but not in memory — Redis, Memcached, the
-     * database — cannot be told apart from one that is not by looking at it,
-     * so `file` on more than one server is left to the operator and to the note
-     * on `lock_store` in the published configuration.
+     * A store without atomic locks returns null (the exchange runs unguarded),
+     * and an `ArrayStore` is used but guards nothing across processes. Both are
+     * logged once per process; neither fails the renewal, since that would sign
+     * the user out over a cache setting. A `file` store shared across servers
+     * cannot be detected and is left to the `lock_store` config note.
      */
     private function lockStore(): ?LockProvider
     {
         $repository = $this->configuredStore();
 
-        // A lock is taken in the store, not in the repository wrapping it. A
-        // repository that is itself a lock provider is accepted as one.
+        // Locks come from the underlying store, not the repository.
         $store = $repository instanceof Repository ? $repository->getStore() : $repository;
 
         if (! $store instanceof LockProvider) {
@@ -453,17 +336,15 @@ class RefreshAccessToken
     }
 
     /**
-     * What has already been said about the lock store in this process.
+     * Lock store warnings already logged in this process.
      *
      * @var array<string, true>
      */
     private static array $reportedAboutTheLockStore = [];
 
     /**
-     * Let the warnings be said again, for a suite that asserts on them.
-     *
-     * Reached between requests on a long-lived runtime through
-     * `Uzair::flushState()`, which is where the reason is written down.
+     * Allow lock store warnings to be logged again; called from
+     * `Uzair::flushState()` and by tests.
      */
     public static function flushLockStoreWarnings(): void
     {
@@ -471,11 +352,7 @@ class RefreshAccessToken
     }
 
     /**
-     * Say a thing about the lock store once, however many requests notice it.
-     *
-     * This is read on every renewal, and a misconfigured store stays
-     * misconfigured — so the line is worth writing once and worth nothing
-     * repeated on every request that finds it.
+     * Log a lock store warning once per process, since this is on the hot path.
      */
     private static function warnAboutTheLockStore(string $message): void
     {
@@ -489,14 +366,11 @@ class RefreshAccessToken
     }
 
     /**
-     * How long the store holds the lock before taking it back.
+     * Lock TTL in seconds.
      *
-     * It outlives the wait rather than matching it. Inside the lock sits the
-     * exchange — a round-trip carrying the provider's own timeout — with a read
-     * and a writing around it, so a slow database is enough to push the whole
-     * thing past a lock that expired at the same moment the next request gave
-     * up waiting. The lock would then be released under its holder, and both
-     * requests would spend the one thing that may only be spent once.
+     * Must outlive `lockWait()`: the locked section includes the HTTP exchange
+     * plus database reads and writes, and a lock expiring under its holder
+     * would let a second request spend the same refresh token.
      */
     private static function lockTtl(): int
     {
@@ -504,10 +378,8 @@ class RefreshAccessToken
     }
 
     /**
-     * How long a request waits for the exchange already in front of it.
-     *
-     * Long enough to cover an exchange running to the provider's full timeout,
-     * so the ordinary case is waiting rather than a 503.
+     * Seconds to wait for a running exchange; covers the provider's full
+     * timeout so the usual outcome is waiting rather than a 503.
      */
     private static function lockWait(): int
     {
@@ -515,13 +387,10 @@ class RefreshAccessToken
     }
 
     /**
-     * Spend the refresh token, unless another process got there first.
+     * Spend the refresh token, unless another process already renewed it.
      *
-     * A grant that will not open is treated as one the login does not have.
-     * Nothing can be exchanged for it. Raising the decryption failure from
-     * here would answer the browser with a 500 on every request instead of
-     * sending it back through SSO, which is what a login that cannot renew
-     * itself is owed.
+     * A refresh token that cannot be decrypted is treated as missing and
+     * returns false, sending the user back through SSO instead of a 500.
      *
      * @throws Throwable
      */
@@ -628,24 +497,12 @@ class RefreshAccessToken
     }
 
     /**
-     * The driver this exchange is made through.
+     * The registered `uzairports` Socialite driver, checked by type.
      *
-     * `Socialite::driver('uzairports')` hands back whatever is registered under
-     * that name, and a host application is free to register something else —
-     * the annotation that used to stand here promised a type nobody checked.
-     * What arrived instead reached `refreshToken()` and raised an `Error`,
-     * which the exchange caught as an ordinary failure: the login was left
-     * being renewed on every request, answered 503 every time, and the log said
-     * the identity provider had failed to refresh a token it was never asked
-     * about. `EndSessions::revokeAll()` already refuses a driver of the wrong
-     * type by name; this says the same thing at the other end.
-     *
-     * A 503 rather than `false`, for the reason `answerWithoutCalling()` gives:
-     * ending the login over this would sign every user out of an application
-     * that cannot sign them back in until somebody fixes the registration.
-     *
-     * The provider is not recorded as unreachable. It was never called, and a
-     * cooldown would only postpone the log line an operator needs to read.
+     * A host may register another driver under that name; it is refused by
+     * name here, mirroring `EndSessions::revokeAll()`. The answer is 503, not
+     * false (see `answerWithoutCalling()`), and no provider failure is recorded
+     * because the provider was never called.
      *
      * @throws ServiceUnavailableHttpException when no usable driver is registered
      */
@@ -665,7 +522,7 @@ class RefreshAccessToken
     }
 
     /**
-     * Say which driver was found where this package was expected.
+     * Log the unexpected driver and answer 503.
      */
     private function refuseTheDriver(OauthToken $token, string $found): never
     {
@@ -681,17 +538,11 @@ class RefreshAccessToken
     }
 
     /**
-     * Adopt what is stored and say what it leaves the caller to do.
+     * Reload the row once and adopt it.
      *
-     * Both callers ask the same two questions of the row — whether the login is
-     * still there, and whether somebody else has already renewed it — and
-     * asking them one at a time to read the same row twice on the hot path. One
-     * read answers both:
-     *
-     * - `false`: the row is gone. Whoever dropped it had already seen the
-     *   exchange refused, so there is nothing left to adopt;
-     * - `true`: what is stored no longer needs renewing and has been adopted;
-     * - `null`: the login is there and still due.
+     * - `false`: the row is gone (the login was ended);
+     * - `true`: the stored token no longer needs renewing and has been adopted;
+     * - `null`: the login exists and is still due.
      */
     private function reload(OauthToken $token, int $leeway): ?bool
     {
@@ -712,18 +563,11 @@ class RefreshAccessToken
     }
 
     /**
-     * The OAuth error code the identity provider refused the exchange with.
+     * The RFC 6749 `error` code from a refused exchange, if any.
      *
-     * The status alone does not say what went wrong. A refusal arrives as a 400
-     * whether the grant is no longer honored — the login has to be made again —
-     * or the request itself was wrong, which is a misconfiguration nobody can
-     * act on without being told: same status, opposite remedies. RFC 6749 names
-     * the difference in one field of the body, and it is the field an operator
-     * reads the log for.
-     *
-     * Only the code is recorded. `error_description` is prose the provider
-     * writes and may repeat the request back, which is a place a credential can
-     * end up; the code is a fixed word from the specification and is not.
+     * A 400 can mean a dead grant or a misconfigured client; the code tells
+     * them apart. `error_description` is deliberately not read, as it may echo
+     * request data including credentials.
      */
     private function oauthError(Throwable $exception): ?string
     {
@@ -745,38 +589,21 @@ class RefreshAccessToken
     }
 
     /**
-     * The OAuth error codes that name the application rather than the login.
+     * OAuth error codes that refer to the client, not the grant (RFC 6749 §5.2).
      *
-     * RFC 6749 §5.2 gives both to the client, not to the grant it presented:
-     * `invalid_client` is credentials the identity provider would not
-     * authenticate, and `unauthorized_client` is a client not allowed to use
-     * this grant type at all. Neither says anything about the refresh token —
-     * every login of every account gets the same answer because there is one
-     * set of credentials behind all of them.
-     *
-     * They used to be read as a refused grant, which is the one answer that
-     * must never be given here: `false` sends the middleware on to end the
-     * login, so a mistyped `client_secret` signed every user out as their
-     * tokens came due — and none of them could sign back in, since starting a
-     * new login spends the same credentials. That is the failure
-     * `answerWithoutCalling()` and `refuseTheDriver()` already refuse to cause;
-     * this is the third door into it.
+     * They affect every login equally, so they must never be treated as a
+     * refused grant: returning false would end each login as it came due, and
+     * nobody could sign back in with the same broken credentials.
      *
      * @var list<string>
      */
     private const array CLIENT_ERRORS = ['invalid_client', 'unauthorized_client'];
 
     /**
-     * Say that the application, not the login, is what was refused.
+     * Log an error that the client credentials were refused and answer 503.
      *
-     * A 503 rather than `false`, and an error rather than the warning the
-     * exchange already wrote: nothing renews until somebody changes the
-     * configuration, and the line that says so is the one an operator is
-     * looking for.
-     *
-     * The provider is not recorded as unreachable. It answered, and precisely —
-     * the cooldown is for a provider that did not, and pausing the calls here
-     * would only postpone the log line while the logins stay stuck either way.
+     * Not false (see `CLIENT_ERRORS`), and no provider failure is recorded: the
+     * provider answered, and a cooldown would only delay the log line.
      *
      * @throws ServiceUnavailableHttpException always
      */
@@ -792,15 +619,10 @@ class RefreshAccessToken
     }
 
     /**
-     * Whether the identity provider refused the grant this login presented.
+     * Whether the provider refused this login's grant, which ends the login.
      *
-     * Only the login is ended on this answer, so it covers the codes that name
-     * the grant and nothing else. What names the application is taken out
-     * before this is asked — see `CLIENT_ERRORS`.
-     *
-     * A refusal whose body cannot be read is still a refusal at 401, and stays
-     * one: the token endpoint answering 401 with no OAuth error to give is the
-     * shape of a credential that is no longer honored.
+     * Covers grant errors only; `CLIENT_ERRORS` are excluded. A 401 without a
+     * readable OAuth error still counts as a refused grant.
      */
     private function grantWasRejected(Throwable $exception): bool
     {

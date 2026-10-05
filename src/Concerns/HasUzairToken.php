@@ -11,31 +11,23 @@ use Uzairports\Uzairid\Uzair;
 /**
  * The SSO identity behind an account, and the logins it holds.
  *
- * `uzair_id` is declared here rather than left to each host application to
- * declare for itself: the package's own migration adds the column, this trait
- * reads it in `isUzairUser()`, and the middleware reads it to decide whether a
- * session that lost its login belongs to SSO at all. A model carrying the trait
- * therefore carries the column, and static analysis in every application using
- * it was reporting an undefined property on a column the package put there.
+ * `uzair_id` is declared here because the package's migration adds the column
+ * and the package reads it, so every model carrying the trait carries it.
  *
  * @property string|null $uzair_id
  */
 trait HasUzairToken
 {
     /**
-     * The login resolved for the session named by `$resolvedForSessionId`.
-     *
-     * Null is an answer in its own right — this session holds no login — which
-     * is why the session it was resolved for is remembered separately.
+     * The login resolved for `$resolvedForSessionId`; null means "no login".
      */
     protected ?OauthToken $resolvedCurrentToken = null;
 
     /**
      * The session `$resolvedCurrentToken` was resolved for.
      *
-     * Null is a session id in its own right here — it stands for a caller that
-     * has no browser session — so it cannot also mean "nothing resolved yet".
-     * That is what `$currentTokenWasResolved` is for.
+     * Null stands for a sessionless caller, so "nothing resolved yet" is
+     * tracked by `$currentTokenWasResolved` instead.
      */
     protected ?string $resolvedForSessionId = null;
 
@@ -50,13 +42,10 @@ trait HasUzairToken
     protected int|string|null $resolvedForAccessTokenId = null;
 
     /**
-     * Every SSO login the account currently holds — one per browser session or
-     * mobile client.
+     * Every SSO login the account currently holds, one per session or client.
      *
-     * Everything in this trait goes through this name rather than `tokens()`,
-     * because Sanctum's `HasApiTokens` declares a `tokens()` of its own. A model
-     * carrying both keeps Sanctum's — `createToken()` relies on it — and reads
-     * its logins here:
+     * The trait uses this name rather than `tokens()`, which Sanctum's
+     * `HasApiTokens` also declares. A model carrying both keeps Sanctum's:
      *
      * ```php
      * use HasApiTokens, HasUzairToken {
@@ -72,9 +61,7 @@ trait HasUzairToken
     }
 
     /**
-     * Every SSO login the account currently holds, under its original name.
-     *
-     * Kept for models that do not carry Sanctum; see `uzairTokens()`.
+     * Alias of `uzairTokens()` for models without Sanctum.
      *
      * @return HasMany<OauthToken, $this>
      */
@@ -86,9 +73,8 @@ trait HasUzairToken
     /**
      * The most recent login, whichever device made it.
      *
-     * Useful for showing something about the account, never for acting on
-     * behalf of the person in front of you: on a second device this is somebody
-     * else's browser. Reach for `currentToken()` when you mean "this request".
+     * For display only: it may belong to another device. Use `currentToken()`
+     * to act for this request.
      *
      * @return HasOne<OauthToken, $this>
      */
@@ -100,28 +86,12 @@ trait HasUzairToken
     /**
      * The login this request is running on.
      *
-     * The login naming it answers a request that has a browser session.
-     * One that has none — an API client, a console command — is answered by a
-     * login that names none either: `session_id` is nullable precisely so that
-     * a token can be held outside a session, and such a row belongs to the
-     * caller as surely as a browser's row belongs to its browser.
+     * Resolved by `OauthToken::scopeHeldBy()`, the same rule `uzair.token`
+     * uses: a mobile client by its Sanctum token, a browser by its session, a
+     * sessionless caller by a login naming neither.
      *
-     * It used to answer null there, and had to. A sessionless request was being
-     * handed the account's most recent login — somebody else's browser — so
-     * refusing to give it out was the only thing keeping this method honest.
-     * `uzair.token` stopped doing that; the row it resolves now is the caller's
-     * own, and this went on refusing to hand back a login the middleware had
-     * just checked. An application following the README's own advice for API
-     * routes had no supported way to read its token.
-     *
-     * The answer is remembered for the session it was resolved for, so asking
-     * twice in one request costs one query. "No login here" is remembered too:
-     * it is the answer the middleware acts on, and re-reading it would mean a
-     * query on every ask.
-     *
-     * A mobile client is answered by the login filed under the Sanctum token it
-     * authenticated with — see `OauthToken::scopeHeldBy()`, which is the rule
-     * `uzair.token` goes by as well.
+     * The answer, including "no login", is memoized per session and Sanctum
+     * token, so repeated calls in one request cost one query.
      */
     public function currentToken(): ?OauthToken
     {
@@ -147,15 +117,9 @@ trait HasUzairToken
     /**
      * Adopt a login already looked up for the given session.
      *
-     * The `uzair.token` middleware resolves the login to decide whether the
-     * request may continue and hands the result here so that a controller or a
-     * view asking the same question afterward is answered without a second
-     * query. Null is adopted as readily as a row: "this caller holds no login"
-     * is an answer worth keeping.
-     *
-     * A null session id is passed and kept, rather than refused: it is what the
-     * middleware resolved a sessionless request against, and dropping it here
-     * was what made an API client pay a query for a lookup already made.
+     * Called by `uzair.token` so later `currentToken()` calls need no query.
+     * A null token and a null session id (a sessionless caller) are both kept
+     * as valid answers.
      */
     public function rememberCurrentToken(?OauthToken $token, ?string $sessionId, int|string|null $accessTokenId = null): static
     {
@@ -170,9 +134,7 @@ trait HasUzairToken
     /**
      * Get the decrypted access token of the current login, if there is one.
      *
-     * A token stored under a key the application no longer holds cannot be read
-     * back, and answers null the same way a caller holding no login does: in
-     * both cases there is no token here to call the identity provider with.
+     * Null also when the stored token cannot be decrypted.
      */
     public function getUzairAccessToken(): ?string
     {

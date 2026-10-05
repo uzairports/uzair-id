@@ -23,12 +23,10 @@ use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Uzair;
 
 /**
- * One SSO login: the tokens it was issued and the browser session holding them.
+ * One SSO login: the tokens it was issued and the session or client holding them.
  *
- * A user has one row per session, so the same account may be signed in on a
- * phone and a desktop at once, each with its own grant. That is how OAuth means
- * it: each browser exchanged its own authorization code, so each has its own
- * refresh token to rotate.
+ * A user has one row per browser session or mobile client, each with its own
+ * grant and refresh token to rotate.
  *
  * @property int $id
  * @property int|string $user_id
@@ -74,7 +72,7 @@ class OauthToken extends Model
     }
 
     /**
-     * The access token to this login was issued, or null if it will not open.
+     * The access token of this login, or null if it cannot be decrypted.
      */
     public function readableAccessToken(): ?string
     {
@@ -82,7 +80,7 @@ class OauthToken extends Model
     }
 
     /**
-     * The refresh token this login was issued, or null if it will not open.
+     * The refresh token of this login, or null if it cannot be decrypted.
      */
     public function readableRefreshToken(): ?string
     {
@@ -90,24 +88,13 @@ class OauthToken extends Model
     }
 
     /**
-     * Read one of the token columns back, answering null where it will not open.
+     * Read an encrypted token column, answering null when it cannot be decrypted.
      *
-     * Both columns are `encrypted` casts, so a value written under a key the
-     * application no longer holds — a rotated `APP_KEY` with no
-     * `APP_PREVIOUS_KEYS` behind it, a dump restored into another environment —
-     * raises a decryption failure from wherever the property is read. Left to
-     * itself that is a 500 on every request the login touches, including the
-     * ones that would have ended it: the grant can neither be spent nor given
-     * up, and the account holding it has no way out but a support ticket.
-     *
-     * Null says the same thing to every caller — there is nothing here that can
-     * be spent — so the login is dropped locally, and its owner signs in again,
-     * which is what happens to a login whose grant is refused anyway.
-     *
-     * A column that is merely empty answers null too and says nothing worth
-     * recording. The row carrying a value nobody can open is the one worth a
-     * line, because it is a key that went missing, not a token that was never
-     * issued.
+     * A value written under a key the application no longer holds (a rotated
+     * `APP_KEY`, a restored dump) must not raise, or every request touching the
+     * login fails, including the ones that would end it. Null means "nothing to
+     * spend", so the login is dropped and its owner signs in again. Only an
+     * undecryptable value is logged; an empty column is not.
      */
     private function readable(string $attribute): ?string
     {
@@ -127,18 +114,13 @@ class OauthToken extends Model
     }
 
     /**
-     * Narrow a query to the login held by one caller.
+     * Narrow a query to the login held by one caller, checked in this order:
      *
-     * A caller is one of three things, asked in this order:
-     *
-     * - A mobile client, named by the Sanctum token it authenticated with. It
-     *   comes first because a token may be sent to a route that also starts a
-     *   session, and that session is not what the login was filed under;
-     * - A browser, named by its session;
-     * - Anything else holding no session — a console command, an integration
-     *   given a row by hand — which is matched only against logins naming
-     *   neither, so it never borrows a phone's grant. The unique pair does not
-     *   collapse several such rows, so the most recent is taken.
+     * - a mobile client, by its Sanctum token (first, because a token may reach
+     *   a route that also starts a session the login was not filed under);
+     * - a browser, by its session;
+     * - anything else, only against logins naming neither, so it never borrows
+     *   a phone's grant; the most recent such row is taken.
      *
      * @param  Builder<OauthToken>  $query
      */
@@ -170,62 +152,23 @@ class OauthToken extends Model
     }
 
     /**
-     * The logins there is no longer any use for, by the measure each one asks.
+     * The logins there is no longer any use for.
      *
-     * A row that names a browser session goes by how long it is since anything
-     * touched it. A browser that is simply closed leaves its row behind:
-     * nothing signs it out, and the session it names expires quietly in the
-     * session store. Twice the session lifetime after the row was last used,
-     * whatever it names is gone, and so is any use for the row.
+     * - A browser login goes once `updated_at` is older than twice the session
+     *   lifetime, or null (a row written around Eloquent would otherwise never
+     *   match). `keepAlive()` keeps `updated_at` meaning "last seen".
+     * - A sessionless login goes only when it can no longer be spent or renewed:
+     *   no refresh token and an expired or unknown access token. One holding a
+     *   refresh token is ended deliberately, never on a timer.
+     * - A mobile login goes once its Sanctum token is gone. The subquery assumes
+     *   both tables live on the same connection.
      *
-     * What makes that safe is `keepAlive()`: the row is written again while its
-     * browser is still making requests, so `updated_at` means "last seen" and
-     * not merely "last refreshed". Without it a login whose access token
-     * outlives the window — an identity provider handing out an eight-hour
-     * token against a two-hour session lifetime — would go untouched while its
-     * owner worked and be pruned out from under them.
+     * The measures form one bracketed group because callers narrow the query
+     * further (`deleteForPruning()` adds `whereKey()`); do not flatten it. Rows
+     * go only when the host application schedules `model:prune`.
      *
-     * A row carrying no `updated_at` is swept on sight. `timestamps()` leaves
-     * the column nullable, so a row written around Eloquent — a seeder, a data
-     * migration, an import — can arrive without one, and null answers no
-     * comparison: matched by `<` alone such a row is not merely kept, it is
-     * kept for good, because nothing but `keepAlive()` on a request it may
-     * never see would ever give it a date to be measured by.
-     *
-     * A row that names no session is measured by nothing of the sort, and used
-     * to be. `session_id` is nullable so that a login can be held outside a
-     * browser — an API client, a console command — and the whole argument above
-     * rests on a session having quietly expired somewhere. There is none. Such
-     * a login was being collected after four hours of an idle API on the
-     * default settings, and its grant handed back with it, which is a
-     * credential deleted for the crime of not being called overnight.
-     *
-     * It is measured by whether anything can still be done with it instead: a
-     * login holding no refresh token, whose access token has run out, cannot be
-     * spent and cannot be renewed. That is the whole of it — while a refresh
-     * token is there, the login renews indefinitely and is nobody's to collect
-     * on a timer. Those are ended deliberately, through `uzair.logoutDevice` or
-     * `EndSessions`, the way a credential is.
-     *
-     * A mobile client's login goes the moment its Sanctum token does. The token
-     * may expire under `sanctum.expiration`, or be deleted by the application
-     * or by `sanctum:prune-expired`, and nothing of this package hears about
-     * it: the row would otherwise keep its refresh token, and so its grant, for
-     * good. The check is a subquery, so it assumes the tokens live on the same
-     * connection as the logins, which is how Sanctum ships.
-     *
-     * The measures are one bracketed group, not clauses side by side. Callers
-     * narrow this query further — `deleteForPruning()` adds `whereKey()` — and
-     * `A OR B AND key = ?` is not what any of them mean.
-     *
-     * Pruning runs through Laravel's `model:prune` command, which the host
-     * application has to schedule for the rows to actually go.
-     *
-     * The projection is covariant because `Builder`'s model parameter is not,
-     * and larastan has told two different stories about what `newQuery()`
-     * hands back — `Builder<OauthToken>` in 3.11, `Builder<static>` in 3.12,
-     * both of which the matrix analyses. Either satisfies a covariant
-     * projection; neither satisfies the other written out invariantly.
+     * The projection is covariant so it holds whether larastan infers
+     * `Builder<OauthToken>` or `Builder<static>` for `newQuery()`.
      *
      * @return Builder<covariant OauthToken>
      */
@@ -283,9 +226,8 @@ class OauthToken extends Model
     /**
      * Flush the cached pruner instance between sweeps, requests, or tests.
      *
-     * Reached on every Octane request through `Uzair::flushState()`, so a
-     * worker never hands the next request an action built out of a container
-     * the application has since rebound.
+     * Called through `Uzair::flushState()` so a long-lived worker never reuses
+     * an action built from a container that has since been rebound.
      */
     public static function flushPruner(): void
     {
@@ -293,26 +235,13 @@ class OauthToken extends Model
     }
 
     /**
-     * Sweep the abandoned logins, handing a chunk's grants back together.
+     * Sweep the abandoned logins, revoking each chunk's grants in one batch.
      *
-     * The trait's own sweep prunes one model at a time, and `pruning()` settles
-     * that row's revocations before the next one is even read. Every row
-     * therefore cost its own wait on the identity provider — up to the
-     * revocation timeout apiece — so a command dropping thousands of them took
-     * as long as the sum of them all, which for a real backlog is hours rather
-     * than minutes. `revoke_on_prune` was the only way out, and turning it off
-     * means leaving live grants behind.
-     *
-     * A chunk's grants go out together instead and are waited on once, which is
-     * how every other bulk path in this package already spends them. The rows
-     * are still deleted one apiece, the way the trait deletes them, so anything
-     * observing the model hears about each of them; `pruning()` is not called
-     * along the way. The rows are rechecked and deleted under a row lock,
-     * then their grants are surrendered after the transactions have committed.
-     *
-     * A row that will not delete is reported, and the sweep carries on again as
-     * the trait does: one unhappy row must not leave the rest of the backlog
-     * standing.
+     * Overrides the trait so revocations are awaited once per chunk rather than
+     * once per row. Rows are still rechecked and deleted one apiece under a row
+     * lock, so model events fire; `pruning()` is not called, or grants would be
+     * revoked twice. Grants are surrendered after commit. A row that fails to
+     * delete is reported and the sweep continues.
      *
      * @throws Throwable
      */
@@ -330,13 +259,8 @@ class OauthToken extends Model
     }
 
     /**
-     * Delete still-abandoned logins before surrendering their current grants.
-     *
-     * The entries the resolved logins were cached undergo too. Pruning is the
-     * one path that used to leave them — `login_cache_ttl` documents a swept
-     * row as exactly what the entry's lifetime covers — but the sweep is
-     * holding every session id it is about to orphan anyway, and dropping them
-     * costs one call for the whole chunk.
+     * Delete still-abandoned logins, then forget their cached logins and
+     * surrender only the grants of rows that actually deleted.
      *
      * @param  Collection<int, OauthToken>  $tokens
      * @return int the number of rows actually dropped
@@ -399,9 +323,9 @@ class OauthToken extends Model
     /**
      * Prune one explicitly selected login and surrender its current grants.
      *
-     * Like the trait's single prune(), this does not apply the sweep's age
-     * filter. The pruning hook runs before deletion, but remote revocation
-     * runs after commit, so a concurrent refresh cannot leave new grants behind.
+     * Skips the sweep's age filter. The pruning hook runs before deletion and
+     * revocation after commit, so a concurrent refresh cannot leave new grants
+     * behind.
      */
     public function prune(): bool
     {
@@ -450,18 +374,9 @@ class OauthToken extends Model
     /**
      * Record that the login is still in use, if it has not been written lately.
      *
-     * `updated_at` is what pruning reads, and nothing else writes the row
-     * between refreshes — so on its own it would say when the token last
-     * changed rather than when the browser was last here. This closes that gap
-     * while keeping the cost to one writing per half a session lifetime, instead
-     * of one on every request.
-     *
-     * The column is nullable, and a row written around Eloquent — a raw insert,
-     * an import from an earlier version of the package — arrives with nothing
-     * in it. Such a row is not merely unreadable here: `prunable()` compares
-     * against `updated_at`, and null answers no comparison, so it would never
-     * be collected either. It is stamped as seen now, which both answers the
-     * question and puts the row back in reach of pruning.
+     * Pruning reads `updated_at` as "last seen", so it is touched at most once
+     * per half session lifetime rather than on every request. A null
+     * `updated_at` is stamped now.
      */
     public function keepAlive(): void
     {
@@ -475,35 +390,14 @@ class OauthToken extends Model
     }
 
     /**
-     * File an account's login under the session id its browser now carries.
+     * File an account's login under the session id its browser now carries,
+     * after `session()->regenerate()` changed it.
      *
-     * A login names a session, and a session is free to be renamed under it.
-     * `$request->session()->regenerate()` is ordinary Laravel — confirming a
-     * password, passing a second factor, `logoutOtherDevices()`, a host
-     * application hardening a privilege change — and it keeps the payload while
-     * handing the browser a new id. The row went on naming the old one, so the
-     * very next request through `uzair.token` found no login for the session it
-     * was made from, dropped the session and sent a signed-in user back through
-     * SSO, leaving a row nobody could reach still holding a grant nobody gave
-     * up until the sweep collected it.
-     *
-     * The move is scoped to the account, because the id alone is not evidence
-     * of whose login it is: what says the two ids are the same browser is the
-     * session payload, which is the application's own store and which the
-     * browser cannot write. `Uzair::followRegeneratedSession()` is where that
-     * is read; this is only the writing.
-     *
-     * Written around the model on purpose, the way `keepAlive()` writes
-     * quietly: nothing about the login changed except where it is filed, and an
-     * observer watching for a login being saved is watching for grants moving,
-     * not for a browser being renamed.
-     *
-     * The unique pair refuses the move when the account already holds a login
-     * under the new id. There is nothing to do about it and nothing to report:
-     * a caller only reaches this having found no login under that id, so the
-     * row it collided with was written between the two — by another request of
-     * the same browser doing this, or by a callback signing in again — and
-     * either way the login the caller is looking for is now there to be read.
+     * Scoped to the account, because a session id does not prove ownership;
+     * `Uzair::followRegeneratedSession()` checks the session payload first.
+     * Written without model events: only the filing changed, not the grants.
+     * A unique-constraint collision means a concurrent request already filed a
+     * login under the new id, so it counts as found.
      *
      * @return bool whether the login is worth looking for under the new id
      */
@@ -526,9 +420,7 @@ class OauthToken extends Model
             return false;
         }
 
-        // The entry was keyed by an id no browser carries now, and the login it
-        // stands for is filed elsewhere. Nothing reads it again either way; it
-        // goes because every id this package stops using it drops.
+        // Every session id this package stops using has its cache entry dropped.
         self::forgetLogin($previousSessionId);
 
         return true;
@@ -537,9 +429,8 @@ class OauthToken extends Model
     /**
      * How long the host application keeps a session, in minutes.
      *
-     * A lifetime that is not a number is a misconfiguration, and casting one
-     * would read as zero — pruning every login on the next sweep. The default
-     * stands instead.
+     * A non-numeric value falls back to the default rather than casting to
+     * zero, which would prune every login.
      */
     private static function sessionLifetime(): int
     {
@@ -549,9 +440,8 @@ class OauthToken extends Model
     }
 
     /**
-     * How long a resolved login may answer for the row, in seconds.
-     *
-     * Zero — the default — means it may not, and every request reads the row.
+     * How long a resolved login may stand in for the row, in seconds; zero
+     * (the default) disables the cache.
      */
     public static function loginCacheTtl(): int
     {
@@ -563,25 +453,10 @@ class OauthToken extends Model
     /**
      * The store the resolved logins are kept in.
      *
-     * `login_cache_store` is null by default, so whatever the application
-     * caches in is what an ended login has to be forgotten from. That is good
-     * enough only while every process serving the application reads the same
-     * store: `forgetLogin()` cannot reach across two that do not share, so a
-     * device signed out through one of them keeps being let through by the rest
-     * until the entry lapses. The setting exists so the entries can be pointed
-     * at a shared store without moving what the application caches in.
-     *
-     * A store held in the memory of one process is the case that can be seen
-     * from here, and it is worth saying: nothing it writes is ever read back,
-     * so the lifetime buys none of the reads it was set for, and nothing it
-     * forgets is forgotten anywhere else. Nothing is refused over it — an entry
-     * nobody can find behaves exactly like the default of reading the row — and
-     * it is said once per process, because this sits on the hot path.
-     *
-     * A store that is shared but not in memory — Redis, Memcached, the database
-     * — cannot be told apart from one that is not by looking at it, so `file`
-     * across several servers is left to the operator and to the note on
-     * `login_cache_store` in the published configuration.
+     * `login_cache_store` (null = the default store) must be shared by every
+     * process, or `forgetLogin()` cannot reach them all. An in-process
+     * `ArrayStore` is warned about once per process but not refused; other
+     * unshared stores (e.g. `file` across servers) cannot be detected here.
      */
     private static function loginCache(): CacheRepository
     {
@@ -591,8 +466,7 @@ class OauthToken extends Model
             ? Cache::store($configured)
             : Cache::store();
 
-        // What the entries live in is the store, not the repository wrapping
-        // it, and only a repository can be asked for one.
+        // Only a concrete repository exposes its underlying store.
         $store = $repository instanceof Repository ? $repository->getStore() : null;
 
         if ($store instanceof ArrayStore) {
@@ -605,17 +479,14 @@ class OauthToken extends Model
     }
 
     /**
-     * What has already been said about the login cache in this process.
+     * Login cache warnings already logged in this process.
      *
      * @var array<string, true>
      */
     private static array $reportedAboutTheLoginCache = [];
 
     /**
-     * Let the warnings be said again, for a suite that asserts on them.
-     *
-     * Reached between requests on a long-lived runtime through
-     * `Uzair::flushState()`, which is where the reason is written down.
+     * Let the warnings be logged again; called through `Uzair::flushState()`.
      */
     public static function flushLoginCacheWarnings(): void
     {
@@ -623,11 +494,7 @@ class OauthToken extends Model
     }
 
     /**
-     * Say a thing about the login cache once, however many requests notice it.
-     *
-     * This is read on every request the middleware lets through, and a
-     * misconfigured store stays misconfigured — so the line is worth writing
-     * once and worth nothing repeated on every request that finds it.
+     * Log a login cache warning once per process, since this is on the hot path.
      */
     private static function warnAboutTheLoginCache(string $message): void
     {
@@ -641,18 +508,11 @@ class OauthToken extends Model
     }
 
     /**
-     * What was last resolved for a session if it may still be used.
+     * What was last resolved for a session, if it may still be used.
      *
-     * The account is carried alongside the expiry because a session id is not
-     * proof of whose login it names: an entry left by whoever held the session
-     * before must not answer for whoever holds it now, and the caller compares
-     * the two before trusting it.
-     *
-     * A store that will not answer has anything to say about the login, so the
-     * row is read instead — which is what `login_cache_ttl` being zero does on
-     * every request anyway. Left to itself, the failure came out of the
-     * middleware, and a cache outage answered every authenticated request with
-     * a 500: an optimization nobody asked for taking the application down.
+     * The account is stored with the expiry because a session id does not prove
+     * ownership; the caller compares it before trusting the entry. A failing
+     * store is reported and answers null, so the row is read instead.
      *
      * @return array{user: string, expires_at: int|null}|null
      */
@@ -683,16 +543,10 @@ class OauthToken extends Model
     }
 
     /**
-     * Let this login answer for its row until the entry lapses.
+     * Let this login stand in for its row until the entry lapses.
      *
-     * An entry that cannot be written is an entry the next request will not
-     * find, and a request that finds none reads the row — so a store that will
-     * not take it costs a query and nothing else. Raised through, it answered a
-     * request whose login had just been resolved as perfectly fresh with a 500.
-     *
-     * Only the writing is caught. The read around it is this application's own
-     * database, and a failure there is not something to swallow on the way to
-     * an optimization.
+     * A failing cache write is reported, not raised: the next request just reads
+     * the row. Only the cache call is caught; database failures still raise.
      *
      * @throws Throwable
      */
@@ -704,17 +558,11 @@ class OauthToken extends Model
             return;
         }
 
-        // Hold the row until publication finishes, so deletion cannot forget
+        // Hold the row until publication finishes, so a deletion cannot forget
         // the entry between checking the login and writing its cached answer.
-        //
-        // Shared rather than exclusive. All this needs is that a deleted cannot
-        // commit in between, and a shared lock blocks one — it wants the row
-        // exclusively. What it does not block is another request of the same
-        // account publishing at the same moment, which is the common case and
-        // used to queue: the entry is written under this lock, so an exclusive
-        // one held the row for the length of a call to the cache store, and a
-        // store having a slow minute became lock waits on the login itself.
-        // Nothing here writes the row, so there is no upgrade to deadlock over.
+        // The lock is shared: it blocks a delete but lets concurrent requests of
+        // the same login publish in parallel. Nothing here writes the row, so
+        // there is no lock upgrade to deadlock over.
         $this->getConnection()->transaction(function () use ($sessionId, $ttl): void {
             $stored = $this->newQuery()
                 ->whereKey($this->getKey())
@@ -738,20 +586,10 @@ class OauthToken extends Model
     }
 
     /**
-     * Stop a session's entry answering for a row that is no longer there.
+     * Stop a session's entry standing in for a row that is no longer there.
      *
-     * Every path in the package that ends a login calls this, so a device
-     * signed out from another one stops being let through as soon as that
-     * request finishes rather than when the entry lapses — as long as the two
-     * share a cache store, which any deployment running more than one process
-     * already needs for locks.
-     *
-     * A row dropped from outside the package — a sweep, a handwritten delete —
-     * is what the entry's lifetime is actually covering.
-     *
-     * A store that will not drop the entry is reported and not raised through,
-     * for the reason `forgetLogins()` gives at length: every caller here has
-     * already deleted the row, and the ending must finish.
+     * Every path that ends a login must call this. A failing store is reported,
+     * not raised, because the row is already deleted and the ending must finish.
      */
     public static function forgetLogin(?string $sessionId): void
     {
@@ -767,27 +605,11 @@ class OauthToken extends Model
     }
 
     /**
-     * Stop several sessions' entries answering for rows that are no longer there.
+     * Stop several sessions' entries standing in for rows that are no longer there.
      *
-     * Ending an account's logins forgets one entry per login, and this is the
-     * one call the callers make for all of them. What it is not is one command
-     * on the wire: `Illuminate\Cache\Repository::deleteMultiple()` loops
-     * `forget()` over the keys, and no first-party store overrides it, so a
-     * remote store is still charged a round-trip apiece. The comment that used
-     * to stand here promised the round-trips were saved and they never were.
-     *
-     * Whether that is worth going under the repository for depends on the
-     * caller: a logout drops one entry, `single_session` a handful, and only a
-     * pruning sweep of an unusual backlog drops enough for the difference to be
-     * measurable. Nothing here is on a browser's critical path in a quantity
-     * that shows, so it stays on the contract every store implements.
-     *
-     * A store that will not answer is reported and not raised through. Every
-     * caller has already deleted the rows by the time this runs, and the rest
-     * of the ending — dropping the sessions, handing the grants back to the
-     * identity provider — must not be skipped over a cache: the row is gone, so
-     * the middleware refuses that device the moment the entry lapses, and the
-     * `login_cache_ttl` note is where the seconds in between are documented.
+     * `deleteMultiple()` still costs one round-trip per key on first-party
+     * stores. A failing store is reported, not raised, so the rest of the
+     * ending (sessions, revocation) is never skipped.
      *
      * @param  array<array-key, string>  $sessionIds
      */
@@ -817,12 +639,7 @@ class OauthToken extends Model
     }
 
     /**
-     * Say that the login cache would not answer, once per process.
-     *
-     * A store that is down for every request, and the line is worth
-     * writing once and worth nothing repeated on each of them — the same
-     * bargain `warnAboutTheLoginCache()` already makes for a misconfigured
-     * store, and the same one `flushLoginCacheWarnings()` undoes for a test.
+     * Report that the login cache failed, once per process.
      */
     private static function reportLoginCacheFailure(string $refusedTo, Throwable $exception): void
     {
@@ -832,11 +649,10 @@ class OauthToken extends Model
     }
 
     /**
-     * The entry of a session's login is kept under.
+     * The cache key for a session's login.
      *
-     * The session id is hashed rather than spelled out: it is the credential
-     * the browser holds, and a cache store is a place where keys are routinely listed
-     * and dumped.
+     * The session id is hashed because it is a credential and cache keys are
+     * routinely listed.
      */
     private static function loginCacheKey(string $sessionId): string
     {
@@ -869,9 +685,7 @@ class OauthToken extends Model
     /**
      * A short name for the device this login is running on.
      *
-     * It is a guess read off the user agent, which is a string the browser is
-     * free to make up: good enough for a person to recognize their own phone in
-     * a list, never good enough to decide anything on.
+     * A guess from the user agent, for display only; never decide anything on it.
      */
     public function deviceLabel(): string
     {

@@ -9,19 +9,9 @@ return new class extends Migration
     /**
      * Run the migrations.
      *
-     * Signing in ends the login the same browser was holding a moment ago, and
-     * looks it up by the session id it had before the handshake regenerated it.
-     * That row may belong to another account — a shared computer, a second
-     * identity — so the lookup cannot be scoped to the account, which is what
-     * makes it the one writing path the unique pair does not serve: the pair
-     * leads with `user_id`, and an index cannot be entered halfway.
-     *
-     * Left as it was, every sign-in read `oauth_tokens` end to end. The table
-     * holds a row per live login, so that scan grows with the number of people
-     * signed in — worst at exactly the hour they are all signing in.
-     *
-     * Installations created after this release already have the index from the
-     * creation migration, so it is added only where it is missing.
+     * Sign-in looks up the browser's previous login by `session_id` alone (the
+     * row may belong to another account), and the unique pair leads with
+     * `user_id`, so `session_id` needs its own index. Skipped when one exists.
      */
     public function up(): void
     {
@@ -37,9 +27,7 @@ return new class extends Migration
     /**
      * Reverse the migrations.
      *
-     * The dedicated name identifies an index this upgrade created. Indexes
-     * from the creation migration or an older release remain owned by those
-     * migrations, including when up() skipped an existing custom index.
+     * Drops only the index carrying this upgrade's dedicated name.
      */
     public function down(): void
     {
@@ -53,15 +41,8 @@ return new class extends Migration
     }
 
     /**
-     * Whether some index already covers `session_id` on its own.
-     *
-     * The name is not what is looked for: an installation may have added the
-     * index by hand under a name of its own, and adding a second one under
-     * Laravel's would cost a writing on every row for nothing.
-     *
-     * The unique `(user_id, session_id)` pair does not answer here and must
-     * not: it leads with `user_id`, so a query naming only the session cannot
-     * use it.
+     * Whether any index, under any name, covers exactly `['session_id']`.
+     * The unique pair must not count, as it leads with `user_id`.
      */
     private function hasSessionIndex(): bool
     {

@@ -2,47 +2,35 @@
 
 namespace Uzairports\Uzairid\Http\Controllers;
 
-use Carbon\CarbonInterface;
-use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Auth\Authenticatable;
-use Illuminate\Contracts\Auth\Factory as AuthFactory;
 use Illuminate\Contracts\Auth\StatefulGuard;
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\QueryException;
-use Illuminate\Database\UniqueConstraintViolationException;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\InvalidStateException;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\RedirectResponse as SymfonyRedirectResponse;
-use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
+use Uzairports\Uzairid\Actions\RecordLogin;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
+use Uzairports\Uzairid\Actions\StoreAccount;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
-use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Uzair;
 
 /**
- * The endpoints behind `Uzair::routes()`.
+ * The browser endpoints behind `Uzair::routes()`.
  *
- * The whole handshake lives here rather than in each host application, so that
- * the ordering it depends on — the account, then the session, then the login
- * that names it, then the events — is fixed in one place. Applications that
- * need to change a step extend this class and pass it to
- * `Uzair::routes(['controller' => ...])`.
+ * The handshake's order — the account, then the session, then the login that
+ * names it, then the events — is fixed here. Applications that need to change
+ * a step extend this class and pass it to `Uzair::routes(['controller' => ...])`.
  */
-class UzairAuthController
+class UzairAuthController extends UzairController
 {
     public function redirect(): SymfonyRedirectResponse
     {
@@ -52,17 +40,14 @@ class UzairAuthController
     /**
      * Complete the SSO handshake and open a session for the identity behind it.
      *
-     * The account is written, then the browser is signed in — `Auth::login()`
-     * migrates the session to prevent fixation, settling the final session id —
-     * and then the token row is written against that id. Each write is atomic
-     * in itself; the sign-in between them is deliberately not inside either,
-     * because it fires events a host application listens to. See
-     * `storeIdentity()`.
+     * Anything failing after the code exchange leaves the browser signed out:
+     * the session is invalidated, the issued grants are surrendered, and the
+     * browser is sent back with the reason.
      *
-     * Anything failing along the way leaves the browser unauthenticated: the
-     * session is invalidated, the grants the handshake was already issued are
-     * handed back — see `surrenderIssuedGrants()` — and the user is sent back
-     * with the reason.
+     * Under `single_session` the account's other logins end once this one is
+     * written. Two sign-ins finishing at once may end each other; that is left
+     * unserialized on purpose — it keeps the one-login promise the strict way,
+     * and signing in again is one redirect.
      *
      * @throws Throwable
      */
@@ -78,6 +63,7 @@ class UzairAuthController
         }
 
         $uzairUser = null;
+        $storeAccount = app(StoreAccount::class, ['resolveUser' => $resolveUser]);
 
         try {
             app(EnsureTokenStorageMatchesProvider::class)();
@@ -87,7 +73,7 @@ class UzairAuthController
 
             $previousSessionIds = Uzair::loginSessionIds($request);
 
-            ['user' => $user, 'token' => $token] = $this->storeIdentity($request, $uzairUser, $resolveUser);
+            ['user' => $user, 'token' => $token] = $this->storeIdentity($request, $uzairUser, $storeAccount);
         } catch (InvalidStateException) {
             $this->reportLostHandshake($request);
 
@@ -112,20 +98,9 @@ class UzairAuthController
 
         $this->noteTheBrowsersLogin($request);
 
-        // Two callbacks for one account finishing at the same moment each writes
-        // their own row and then ends "the others", which by then includes the
-        // row the other one just wrote: both logins can go, and both browsers
-        // are sent back through SSO on their next request. That is left
-        // unserialized on purpose. Closing it means holding a lock on the
-        // account across the writing and the sweep — on the sign-in path, for
-        // every sign-in — to buy an outcome that differs from the intended one
-        // only in which of two simultaneous logins survives. `single_session`
-        // promises that one login stands at a time, and ending both keeps that
-        // promise the strict way: nothing is left signed in that should not be,
-        // and signing in again is one redirect.
         if (config('uzairports.single_session', false)) {
             $endSessions(
-                $this->accountKey($user),
+                $storeAccount->keyOf($user),
                 $token->session_id,
                 revoke: (bool) config('uzairports.revoke_on_single_session', true),
             );
@@ -137,177 +112,32 @@ class UzairAuthController
     }
 
     /**
-     * Sign this device out, leaving the account's other devices alone.
+     * Write the account, sign it in, and record the login this browser made.
      *
-     * The token is dropped whether the identity provider accepted the
-     * revocation: a provider that cannot be reached must not be able to keep a
-     * user signed in here.
+     * The sign-in sits between the two writes, outside both transactions:
+     * `Auth::login()` fires `Login`, whose listeners must see a committed
+     * account, and it migrates the session, settling the id the login is
+     * recorded under. A login that cannot be recorded therefore leaves the
+     * account linked, which is what the next attempt wants anyway.
      *
-     * The login is looked up by the session id the browser carries, so a
-     * session renamed since it was recorded is followed first. This endpoint
-     * carries no `uzair.token`, and a browser signing out on the first request
-     * after a regeneration would otherwise find no login to end: signed out
-     * here, still holding a grant at UzAirports ID that nothing surrenders.
+     * @return array{user: Authenticatable&Model, token: OauthToken}
      *
      * @throws Throwable
      */
-    public function logout(Request $request, EndSessions $endSessions): JsonResponse|RedirectResponse
+    private function storeIdentity(Request $request, SocialiteUser $uzairUser, StoreAccount $storeAccount): array
     {
-        $user = $this->authenticated();
+        $user = $storeAccount($uzairUser);
 
-        if ($user !== null) {
-            $accessTokenId = Uzair::accessTokenId($user);
+        $this->statefulGuard()->login($user);
 
-            if ($accessTokenId === null) {
-                Uzair::followRegeneratedSession($request, $user->getAuthIdentifier());
-            }
+        $token = app(RecordLogin::class)($request, $uzairUser, $user, $this->sessionId($request));
 
-            $token = OauthToken::query()
-                ->where('user_id', $user->getAuthIdentifier())
-                ->heldBy($this->sessionId($request), $accessTokenId)
-                ->first();
-
-            if ($token !== null) {
-                $endSessions->end($token);
-            }
-
-            $this->signOut();
-
-            UzairLoggedOut::dispatch($user instanceof Model ? $user : null);
-        }
-
-        return $this->finishLogout($request);
+        return ['user' => $user, 'token' => $token];
     }
 
     /**
-     * Sign one of the account's logins out, named by its row.
-     *
-     * This is what a list of "your devices" needs: ending one of them without
-     * touching the browser doing the ending. Naming the login by row id is
-     * safe: the lookup is scoped to the account — a row belonging to somebody
-     * else is not refused but simply not found, so the endpoint cannot be used
-     * to learn which ids exist.
-     *
-     * Ending the login this request is running on is signing yourself out, and
-     * is handed to `logout()` so the session goes with it, rather than leaving
-     * the browser authenticated against a row that no longer exists.
-     *
-     * A caller who is not signed in is told so, rather than told the row was
-     * not found. The blanket 404 is there to keep an account from learning
-     * which row ids exist. That is about somebody signed in probing
-     * somebody else's — a guest learns nothing from a 401 it did not already
-     * know, and an API client whose session lapsed learns from a 404 only that
-     * something is missing, not that it has to authenticate again. `logout()`
-     * beside this has always answered a guest rather than refusing one.
-     *
-     * @throws AuthenticationException when nobody is signed in
-     * @throws NotFoundHttpException when the account holds no such login
-     * @throws Throwable
-     */
-    public function logoutDevice(Request $request, EndSessions $endSessions, int|string $token): JsonResponse|RedirectResponse
-    {
-        $user = $this->authenticated();
-
-        if ($user === null) {
-            throw new AuthenticationException(
-                __('uzairid::messages.session_ended'),
-                [],
-                Uzair::loginUrl(),
-            );
-        }
-
-        // Which row is this browser's own is decided below by comparing session
-        // ids, so a session renamed since the row was written is followed
-        // first. Left behind, ending "another device" off the list would end
-        // this one and leave the browser signed in against nothing.
-        Uzair::followRegeneratedSession($request, $user->getAuthIdentifier());
-
-        $login = OauthToken::query()
-            ->where('user_id', $user->getAuthIdentifier())
-            ->whereKey($token)
-            ->first();
-
-        if ($login === null) {
-            throw new NotFoundHttpException;
-        }
-
-        if ($this->isTheCallersOwn($request, $user, $login)) {
-            return $this->logout($request, $endSessions);
-        }
-
-        $endSessions->end($login);
-
-        return $request->wantsJson()
-            ? new JsonResponse([], 204)
-            : back();
-    }
-
-    /**
-     * Whether a login is the one this request is running on.
-     *
-     * A mobile client is known by its Sanctum token, a browser by its session.
-     * The token is asked first, the way `OauthToken::scopeHeldBy()` asks it.
-     */
-    private function isTheCallersOwn(Request $request, Authenticatable $user, OauthToken $login): bool
-    {
-        $accessTokenId = Uzair::accessTokenId($user);
-
-        if ($accessTokenId !== null) {
-            return $login->personal_access_token_id !== null
-                && (string) $login->personal_access_token_id === (string) $accessTokenId;
-        }
-
-        return $login->session_id !== null && $login->session_id === $this->sessionId($request);
-    }
-
-    /**
-     * The guard these endpoints read the account off.
-     */
-    protected function guardName(): ?string
-    {
-        return Uzair::guard();
-    }
-
-    /**
-     * The account the endpoints of this controller answer for.
-     *
-     * The guard is `uzairports.guard`, and null there is the application's
-     * default — which is all this package ever asked for before. An application
-     * authenticating through a guard of its own had the callback sign a browser
-     * in on the default one and `logout` then find nobody to sign out.
-     */
-    protected function authenticated(): ?Authenticatable
-    {
-        $user = app(AuthFactory::class)->guard($this->guardName())->user();
-
-        if ($user !== null) {
-            app(EnsureTokenStorageMatchesProvider::class)->forUser($user);
-        }
-
-        return $user;
-    }
-
-    /**
-     * Sign the browser out of the guard this package signed it in to.
-     *
-     * A guard that authenticates each request on its own — a token guard,
-     * Sanctum — holds no session to end and has no `logout()` to call. It is
-     * left alone rather than reached for: these endpoints still drop the row,
-     * surrender the grant and invalidate the session around this.
-     */
-    private function signOut(): void
-    {
-        $this->sessionGuard()?->logout();
-    }
-
-    /**
-     * The guard a sign-in can actually be recorded in.
-     *
-     * Opening a session for the identity behind the handshake is the whole
-     * point of the callback, so a guard that cannot hold one is a
-     * misconfiguration this endpoint cannot work around. It is refused the way
-     * every other failed handshake is — the browser is sent back with the
-     * reason, and the log line names the class.
+     * The guard a sign-in can be recorded in; one holding no session is a
+     * misconfiguration the callback fails on.
      *
      * @throws RuntimeException when the configured guard holds no session
      */
@@ -318,96 +148,11 @@ class UzairAuthController
     }
 
     /**
-     * The configured guard, if it is one that holds a session at all.
+     * Log which of the two causes lost the handshake's state.
      *
-     * The guard is asked for through the contract rather than the facade: what
-     * a factory hands back is whatever the application registered under that
-     * name, and a guard that authenticates each request on its own — a token
-     * guard, Sanctum — implements neither `login()` nor `logout()`. The facade
-     * is annotated as though it always answered with a session guard, which
-     * would make the question below unaskable rather than unnecessary.
-     */
-    private function sessionGuard(): ?StatefulGuard
-    {
-        $guard = app(AuthFactory::class)->guard($this->guardName());
-
-        return $guard instanceof StatefulGuard ? $guard : null;
-    }
-
-    /**
-     * The account whose logins are about to be ended.
-     *
-     * `getAuthIdentifier()` promises nothing about what it hands back, and a
-     * key that is neither an integer nor a string names no row: ending "the
-     * logins of that" would either match nothing or, worse, match by whatever
-     * the database made of it.
-     *
-     * `writeAccount()` asks for the key inside the transaction that writes the
-     *  account before the browser is signed in, so a model that cannot answer
-     * fails the handshake rather than this call, which runs once the browser is
-     * already signed in.
-     *
-     * @throws RuntimeException when the authenticated user has no usable key
-     */
-    protected function accountKey(Authenticatable $user): int|string
-    {
-        $key = $user->getAuthIdentifier();
-
-        if (! is_int($key) && ! is_string($key)) {
-            throw new RuntimeException('The authenticated user has no key that names its logins.');
-        }
-
-        return $key;
-    }
-
-    /**
-     * Hand back the grants a handshake was issued before it failed.
-     *
-     * The authorization code has already been exchanged by the time anything
-     * here can fail, so a callback that cannot finish is holding a live access
-     * token and a live refresh token, and nothing was written: the failure is
-     * either the account or the login row, and neither reaches the database
-     * with these values in it. `EndSessions::surrenderIssued()` is where that
-     * is answered, and what it says about grants no row points at.
-     *
-     * This covers the failures from `Auth::login()` onward. A profile request
-     * that fails is the other half and never reaches here — `user()` throws
-     * before it can hand a user back, so there is nothing to read the grants
-     * off. The driver surrenders those itself, where they are still in hand.
-     *
-     * Nothing rises out of here. The caller is in the middle of answering a
-     * failure and must go on to sign the browser out and report the original
-     * exception, which is the one worth reading; `EndSessions` already reports
-     * a revocation that would not go through.
-     */
-    protected function surrenderIssuedGrants(EndSessions $endSessions, ?SocialiteUser $uzairUser): void
-    {
-        if ($uzairUser === null) {
-            return;
-        }
-
-        try {
-            $endSessions->surrenderIssued($uzairUser->token, $uzairUser->refreshToken);
-        } catch (Throwable $exception) {
-            Log::warning('Failed to surrender the grants of an UzAirports handshake that could not be completed.', [
-                'exception_class' => $exception::class,
-            ]);
-        }
-    }
-
-    /**
-     * Record why a handshake arrived without the state it was started with.
-     *
-     * There are two of them, and the log line cannot be acted on without
-     * knowing which:
-     *
-     * - No session cookie came back at all, so the browser never had one to
-     *   send. That is a host mismatch — the flow was started on one name and
-     *   `uzairports.redirect` brings it back on another, and a cookie set for
-     *   `localhost` is not sent to `127.0.0.1`. Both must be the same name;
-     * - The cookie came back and the state was gone, so the handshake was
-     *   started twice — a second tab, a second click — and finished on the
-     *   older one, whose state the newer had already replaced.
+     * No session cookie came back: the flow started on one host name and
+     * `uzairports.redirect` returns on another. The cookie came back without
+     * the state: the handshake was started twice and finished on the older one.
      */
     private function reportLostHandshake(Request $request): void
     {
@@ -420,9 +165,6 @@ class UzairAuthController
         ]);
     }
 
-    /**
-     * Send the user back where a failed handshake leaves them, with the reason.
-     */
     private function handshakeFailed(string $message): RedirectResponse
     {
         return redirect()
@@ -431,23 +173,12 @@ class UzairAuthController
     }
 
     /**
-     * Write down which session holds this login, and how it was authenticated.
+     * Note which session id this login is filed under, and that it is an SSO
+     * login: a later regeneration is followed from this note, and a mark left
+     * by a password sign-in in this session no longer applies.
      *
-     * The note is what a later regeneration is measured against: the row is
-     * named by the session id settled a moment ago, and this is the browser's
-     * own record of it. It is written here rather than left to the first
-     * request through `uzair.token`, so a session regenerated before the
-     * browser reaches a route carrying the middleware is still recognized.
-     *
-     * It is deliberately not `followRegeneratedSession()`. The note this
-     * overwrites names of the session the browser held before signing in. The
-     * login filed under it is the one `endPreviousLogin()` has just ended —
-     * following it would move a row that is on its way out onto the id the new
-     * row already holds.
-     *
-     * Any mark left by a password sign-in in this same session goes with it:
-     * this browser holds an SSO login now, and its ending is what `uzair.token`
-     * has to notice.
+     * The note is overwritten rather than followed — the login it named before
+     * is the one `endPreviousLogin()` has just ended.
      */
     private function noteTheBrowsersLogin(Request $request): void
     {
@@ -456,18 +187,11 @@ class UzairAuthController
     }
 
     /**
-     * End the login this same browser was holding before it signed in again.
+     * End the logins this browser held before signing in again.
      *
-     * Regenerating the session gives the browser a new id. The id names the row
-     * — so without this, running the flow twice in one browser would
-     * leave the first row behind, pointing at a session nobody can reach and
-     * holding a grant nobody gave up.
-     *
-     * There may be more than one row: the id names a session, not an account,
-     * and a shared computer or a second identity leaves several. They are ended
-     * together rather than one after the next, so the browser waiting on this
-     * callback pays one revocation wait instead of one apiece. Include the id
-     * recorded before a regeneration, even if the middleware never followed it.
+     * Signing in gives the session a new id, so the earlier login would be left
+     * pointing at a session nobody holds. The id names a session, not an
+     * account, so several rows may go — together, in one revocation wait.
      *
      * @param  list<string>  $previousSessionIds
      */
@@ -485,392 +209,5 @@ class UzairAuthController
         $endSessions->endAll(
             OauthToken::query()->whereIn('session_id', $previousSessionIds)->get()
         );
-    }
-
-    /**
-     * Leave nothing of the current session behind and answer the caller.
-     */
-    private function finishLogout(Request $request): JsonResponse|RedirectResponse
-    {
-        if ($request->hasSession()) {
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
-        }
-
-        return $request->wantsJson()
-            ? new JsonResponse([], 204)
-            : redirect()->to($this->target(config('uzairports.redirect_after_logout', '/')));
-    }
-
-    /**
-     * Write the account, sign it in, and record the login this browser made.
-     *
-     * The three steps are ordered by what each needs from the one before, and
-     * the sign-in is deliberately not inside a transaction. `Auth::login()`
-     * fires `Illuminate\Auth\Events\Login`, and a host application's listeners
-     * are entitled to see a committed account: one dispatching a queued job saw
-     * a worker pick it up before the row it names existed, and one reading over
-     * a second connection saw no account at all. Wrapping somebody else's
-     * listeners in a transaction this class opened is not this package's call
-     * to make.
-     *
-     * What that gives up is rolling the account back when the token cannot be
-     * stored. It is worth little: the row that would be rolled back is the
-     * profile of an identity that just authenticated successfully, the caller
-     * signs the browser out either way, and the account is left linked so the
-     * next attempt finds it instead of racing for it again. Each of the two
-     * writes is still atomic in itself.
-     *
-     * @return array{user: Authenticatable&Model, token: OauthToken}
-     *
-     * @throws Throwable
-     */
-    private function storeIdentity(Request $request, SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): array
-    {
-        $user = $this->storeAccount($uzairUser, $resolveUser);
-
-        $this->statefulGuard()->login($user);
-
-        return ['user' => $user, 'token' => $this->storeToken($request, $uzairUser, $user)];
-    }
-
-    /**
-     * Resolve the account behind the identity, retrying once if another
-     * callback won the race.
-     *
-     * Two callbacks for an identity with no local account, yet both see nothing
-     * to update and both insert; the unique index on `users.uzair_id` refuses
-     * the loser. Its transaction has already been rolled back by then, so the
-     * work is simply done again — the second attempt finds the row the winner
-     * wrote and updates it.
-     *
-     * A refusal that is not that race is not something the retry can help with.
-     * Both of the ones an integrator actually meets come from the account
-     * table still being shaped for local passwords — see
-     * `refuseTheAccountWrite()`, which is what says so.
-     *
-     * @return Authenticatable&Model
-     *
-     * @throws Throwable
-     */
-    protected function storeAccount(SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): Authenticatable
-    {
-        try {
-            return $this->writeAccount($uzairUser, $resolveUser);
-        } catch (UniqueConstraintViolationException) {
-            // Another callback inserted the account first. Its transaction is
-            // rolled back by now, so the work is done again below.
-        } catch (QueryException $exception) {
-            $this->refuseTheAccountWrite($exception);
-        }
-
-        try {
-            return $this->writeAccount($uzairUser, $resolveUser);
-        } catch (QueryException $exception) {
-            $this->refuseTheAccountWrite($exception);
-        }
-    }
-
-    /**
-     * Say what about the account table refused the writing, then hand it on.
-     *
-     * The database refusing this writing is what a standard Laravel `users` table
-     * does to an SSO sign-in, and there are two of them. `password` is `NOT
-     * NULL` with no default, and nothing here has a password to write. `email`
-     * is unique and `NOT NULL`, while the identity provider does not promise an
-     * address at all and lets two accounts share one — so the first person
-     * whose address already exists locally cannot sign in, and neither can the
-     * second holder of a shared one. The package publishes
-     * `remove_password_column_from_users_table` and
-     * `relax_email_column_on_users_table` for exactly this, under the
-     * `uzairid-user-migrations` tag.
-     *
-     * What used to happen when they were skipped is why this exists at all: the
-     * failure went to the handshake's own handler, which writes the exception
-     * class and nothing else, and the browser was sent back with
-     * "authentication failed". Nothing connected either to a column, and the
-     * integrator had a working OAuth flow that refused every new account.
-     *
-     * The table is read rather than the driver's message parsed. Three drivers
-     * word these two refusals five different ways; the schema says the same
-     * thing on all of them and says it about this application's own table.
-     *
-     * Nothing here may raise. A diagnosis that fails must not replace the
-     * failure it was diagnosing, so the original exception goes on either way.
-     *
-     * @throws QueryException always
-     */
-    private function refuseTheAccountWrite(QueryException $exception): never
-    {
-        Log::error('The account behind an UzAirports identity could not be written.', [
-            'exception_class' => $exception::class,
-            ...$this->accountsTableComplaints(),
-        ]);
-
-        throw $exception;
-    }
-
-    /**
-     * What about the account table would refuse a writing this package makes.
-     *
-     * @return array<string, mixed>
-     */
-    private function accountsTableComplaints(): array
-    {
-        try {
-            $table = $this->accountsTable();
-
-            return [
-                'accounts_table' => $table,
-                'email_is_unique' => Schema::hasIndex($table, ['email'], 'unique'),
-                'columns_needing_a_value' => $this->columnsNeedingAValue($table),
-                'remedy' => 'php artisan vendor:publish --tag=uzairid-user-migrations',
-            ];
-        } catch (Throwable) {
-            return [];
-        }
-    }
-
-    /**
-     * The columns a new account cannot be written without.
-     *
-     * A column that forbids null, has no default, and is not filled in by the
-     * database itself has to come from whoever inserts the row — and the
-     * package fills in only the three it knows about. `password` is the one
-     * this finds on a standard installation, and naming it is the whole point:
-     * an application on a hybrid scheme keeps the column and makes it nullable,
-     * one on SSO alone drops it, and neither can tell what it needs to do from
-     * a log line reading `QueryException`.
-     *
-     * @return list<string>
-     */
-    private function columnsNeedingAValue(string $table): array
-    {
-        $written = ['uzair_id', 'name', 'email', 'created_at', 'updated_at'];
-
-        $needed = [];
-
-        foreach (Schema::getColumns($table) as $column) {
-            $name = (string) $column['name'];
-
-            if (in_array($name, $written, true) || ($column['auto_increment'] ?? false) === true) {
-                continue;
-            }
-
-            if (($column['nullable'] ?? true) === false && ($column['default'] ?? null) === null) {
-                $needed[] = $name;
-            }
-        }
-
-        return $needed;
-    }
-
-    /**
-     * The table the host application keeps its accounts in.
-     */
-    private function accountsTable(): string
-    {
-        $model = Uzair::userModel();
-
-        $user = new $model;
-
-        return $user->getTable();
-    }
-
-    /**
-     * @return Authenticatable&Model
-     *
-     * @throws RuntimeException when the configured auth model cannot be signed in
-     * @throws Throwable
-     */
-    private function writeAccount(SocialiteUser $uzairUser, ResolveUserFromSocialite $resolveUser): Authenticatable
-    {
-        return DB::transaction(function () use ($uzairUser, $resolveUser): Authenticatable {
-            $user = $resolveUser($uzairUser);
-
-            if (! $user instanceof Authenticatable) {
-                throw new RuntimeException('The account returned by the UzAirports resolver cannot be authenticated.');
-            }
-
-            $this->ensureAccountMatchesGuard($user);
-
-            // The account has to be in the database to be signed in, and
-            // `save()` answers false rather than raising when a listener
-            // refuses the writing. Left unasked, `Auth::login()` would fire the
-            // `Login` event naming a model with no key, and the login row
-            // written next would carry a null `user_id` into the foreign key.
-            if (! $user->exists) {
-                throw new RuntimeException('The account behind this UzAirports identity was not written.');
-            }
-
-            // `single_session` ends the account's other logins once this one is
-            // written and names them by whatever `getAuthIdentifier()` hands
-            // back. A key that names no row is asked for here, before the
-            // browser is signed in, rather than where it is spent: rose on
-            // the far side, the account would already be written and signed in,
-            // and a handshake that worked would end in a 500.
-            if (config('uzairports.single_session', false)) {
-                $this->accountKey($user);
-            }
-
-            return $user;
-        });
-    }
-
-    /**
-     * A guard reloads the stored id through its own provider on the next request.
-     * A resolver must not put an id from another accounts table into that session.
-     */
-    private function ensureAccountMatchesGuard(Authenticatable $user): void
-    {
-        $model = Uzair::userModel();
-
-        if (Uzair::accountMatchesProvider($user)) {
-            return;
-        }
-
-        Log::error('The UzAirports account does not match the configured guard provider.', [
-            'guard' => Uzair::guard() ?? config('auth.defaults.guard'),
-            'expected_model' => $model,
-            'resolved_model' => $user::class,
-        ]);
-
-        throw new RuntimeException('The UzAirports account does not match the configured guard provider.');
-    }
-
-    /**
-     * Record the login, retrying once if another callback won the same session.
-     *
-     * The session id is settled by now: `Auth::login()` migrated the session to
-     * prevent fixation before this is called, so the row names the id the
-     * browser will actually carry. Two callbacks finishing on one session would
-     * both find nothing and both insert, and `(user_id, session_id)` refuses
-     * the loser — which retries and updates what the winner wrote.
-     *
-     * @param  Authenticatable&Model  $user
-     *
-     * @throws Throwable
-     */
-    private function storeToken(Request $request, SocialiteUser $uzairUser, Authenticatable $user): OauthToken
-    {
-        try {
-            return $this->writeToken($request, $uzairUser, $user);
-        } catch (UniqueConstraintViolationException) {
-            return $this->writeToken($request, $uzairUser, $user);
-        }
-    }
-
-    /**
-     * Write the login row, refusing the handshake if the writing did not happen.
-     *
-     * `save()` answers false rather than raising when a `saving` or `creating`
-     * listener returns false, and that answer used to be dropped. The handshake
-     * then carried on as though it had succeeded: the browser stayed signed in
-     * against a row never written — or, where the row already existed,
-     * one still holding the grants of the previous login — the freshly issued
-     * grants were never handed back, `UzairAuthenticated` was dispatched naming
-     * a model that does not exist, and under `single_session` the sweep that
-     * follows ended every other login of the account on behalf of one that had
-     * not been recorded. The browser was then refused by `uzair.token` on its
-     * very next request and sent back to sign in again, which is a loop.
-     *
-     * A listener that refuses to write is saying this login must not be
-     * recorded, and the only coherent answer is not to sign the browser in.
-     * Raising puts it through the same cleanup as any other failed handshake:
-     * the session is dropped and the grants are surrendered. It is the same
-     * respect `EndSessions` already pays a `deleting` listener that refuses to
-     * let a row go.
-     *
-     * The address and the user agent are what the list of devices is written
-     * from, and `uzairports.record_device` is where an application that does not
-     * want them stored says so. Off, the columns are written as null rather than
-     * skipped: this row may be one an earlier sign-in already filled in, and
-     * leaving it as it is would keep exactly what the setting asked not to keep.
-     *
-     * @param  Authenticatable&Model  $user
-     *
-     * @throws RuntimeException when the write was refused without raising
-     * @throws Throwable
-     */
-    private function writeToken(Request $request, SocialiteUser $uzairUser, Authenticatable $user): OauthToken
-    {
-        $sessionId = $this->sessionId($request);
-
-        $token = OauthToken::query()->firstOrNew([
-            'user_id' => $user->getKey(),
-            'session_id' => $sessionId,
-        ]);
-
-        $records = (bool) config('uzairports.record_device', true);
-
-        $saved = $token->forceFill([
-            'user_id' => $user->getKey(),
-            'session_id' => $sessionId,
-            'access_token' => $uzairUser->token,
-            'refresh_token' => $uzairUser->refreshToken,
-            'expires_at' => $this->expiresAt($uzairUser),
-            'ip_address' => $records ? $request->ip() : null,
-            'user_agent' => $records ? Str::limit((string) $request->userAgent(), 500, '') : null,
-        ])->save();
-
-        if (! $saved) {
-            throw new RuntimeException('The UzAirports login was refused by a model listener and not recorded.');
-        }
-
-        return $token;
-    }
-
-    /**
-     * Resolve the moment the issued access token stops being accepted.
-     *
-     * The identity provider does not have to say how long the token lives, and
-     * `uzairports.default_token_ttl` is what stands in when it does not. This
-     * used to store null instead and leave the renewal to the middleware, which
-     * reads unknown expiry as expired — so a provider that never sends
-     * `expires_in` had every sign-in followed immediately by a token exchange,
-     * on the first request the browser made. That exchange spends the rotating
-     * refresh token, and it lands on the same fallback anyway, because
-     * `RefreshAccessToken` has always applied it: one round trip and one
-     * rotation to arrive at the value that could have been written here.
-     *
-     * Zero is treated as no answer rather than as an expiry of now, which is
-     * what casting it gave: `addSeconds(0)` is this instant, and the middleware
-     * reads it as expired on the very next request.
-     *
-     * A fallback that is itself zero or not a number of leaves the expiry unknown,
-     * which is the older behavior and still the honest one — there is nothing
-     * left to write.
-     */
-    protected function expiresAt(SocialiteUser $uzairUser): ?CarbonInterface
-    {
-        // Cast rather than tested: Socialite types `expiresIn` as an int, and
-        // an identity provider that sends no `expires_in` leaves it null all
-        // the same. Null casts to zero, which is the answer either way.
-        $expiresIn = (int) $uzairUser->expiresIn;
-
-        if ($expiresIn <= 0) {
-            $fallback = config('uzairports.default_token_ttl', 3600);
-            $expiresIn = is_numeric($fallback) && (int) $fallback > 0 ? (int) $fallback : 0;
-        }
-
-        return $expiresIn <= 0 ? null : now()->addSeconds($expiresIn);
-    }
-
-    /**
-     * The session this request belongs to, if it belongs to one at all.
-     */
-    protected function sessionId(Request $request): ?string
-    {
-        return $request->hasSession() ? $request->session()->getId() : null;
-    }
-
-    /**
-     * Turn a configured destination — a route name or a path — into a URL.
-     */
-    private function target(mixed $destination): string
-    {
-        $destination = is_string($destination) && $destination !== '' ? $destination : '/';
-
-        return Route::has($destination) ? route($destination) : url($destination);
     }
 }

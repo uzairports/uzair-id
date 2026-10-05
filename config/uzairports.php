@@ -522,4 +522,20 @@ return [
 
     'lock_store' => env('UZAIR_LOCK_STORE'),
 
+    /*
+    |--------------------------------------------------------------------------
+    | Token Storage Check
+    |--------------------------------------------------------------------------
+    |
+    | How long, in seconds, a token table found to fit the account provider is
+    | trusted before its schema is read again. The check costs several schema
+    | queries and guards every request through `uzair.token`; the answer is
+    | kept in the process and in the default cache store, keyed by the account
+    | model and the tables, so a provider change is still checked at once.
+    | A problem is never remembered. Zero reads the schema on every request.
+    |
+    */
+
+    'storage_check_ttl' => (int) env('UZAIR_STORAGE_CHECK_TTL', 3600),
+
 ];

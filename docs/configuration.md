@@ -52,6 +52,7 @@ php artisan vendor:publish --tag=uzairid-config
 | `revocation_concurrency` | `UZAIR_REVOCATION_CONCURRENCY` | `10` | Сколько грантов отзывается у SSO одновременно; `1` — по одному |
 | `login_cache_ttl` | `UZAIR_LOGIN_CACHE_TTL` | `0` | Сколько секунд `uzair.token` может пропускать запрос по уже найденному входу, не читая строку; `0` — читать всегда |
 | `login_cache_store` | `UZAIR_LOGIN_CACHE_STORE` | — | Имя хранилища кеша для кеширования входов (по умолчанию — системный кеш) |
+| `storage_check_ttl` | `UZAIR_STORAGE_CHECK_TTL` | `3600` | Сколько секунд доверять успешной проверке схемы `oauth_tokens`; `0` — проверять на каждом запросе |
 | `lock_store` | `UZAIR_LOCK_STORE` | — | Хранилище кеша для atomic lock при обновлении токена |
 | `provider_cooldown` | `UZAIR_PROVIDER_COOLDOWN` | `30` | Пауза (сек) перед повторными запросами к SSO после серии сбоев (circuit breaker) |
 | `provider_failure_threshold` | `UZAIR_PROVIDER_FAILURE_THRESHOLD` | `5` | Количество последовательных сбоев обновления токенов до включения cooldown |

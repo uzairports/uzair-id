@@ -23,18 +23,12 @@ class UzairServiceProvider extends ServiceProvider
     /**
      * The interface behind every one of Octane's terminating events.
      *
-     * Named as a string rather than imported: `laravel/octane` is not a
-     * dependency of this package, and the interface is absent on every runtime
-     * that is not Octane. A listener is registered under a name, so it need
-     * not be.
+     * A string, not an import: `laravel/octane` is not a dependency.
      */
     private const string OCTANE_OPERATION_TERMINATED = 'Laravel\Octane\Contracts\OperationTerminated';
 
     /**
      * Register services.
-     *
-     * The configuration is merged rather than required, so the package works
-     * on its defaults and only has to be published to be changed.
      */
     public function register(): void
     {
@@ -44,11 +38,9 @@ class UzairServiceProvider extends ServiceProvider
     /**
      * Apply the settings Socialite cannot read from the driver configuration.
      *
-     * `buildProvider()` only understands the client credentials and the
-     * redirect, so the host, the scopes, and PKCE are set on the instance it
-     * returns. PKCE binds the authorization code to a one-time verifier held
-     * in the session, which is what stops an intercepted code being redeemed
-     * by anyone but the browser that asked for it.
+     * `buildProvider()` only reads credentials and the redirect, so the host,
+     * scopes, and PKCE are set here. PKCE (on by default) stops an intercepted
+     * code being redeemed by any browser but the one that requested it.
      *
      * @param  array<string, mixed>  $config
      */
@@ -71,11 +63,6 @@ class UzairServiceProvider extends ServiceProvider
 
     /**
      * Bootstrap services.
-     *
-     * Only what a request may actually need is done here. The driver is
-     * registered against a Socialite manager built when something asks
-     * for one, and the publishing groups are declared where publishing can be
-     * asked for — a request that never signs anybody in pays for neither.
      *
      * @throws BindingResolutionException
      */
@@ -102,19 +89,16 @@ class UzairServiceProvider extends ServiceProvider
     }
 
     /**
-     * Teach Socialite about the `uzairports` driver, once someone wants one.
+     * Register the `uzairports` Socialite driver lazily.
      *
-     * Resolving the manager here would build it on every request the host
-     * application serves, including the overwhelming majority that never reach
-     * an OAuth endpoint. The registration is deferred to the moment a manager
-     * is actually built instead, and `callAfterResolving()` covers the case
-     * where another provider has already built one before this one booted.
+     * The manager must not be resolved during boot, or it is built on every
+     * request. `callAfterResolving()` registers the driver when the manager is
+     * built, including one built before this provider booted.
      */
     private function registerSocialiteDriver(): void
     {
-        // Socialite rebinds the closure to the manager, so `$this` inside it is
-        // no longer this provider. The configuration step is captured up front
-        // as a bound callable rather than reached for through `$this`.
+        // Socialite rebinds the closure to the manager, so helpers are captured
+        // as callables rather than reached through `$this`.
         $configureProvider = $this->configureProvider(...);
         $seconds = $this->seconds(...);
 
@@ -141,28 +125,11 @@ class UzairServiceProvider extends ServiceProvider
     }
 
     /**
-     * Have the package's per-request static state dropped between requests.
+     * Call `Uzair::flushState()` after each Octane request, task, and tick.
      *
-     * Under PHP-FPM there is nothing to do: the process ends with the response.
-     * Under Octane the worker is reused, so a pruner resolved out of a
-     * container that has since been rebound would be handed to the next
-     * request, and the once-per-process warnings about the login cache and the
-     * lock store would stay marked for the life of the worker.
-     *
-     * `OperationTerminated` is the interface all of Octane's terminating events
-     * implement, so the one listener covers requests, tasks, and ticks —
-     * Laravel's dispatcher matches an object event against the interfaces it
-     * implements as readily as against its class.
-     *
-     * The listener is registered whether Octane is installed. Nothing
-     * else dispatches an event implementing that interface, so on every other
-     * runtime this is one entry in the dispatcher's array that never fires —
-     * cheaper than the `interface_exists()` call it would take to avoid it, and
-     * it leaves the wiring testable without adding Octane as a dependency.
-     *
-     * What the listener calls is public, so an application on another
-     * long-lived runtime can reach `Uzair::flushState()` from wherever that
-     * runtime says a request is over.
+     * One listener on Octane's `OperationTerminated` interface covers all of
+     * them. It is registered unconditionally: without Octane it never fires,
+     * and the wiring stays testable without Octane installed.
      */
     private function registerStateFlushing(): void
     {
@@ -174,9 +141,8 @@ class UzairServiceProvider extends ServiceProvider
     /**
      * Declare what `vendor:publish` may copy out of the package.
      *
-     * Every group here builds its destination paths eagerly — four of them time
-     * stamp a migration filename apiece — and none of them can be asked for
-     * outside the console, so it is declared there and nowhere else.
+     * Called only in the console: the groups build their destination paths
+     * eagerly, and publishing cannot be requested elsewhere.
      */
     private function registerPublishing(): void
     {
@@ -212,24 +178,10 @@ class UzairServiceProvider extends ServiceProvider
     /**
      * The limiter behind the `uzairid` throttle the package's routes use.
      *
-     * The budget is counted per browser rather than per address. An office
-     * behind one NAT gateway is a single address to the server, so a per-address
-     * limit low enough to be worth having would lock everyone out the moment a
-     * handful of colleagues signed in at once.
-     *
-     * What a browser is, though, is decided by the cookie the request carries,
-     * and a caller writes its own cookies. One arriving with a fresh session id
-     * every time lands in a fresh bucket every time. The per-browser budget
-     * never catches it — so the address it comes from is given a ceiling of its
-     * own, which is the limit that actually holds for a caller like that.
-     *
-     * The ceiling used to be ten times the per-browser budget, which on the
-     * defaults left an address free to spend six hundred requests a minute on
-     * endpoints that write to the database and call the identity provider. It
-     * is configured in its own right now — `routes.ip_throttle`, an
-     * `attempts,minutes` pair like the other — so raising what one browser may
-     * do no longer quietly raises what one address may do tenfold. Set it to
-     * null to leave the address uncapped.
+     * `routes.throttle` is counted per browser, so many users behind one NAT
+     * address are not locked out together. Since a caller can rotate its
+     * session cookie, `routes.ip_throttle` adds an independent per-address
+     * ceiling (null disables it). Keep the two budgets independent.
      */
     private function registerRateLimiter(): void
     {
@@ -295,17 +247,10 @@ class UzairServiceProvider extends ServiceProvider
     /**
      * What counts as one browser for the limit.
      *
-     * A request carrying no session cookie is counted against its address
-     * instead. The key is spelled apart from the one the address ceiling uses,
-     * so such a request is counted in each of them once rather than spending
-     * one bucket twice.
-     *
-     * The session id is hashed rather than spelled out, for the reason
-     * `OauthToken::loginCacheKey()` hashes it: it is the credential the browser
-     * holds, and the key it is written into is a cache entry. The framework
-     * hashes the finished key itself, but only while `ThrottleRequests` is left
-     * hashing them — an application that turns that off is not asking for a
-     * session id to be legible in its cache store.
+     * Without a session cookie the address is used, under the `ip:` prefix so
+     * it does not share the ceiling's `address:` bucket. The session id is
+     * hashed because it is a credential and must not be legible in the cache,
+     * even if `ThrottleRequests` key hashing is turned off.
      */
     private function browserKey(Request $request): string
     {
@@ -319,9 +264,8 @@ class UzairServiceProvider extends ServiceProvider
     /**
      * Read a configured number of seconds, falling back where there is none.
      *
-     * A timeout that is not a number is a misconfiguration, and casting one
-     * would read as zero — which Guzzle takes to mean "wait forever", turning a
-     * slow identity provider into a hung request. The default stands instead.
+     * A non-numeric or non-positive value uses the default, since Guzzle reads
+     * zero as "wait forever".
      */
     private function seconds(mixed $value, int $default): int
     {
