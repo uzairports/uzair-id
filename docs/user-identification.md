@@ -29,6 +29,25 @@
 Модель пользователя берётся из `auth.providers.users.model`, поля пишутся через `forceFill()`,
 так что перечислять их в `$fillable` не требуется.
 
+## Дополнительные поля аккаунта
+
+Чтобы при каждом входе переносить в аккаунт ещё какие-то данные профиля SSO, зарегистрируйте
+колбэк в `AppServiceProvider::boot()`:
+
+```php
+use Illuminate\Database\Eloquent\Model;
+use Laravel\Socialite\Two\User as SocialiteUser;
+use Uzairports\Uzairid\Uzair;
+
+Uzair::updateUserAttributesUsing(fn (Model $user, SocialiteUser $uzairUser): array => [
+    'department' => $uzairUser->getRaw()['department'] ?? $user->getAttribute('department'),
+]);
+```
+
+Колбэк получает найденный (или ещё не сохранённый новый) аккаунт и профиль SSO. Он
+возвращает массив атрибутов, который записывается вместе с `uzair_id`, именем и почтой в
+одном `save()`. Если колбэк вернул `name` или `email`, его значения заменят присланные SSO.
+
 ---
 
 Далее: [Аутентификация](authentication.md)

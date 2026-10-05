@@ -73,8 +73,15 @@ UZAIR_API_REDIRECT_URIS=uzapp://auth/callback
 | Метод | URI | Имя | Ответ |
 | --- | --- | --- | --- |
 | `POST` | `/api/auth/token` | `uzair.api.token` | `200 {token, token_type, expires_at}`, `422` при неверных полях, `401` если вход не удался |
+| `POST` | `/api/auth/refresh` | `uzair.api.refresh` | `200 {token, token_type, expires_at}` — новый токен Sanctum взамен присланного, `401` если вход завершён или его больше нечем продлить, `503` если UzAirports ID временно недоступен |
 | `POST` | `/api/auth/logout` | `uzair.api.logout` | `204` — завершает вход этого устройства |
 | `POST` | `/api/auth/logout-device/{token}` | `uzair.api.logoutDevice` | `204` — завершает один вход аккаунта по `id` строки |
+
+`refresh` вызывается с текущим токеном в заголовке `Authorization: Bearer …`. Если грант
+SSO истекает в пределах `refresh_leeway`, пакет сначала обновляет его, а затем выпускает
+новый токен Sanctum. Старый токен при этом удаляется, поэтому клиент должен сразу заменить
+его тем, что пришёл в ответе. Необязательное поле `device_name` задаёт имя нового токена.
+Без него имя угадывается по user-agent входа.
 
 Отправляйте `Accept: application/json` — так ошибки валидации приходят как JSON. Маршруты
 стоят за тем же лимитером `uzairid`, что и браузерные. Параметры `Uzair::apiRoutes()` те же,

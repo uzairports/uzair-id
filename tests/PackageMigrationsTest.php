@@ -400,6 +400,21 @@ class PackageMigrationsTest extends TestCase
     }
 
     #[Test]
+    public function test_removing_the_password_rolls_back_on_a_table_with_accounts(): void
+    {
+        $this->createStandardUsersTable();
+
+        $removePassword = $this->migration('remove_password_column_from_users_table');
+        $removePassword->up();
+        DB::table('users')->insert(['name' => 'Account', 'email' => 'account@example.test']);
+
+        $removePassword->down();
+
+        $this->assertTrue(Schema::hasColumn('users', 'password'));
+        $this->assertNull(DB::table('users')->value('password'));
+    }
+
+    #[Test]
     public function test_rollback_down_methods_revert_changes(): void
     {
         $this->createStandardUsersTable();

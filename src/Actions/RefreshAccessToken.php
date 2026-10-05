@@ -12,6 +12,7 @@ use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
+use Laravel\Socialite\Two\Token;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Throwable;
 use Uzairports\Uzairid\Events\UzairTokenRefreshed;
@@ -493,14 +494,14 @@ class RefreshAccessToken
                 return $token->save();
             });
         } catch (Throwable $exception) {
-            app(EndSessions::class)->surrender($token);
+            $this->surrenderIssuedGrants($refreshed, $refreshToken);
             UzairTokenRefreshFailed::dispatch($token, $exception);
 
             throw $exception;
         }
 
         if (! $saved) {
-            app(EndSessions::class)->surrender($token);
+            $this->surrenderIssuedGrants($refreshed, $refreshToken);
             UzairTokenRefreshFailed::dispatch($token);
 
             return false;
@@ -509,6 +510,23 @@ class RefreshAccessToken
         UzairTokenRefreshed::dispatch($token);
 
         return true;
+    }
+
+    /**
+     * Revoke only the grants this exchange issued.
+     *
+     * A provider that does not rotate the refresh token answers with none, or
+     * with the one just spent. The stored row still holds that token, so
+     * surrendering it over a failed write would end a login that should
+     * have survived.
+     */
+    private function surrenderIssuedGrants(Token $refreshed, string $spentRefreshToken): void
+    {
+        $issuedRefreshToken = $refreshed->refreshToken !== $spentRefreshToken
+            ? $refreshed->refreshToken
+            : null;
+
+        app(EndSessions::class)->surrenderIssued($refreshed->token, $issuedRefreshToken);
     }
 
     /**

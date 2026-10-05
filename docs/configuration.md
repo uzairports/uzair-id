@@ -30,6 +30,7 @@ php artisan vendor:publish --tag=uzairid-config
 | `oidc.jwks_endpoint` | `UZAIR_JWKS_ENDPOINT` | `/oauth/jwks` | Где провайдер публикует ключи подписи |
 | `oidc.jwks_cache_ttl` | `UZAIR_JWKS_CACHE_TTL` | `3600` | Сколько секунд кешировать ключи |
 | `oidc.leeway` | `UZAIR_OIDC_LEEWAY` | `60` | Допуск расхождения часов при проверке `iat`/`exp` (сек) |
+| `oidc.algorithms` | `UZAIR_OIDC_ALGORITHMS` | `RS256` | Разрешённые алгоритмы подписи ID- и logout-токенов, через запятую |
 | `end_session_endpoint` | `UZAIR_END_SESSION_ENDPOINT` | — | Куда отправить браузер после выхода, чтобы завершить сессию и на UzAirports ID (`/oauth/logout`) |
 | `revoke_on_backchannel_logout` | `UZAIR_REVOKE_ON_BACKCHANNEL_LOGOUT` | `true` | Отзывать ли гранты входов, завершённых back-channel logout |
 | `logout_endpoint` | `UZAIR_LOGOUT_ENDPOINT` | `/api/oauth/logout` | Эндпоинт для отзыва access-токена при logout |

@@ -38,7 +38,7 @@ return new class extends Migration
         }
 
         Schema::table($table, function (Blueprint $accounts) {
-            $accounts->string('password');
+            $accounts->string('password')->nullable();
         });
     }
 

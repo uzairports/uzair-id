@@ -104,6 +104,31 @@ class RefreshAccessTokenTest extends TestCase
         Event::assertNotDispatched(UzairTokenRefreshed::class);
     }
 
+    public function test_a_database_failure_after_a_non_rotating_refresh_keeps_the_stored_refresh_token(): void
+    {
+        $token = $this->expiredToken('failed-non-rotating-write');
+        Event::fake([UzairTokenRefreshed::class, UzairTokenRefreshFailed::class]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->with('old_refresh')->once()->andReturn(new Token('new-access', 'old_refresh', 3600, []));
+        $provider->shouldReceive('logoutAsync')->with('new-access')->once()->andReturn($this->revoked());
+        $provider->shouldNotReceive('revokeRefreshTokenAsync');
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        OauthToken::updating(function (): void {
+            DB::statement('update missing_refresh_test_table set id = 1');
+        });
+
+        try {
+            (new RefreshAccessToken)($token);
+            $this->fail('The database failure must remain visible to the caller.');
+        } catch (QueryException) {
+            $this->assertSame('old_refresh', OauthToken::query()->findOrFail($token->id)->readableRefreshToken());
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+    }
+
     public function test_a_refresh_finishing_after_logout_surrenders_the_new_grants(): void
     {
         $user = TestUser::create(['uzair_id' => 'refresh-during-logout']);

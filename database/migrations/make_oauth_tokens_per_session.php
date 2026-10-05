@@ -20,6 +20,10 @@ return new class extends Migration
      * Replaces `unique(user_id)` with a `(user_id, session_id)` pair under the
      * marker name, deleting sessionless rows, and adds the device columns.
      * Every step is skipped where the table already has that shape.
+     *
+     * The new index is created before the old one is dropped, in both
+     * directions: on MySQL a foreign key on `user_id` refuses to lose the
+     * only index that leads with it.
      */
     public function up(): void
     {
@@ -27,8 +31,8 @@ return new class extends Migration
             DB::table('oauth_tokens')->whereNull('session_id')->delete();
 
             Schema::table('oauth_tokens', function (Blueprint $table) {
-                $table->dropUnique(['user_id']);
                 $table->unique(['user_id', 'session_id'], self::UPGRADE_UNIQUE);
+                $table->dropUnique(['user_id']);
             });
         }
 
@@ -57,8 +61,8 @@ return new class extends Migration
         }
 
         Schema::table('oauth_tokens', function (Blueprint $table) {
-            $table->dropUnique(self::UPGRADE_UNIQUE);
             $table->unique('user_id');
+            $table->dropUnique(self::UPGRADE_UNIQUE);
         });
 
         Schema::table('oauth_tokens', function (Blueprint $table) {
