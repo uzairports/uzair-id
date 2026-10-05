@@ -71,10 +71,16 @@ class UzairBackchannelLogoutController
             return $this->acknowledge();
         }
 
-        $endedCount = $endSessions->endWhere(
-            $this->loginsNamedBy($claims),
-            revoke: (bool) config('uzairports.revoke_on_backchannel_logout', true),
-        );
+        try {
+            $endedCount = $endSessions->endWhere(
+                $this->loginsNamedBy($claims),
+                revoke: (bool) config('uzairports.revoke_on_backchannel_logout', true),
+            );
+        } catch (Throwable $exception) {
+            $this->forgetHavingActedOn($claims);
+
+            throw $exception;
+        }
 
         UzairBackchannelLoggedOut::dispatch($claims, $endedCount);
 
@@ -128,13 +134,37 @@ class UzairBackchannelLogoutController
      */
     private function isARepeat(array $claims): bool
     {
-        $key = 'uzairid:logout-token:'.hash('sha256', (string) $this->claim($claims, 'jti'));
-
         try {
-            return ! Cache::store()->add($key, true, self::MAX_AGE + 2 * VerifyIdentityToken::leeway());
+            return ! Cache::store()->add($this->repeatKey($claims), true, self::MAX_AGE + 2 * VerifyIdentityToken::leeway());
         } catch (Throwable) {
             return false;
         }
+    }
+
+    /**
+     * Let the provider's retry of a logout that failed here be acted on.
+     *
+     * The token is marked before its logins are ended; left marked after a
+     * failure, the retry the 500 asks for would be acknowledged as a repeat
+     * and end nothing.
+     *
+     * @param  array<array-key, mixed>  $claims
+     */
+    private function forgetHavingActedOn(array $claims): void
+    {
+        try {
+            Cache::store()->forget($this->repeatKey($claims));
+        } catch (Throwable) {
+            // The original failure is the one to report.
+        }
+    }
+
+    /**
+     * @param  array<array-key, mixed>  $claims
+     */
+    private function repeatKey(array $claims): string
+    {
+        return 'uzairid:logout-token:'.hash('sha256', (string) $this->claim($claims, 'jti'));
     }
 
     /**

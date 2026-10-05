@@ -335,6 +335,48 @@ class UzairAuthControllerTest extends TestCase
     }
 
     /**
+     * The browser is signed in before the account's other logins are ended.
+     * If ending them fails, keeping the new login would break the one-login
+     * promise and answer a 500 to a signed-in browser, so it is undone.
+     */
+    public function test_a_sign_in_whose_other_logins_cannot_be_ended_is_undone(): void
+    {
+        config(['uzairports.single_session' => true]);
+
+        $user = TestUser::create(['uzair_id' => '5010', 'name' => 'Exclusive']);
+        $otherDevice = $user->tokens()->create([
+            'access_token' => 'the_first_devices_token',
+            'session_id' => 'the-first-devices-session',
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andReturn(SocialiteUser::fake([
+            'id' => '5010',
+            'name' => 'Exclusive',
+            'token' => 'the_second_devices_token',
+            'refreshToken' => 'the_second_devices_refresh',
+        ]));
+        $provider->shouldReceive('logoutAsync')->with('the_second_devices_token')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('the_second_devices_refresh')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        OauthToken::deleting(function (OauthToken $token): void {
+            if ($token->session_id === 'the-first-devices-session') {
+                throw new RuntimeException('The database went away.');
+            }
+        });
+
+        $this->get(route('uzair.callback'))
+            ->assertRedirect('/')
+            ->assertSessionHasErrors('oauth');
+
+        $this->assertGuest();
+        $this->assertModelExists($otherDevice);
+        $this->assertSame(1, $user->tokens()->count());
+    }
+
+    /**
      * Signing in pays a revocation round-trip for every login it ends, in the
      * one request a user is actually waiting on. `revoke_on_single_session`
      * refuses that bill: the other logins still end here, and only the remote

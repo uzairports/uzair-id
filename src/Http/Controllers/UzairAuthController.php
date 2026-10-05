@@ -92,16 +92,22 @@ class UzairAuthController extends UzairController
             return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
         }
 
-        $this->endPreviousLogin($endSessions, $token, $previousSessionIds);
+        try {
+            $this->endPreviousLogin($endSessions, $token, $previousSessionIds);
 
-        $this->noteTheBrowsersLogin($request);
+            $this->noteTheBrowsersLogin($request);
 
-        if (config('uzairports.single_session', false)) {
-            $endSessions(
-                $storeAccount->keyOf($user),
-                $token->session_id,
-                revoke: (bool) config('uzairports.revoke_on_single_session', true),
-            );
+            if (config('uzairports.single_session', false)) {
+                $endSessions(
+                    $storeAccount->keyOf($user),
+                    $token->session_id,
+                    revoke: (bool) config('uzairports.revoke_on_single_session', true),
+                );
+            }
+        } catch (Throwable $e) {
+            $this->abandonLogin($request, $endSessions, $token, $e);
+
+            return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
         }
 
         UzairAuthenticated::dispatch($user, $uzairUser, $token);
@@ -131,6 +137,37 @@ class UzairAuthController extends UzairController
         $token = app(RecordLogin::class)($request, $uzairUser, $user, $this->sessionId($request));
 
         return ['user' => $user, 'token' => $token];
+    }
+
+    /**
+     * Undo a sign-in whose clean-up of earlier logins failed.
+     *
+     * The browser is already signed in and its login written, but the logins
+     * it was meant to replace — this browser's earlier ones, or under
+     * `single_session` every other — may still stand. Keeping it would break
+     * that promise and answer a 500 to a signed-in browser, so the new login
+     * is ended (grants surrendered) and the browser signed out instead.
+     */
+    private function abandonLogin(Request $request, EndSessions $endSessions, OauthToken $token, Throwable $exception): void
+    {
+        try {
+            $endSessions->end($token);
+        } catch (Throwable $endFailure) {
+            Log::warning('Failed to end an UzAirports login whose sign-in could not be completed.', [
+                'exception_class' => $endFailure::class,
+            ]);
+        }
+
+        $this->signOut();
+
+        if ($request->hasSession()) {
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
+        }
+
+        Log::error('UzAirports OAuth callback failed.', [
+            'exception_class' => $exception::class,
+        ]);
     }
 
     /**

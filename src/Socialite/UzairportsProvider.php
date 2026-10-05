@@ -3,7 +3,9 @@
 namespace Uzairports\Uzairid\Socialite;
 
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Promise\PromiseInterface;
+use GuzzleHttp\Psr7\Request as Psr7Request;
 use GuzzleHttp\RequestOptions;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
@@ -150,12 +152,15 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
     /**
      * The `issuer` the provider's tokens and responses must name.
+     *
+     * A configured issuer is compared exactly as written: OpenID Connect
+     * compares issuers as strings, and one ending in a slash must keep it.
      */
     public function issuer(): string
     {
         $issuer = config('uzairports.issuer');
 
-        return is_string($issuer) && $issuer !== '' ? rtrim($issuer, '/') : $this->getHost();
+        return is_string($issuer) && $issuer !== '' ? $issuer : $this->getHost();
     }
 
     public function getClientId(): string
@@ -391,10 +396,21 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     }
 
     /**
+     * A 4xx or 5xx is raised the way Guzzle raises it with `http_errors` on,
+     * even where `uzairports.guzzle` turned that off: `RefreshAccessToken`
+     * reads a dead grant off the `BadResponseException`, and without one it
+     * took the refusal for an outage and answered 503 on every request.
+     *
      * @return array{access_token: string, ...}
+     *
+     * @throws RequestException when the token endpoint answers with a 4xx or 5xx
      */
     private function decodeTokenResponse(ResponseInterface $response): array
     {
+        if ($response->getStatusCode() >= 400) {
+            throw RequestException::create(new Psr7Request('POST', $this->getTokenUrl()), $response);
+        }
+
         $decoded = json_decode((string) $response->getBody(), true);
 
         if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300

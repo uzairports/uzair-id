@@ -77,6 +77,9 @@ class RecordLogin
                 ?? new OauthToken;
         }
 
+        $replacedAccessToken = $token->exists ? $token->readableAccessToken() : null;
+        $replacedRefreshToken = $token->exists ? $token->readableRefreshToken() : null;
+
         $records = (bool) config('uzairports.record_device', true);
         $rawIp = $request->ip();
         $ip = is_string($rawIp) && $rawIp !== '' ? Str::limit($rawIp, 45, '') : null;
@@ -104,7 +107,25 @@ class RecordLogin
             throw new RuntimeException('The UzAirports login was refused by a model listener and not recorded.');
         }
 
+        $this->surrenderReplacedGrants($uzairUser, $replacedAccessToken, $replacedRefreshToken);
+
         return $token;
+    }
+
+    /**
+     * Hand back the grants an overwritten row held.
+     *
+     * Signing in again under the same session, or again without one, reuses
+     * the row; once its grants are overwritten nothing would ever surrender
+     * them, and they stayed honored at UzAirports ID. Revocation reports its
+     * failures and never raises.
+     */
+    private function surrenderReplacedGrants(SocialiteUser $uzairUser, ?string $accessToken, ?string $refreshToken): void
+    {
+        app(EndSessions::class)->surrenderIssued(
+            $accessToken !== $uzairUser->token ? $accessToken : null,
+            $refreshToken !== $uzairUser->refreshToken ? $refreshToken : null,
+        );
     }
 
     /**

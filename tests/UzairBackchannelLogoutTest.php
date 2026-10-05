@@ -206,6 +206,38 @@ class UzairBackchannelLogoutTest extends TestCase
     }
 
     /**
+     * The token is marked as acted on before its logins are ended. A failure
+     * in between answers 500 so the provider tries again, and that retry must
+     * not be taken for a replay that ends nothing.
+     */
+    public function test_a_logout_that_failed_here_is_acted_on_when_the_provider_retries(): void
+    {
+        $this->acceptRevocations();
+
+        $user = TestUser::query()->create(['uzair_id' => '9008']);
+        $login = $this->login($user, 'idp-session');
+        $token = $this->logoutToken(['sid' => 'idp-session']);
+
+        $databaseIsDown = true;
+
+        OauthToken::deleting(function () use (&$databaseIsDown): void {
+            if ($databaseIsDown) {
+                $databaseIsDown = false;
+
+                throw new RuntimeException('The database went away.');
+            }
+        });
+
+        $this->post(route('uzair.backchannelLogout'), ['logout_token' => $token])->assertServerError();
+
+        $this->assertModelExists($login);
+
+        $this->post(route('uzair.backchannelLogout'), ['logout_token' => $token])->assertOk();
+
+        $this->assertModelMissing($login);
+    }
+
+    /**
      * Keys that cannot be fetched are this side's failure: the provider is
      * told to try again rather than that its token was bad.
      */

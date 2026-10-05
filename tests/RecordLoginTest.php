@@ -3,9 +3,12 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Illuminate\Http\Request;
+use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\User as SocialiteUser;
+use Mockery;
 use Uzairports\Uzairid\Actions\RecordLogin;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class RecordLoginTest extends TestCase
 {
@@ -39,6 +42,38 @@ class RecordLoginTest extends TestCase
         $this->assertNull($recorded->personal_access_token_id);
         $this->assertSame(999, $mobileToken->fresh()?->personal_access_token_id);
         $this->assertSame(2, OauthToken::query()->where('user_id', $user->getKey())->count());
+    }
+
+    /**
+     * Signing in again under the same session reuses the row. The grants it
+     * held are overwritten, and nothing would ever surrender them after that.
+     */
+    public function test_signing_in_again_under_the_same_session_hands_back_the_grants_it_replaces(): void
+    {
+        $user = TestUser::create(['uzair_id' => '6003', 'name' => 'Returning User']);
+
+        $user->tokens()->create([
+            'access_token' => 'replaced-access',
+            'refresh_token' => 'replaced-refresh',
+            'session_id' => 'session-abc',
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('replaced-access')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('replaced-refresh')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $socialiteUser = SocialiteUser::fake([
+            'id' => '6003',
+            'token' => 'new-access',
+            'refreshToken' => 'new-refresh',
+        ]);
+
+        $recorded = app(RecordLogin::class)(Request::create('/'), $socialiteUser, $user, 'session-abc');
+
+        $this->assertSame('new-access', $recorded->fresh()?->access_token);
+        $this->assertSame(1, $user->tokens()->count());
     }
 
     public function test_record_login_truncates_long_ip_address(): void

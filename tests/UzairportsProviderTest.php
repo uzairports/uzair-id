@@ -454,6 +454,22 @@ class UzairportsProviderTest extends TestCase
         $this->assertSame('42', $provider->user()->getId());
     }
 
+    /**
+     * OpenID Connect compares issuers as strings, so an issuer that ends in a
+     * slash must be matched with it rather than trimmed into a mismatch.
+     */
+    public function test_an_issuer_ending_in_a_slash_is_matched_as_configured(): void
+    {
+        config(['uzairports.issuer' => 'https://my.uzairports.com/']);
+
+        $provider = $this->callbackProvider(['handler' => HandlerStack::create(new MockHandler([
+            new Response(200, [], '{"access_token":"access","expires_in":3600}'),
+            new Response(200, [], '{"id":"42"}'),
+        ]))], 'https://my.uzairports.com/');
+
+        $this->assertSame('42', $provider->user()->getId());
+    }
+
     public function test_a_response_without_iss_is_completed_where_it_is_not_required(): void
     {
         config(['uzairports.require_iss' => false]);

@@ -4,6 +4,8 @@ namespace Uzairports\Uzairid\Tests;
 
 use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Handler\MockHandler;
+use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Request;
 use GuzzleHttp\Psr7\Response;
@@ -468,6 +470,23 @@ class RefreshAccessTokenTest extends TestCase
         $this->assertSame('old_access', $stored->access_token);
         $this->assertSame('old_refresh', $stored->refresh_token);
         Event::assertDispatched(UzairTokenRefreshFailed::class);
+    }
+
+    /**
+     * `uzairports.guzzle` may turn `http_errors` off, and a dead grant then
+     * arrives as an ordinary 400. It must still end the login rather than be
+     * taken for an outage answered with 503 on every request.
+     */
+    public function test_a_refused_grant_ends_the_login_when_guzzle_raises_nothing(): void
+    {
+        config(['uzairports.guzzle' => [
+            'http_errors' => false,
+            'handler' => HandlerStack::create(new MockHandler([
+                new Response(400, [], '{"error":"invalid_grant"}'),
+            ])),
+        ]]);
+
+        $this->assertFalse((new RefreshAccessToken)($this->expiredToken('3050')));
     }
 
     /**
