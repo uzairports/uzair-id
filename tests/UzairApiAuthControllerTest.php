@@ -311,6 +311,31 @@ class UzairApiAuthControllerTest extends TestCase
         $this->assertInstanceOf(OauthToken::class, $user->uzairTokens()->sole());
     }
 
+    public function test_refresh_endpoint_rotates_sanctum_token(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7020']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+
+        $response = $this->withToken($plainTextToken)->postJson(route('uzair.api.refresh'));
+
+        $response->assertOk()
+            ->assertJsonStructure(['token', 'token_type', 'expires_at']);
+
+        $newToken = $this->issuedToken($response);
+        $this->assertNotSame($plainTextToken, $newToken);
+
+        $this->assertNull(PersonalAccessToken::findToken($plainTextToken));
+
+        $foundNew = PersonalAccessToken::findToken($newToken);
+        $this->assertNotNull($foundNew);
+        $this->assertSame($foundNew->getKey(), $login->fresh()?->personal_access_token_id);
+    }
+
+    public function test_refresh_endpoint_requires_authentication(): void
+    {
+        $this->postJson(route('uzair.api.refresh'))->assertUnauthorized();
+    }
+
     /**
      * The plain-text Sanctum token an exchange answered with.
      *

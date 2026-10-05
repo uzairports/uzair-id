@@ -26,6 +26,7 @@ use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
+use Uzairports\Uzairid\Events\UzairDeviceLoggedOut;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -955,6 +956,37 @@ class UzairAuthControllerTest extends TestCase
 
         $this->assertAuthenticated();
         $this->assertSame([$thisDevice->session_id], $user->tokens()->pluck('session_id')->all());
+    }
+
+    public function test_ending_another_devices_login_dispatches_device_logged_out_event(): void
+    {
+        Event::fake([UzairDeviceLoggedOut::class]);
+
+        $user = TestUser::create(['uzair_id' => '5099', 'name' => 'Event Device']);
+
+        $theOtherDevice = $user->tokens()->create([
+            'access_token' => 'the_other_devices_token',
+            'session_id' => 'the-other-devices-session',
+        ]);
+
+        $this->fakeIdentity(
+            ['id' => '5099', 'name' => 'Event Device', 'token' => 'this_devices_token'],
+            logout: 'the_other_devices_token',
+        );
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $thisDevice = $user->tokens()->where('session_id', '!=', 'the-other-devices-session')->firstOrFail();
+
+        $this->onTheDeviceHolding($thisDevice)
+            ->from(route('dashboard'))
+            ->post(route('uzair.logoutDevice', $theOtherDevice))
+            ->assertRedirect(route('dashboard'));
+
+        Event::assertDispatched(UzairDeviceLoggedOut::class, function (UzairDeviceLoggedOut $event) use ($user): bool {
+            return $event->user?->getKey() === $user->getKey()
+                && $event->token->session_id === 'the-other-devices-session';
+        });
     }
 
     /**

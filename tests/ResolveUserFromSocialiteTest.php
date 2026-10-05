@@ -276,4 +276,28 @@ class ResolveUserFromSocialiteTest extends TestCase
             Uzair::resolveUserUsing(null);
         }
     }
+
+    public function test_custom_user_attributes_updater_maps_additional_attributes(): void
+    {
+        Uzair::updateUserAttributesUsing(function ($user, $socialiteUser): array {
+            return [
+                'name' => 'Mapped: '.$socialiteUser->getName(),
+            ];
+        });
+
+        try {
+            $socialiteUser = SocialiteUser::fake([
+                'id' => '2099',
+                'name' => 'Custom Original',
+                'email' => 'custom@uzairports.com',
+            ]);
+
+            $resolver = new ResolveUserFromSocialite;
+            $user = $resolver($socialiteUser);
+
+            $this->assertSame('Mapped: Custom Original', $user->getAttribute('name'));
+        } finally {
+            Uzair::updateUserAttributesUsing(null);
+        }
+    }
 }

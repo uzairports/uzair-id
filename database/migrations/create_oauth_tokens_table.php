@@ -46,7 +46,7 @@ return new class extends Migration
             $table->text('refresh_token')->nullable();
             $table->timestamp('expires_at')->nullable();
             $table->string('session_id')->nullable();
-            $table->unsignedBigInteger('personal_access_token_id')->nullable()->unique();
+            $this->definePersonalAccessTokenIdColumn($table);
             $table->string('sid')->nullable()->index();
             $table->text('id_token')->nullable();
             $table->string('ip_address', 45)->nullable();
@@ -201,5 +201,24 @@ return new class extends Migration
         }
 
         return null;
+    }
+
+    /**
+     * Define `personal_access_token_id` adapting to the Sanctum token key type.
+     */
+    private function definePersonalAccessTokenIdColumn(Blueprint $table): void
+    {
+        $tokenModel = Uzair::accessTokenModel();
+
+        if ($tokenModel !== null && class_exists($tokenModel)) {
+            $instance = new $tokenModel;
+            if ($instance->getKeyType() === 'string') {
+                $table->string('personal_access_token_id', 64)->nullable()->unique();
+
+                return;
+            }
+        }
+
+        $table->unsignedBigInteger('personal_access_token_id')->nullable()->unique();
     }
 };

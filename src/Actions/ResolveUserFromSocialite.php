@@ -52,10 +52,17 @@ class ResolveUserFromSocialite
 
         $email = $reportedEmail ?? $user->getAttribute('email');
 
+        $extraAttributes = [];
+        $updater = Uzair::getUserAttributesUpdater();
+        if ($updater !== null) {
+            $extraAttributes = $updater($user, $uzairUser);
+        }
+
         $saved = $user->forceFill([
             'uzair_id' => $uzairId,
             'name' => $name,
             'email' => $email,
+            ...$extraAttributes,
         ])->save();
 
         if (! $saved) {

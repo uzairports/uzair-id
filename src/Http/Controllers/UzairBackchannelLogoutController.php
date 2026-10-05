@@ -16,6 +16,7 @@ use Throwable;
 use UnexpectedValueException;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\VerifyIdentityToken;
+use Uzairports\Uzairid\Events\UzairBackchannelLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 use Uzairports\Uzairid\Uzair;
@@ -71,10 +72,12 @@ class UzairBackchannelLogoutController
             return $this->acknowledge();
         }
 
-        $endSessions->endWhere(
+        $endedCount = $endSessions->endWhere(
             $this->loginsNamedBy($claims),
             revoke: (bool) config('uzairports.revoke_on_backchannel_logout', true),
         );
+
+        UzairBackchannelLoggedOut::dispatch($claims, $endedCount);
 
         return $this->acknowledge();
     }

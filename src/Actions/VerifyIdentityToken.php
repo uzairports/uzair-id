@@ -78,16 +78,37 @@ class VerifyIdentityToken
     }
 
     /**
+     * The algorithms allowed when verifying ID tokens.
+     *
+     * @return list<string>
+     */
+    public static function allowedAlgorithms(): array
+    {
+        $algorithms = config('uzairports.oidc.algorithms', ['RS256']);
+
+        if (! is_array($algorithms) || empty($algorithms)) {
+            return ['RS256'];
+        }
+
+        /** @var list<string> $filtered */
+        $filtered = array_values(array_filter($algorithms, fn (mixed $algo): bool => is_string($algo) && $algo !== ''));
+
+        return $filtered === [] ? ['RS256'] : $filtered;
+    }
+
+    /**
      * @param  array<array-key, mixed>  $jwks
      * @return array<array-key, mixed>
      */
     private function decodeWith(string $jwt, array $jwks): array
     {
-        $keys = JWK::parseKeySet($jwks, 'RS256');
+        $allowed = self::allowedAlgorithms();
+        $defaultAlg = $allowed[0] ?? 'RS256';
+        $keys = JWK::parseKeySet($jwks, $defaultAlg);
 
         foreach ($keys as $key) {
-            if ($key->getAlgorithm() !== 'RS256') {
-                throw new UnexpectedValueException('The UzAirports signing keys include one that is not RS256.');
+            if (! in_array($key->getAlgorithm(), $allowed, true)) {
+                throw new UnexpectedValueException("The UzAirports signing keys include an algorithm [{$key->getAlgorithm()}] that is not allowed.");
             }
         }
 

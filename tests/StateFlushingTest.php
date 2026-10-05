@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use Mockery;
+use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Uzair;
 
@@ -100,6 +101,19 @@ class StateFlushingTest extends TestCase
         $this->assertSame($resolver, Uzair::getUserResolver());
     }
 
+    public function test_flushing_clears_verified_token_storage(): void
+    {
+        $check = new EnsureTokenStorageMatchesProvider;
+        $check();
+
+        $property = new \ReflectionProperty(EnsureTokenStorageMatchesProvider::class, 'verifiedUntil');
+        $this->assertNotEmpty($property->getValue());
+
+        Uzair::flushState();
+
+        $this->assertEmpty($property->getValue());
+    }
+
     /**
      * Testbench closes Mockery itself, and folds the expectation count into the
      * assertion tally on the way — closing early here would verify the
@@ -110,6 +124,7 @@ class StateFlushingTest extends TestCase
         OauthToken::flushLoginCacheWarnings();
         Uzair::flushLoginRouteWarnings();
         Uzair::resolveUserUsing(null);
+        Uzair::updateUserAttributesUsing(null);
 
         parent::tearDown();
     }

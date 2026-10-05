@@ -18,6 +18,7 @@ use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Actions\RecordLogin;
+use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Actions\StoreAccount;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
@@ -111,6 +112,86 @@ class UzairApiAuthController extends UzairController
             'token' => $plainTextToken,
             'token_type' => 'Bearer',
             'expires_at' => $expiresAt?->toIso8601String(),
+        ]);
+    }
+
+    /**
+     * Refresh the mobile client's Sanctum token and remote grant.
+     */
+    public function refresh(Request $request, RefreshAccessToken $refreshAccessToken, EndSessions $endSessions): JsonResponse
+    {
+        $user = $this->authenticated();
+
+        if ($user === null) {
+            return new JsonResponse(['message' => __('uzairid::messages.session_ended')], 401);
+        }
+
+        $accessTokenId = Uzair::accessTokenId($user);
+
+        if ($accessTokenId === null) {
+            return new JsonResponse(['message' => __('uzairid::messages.session_ended')], 401);
+        }
+
+        $login = OauthToken::query()
+            ->where('user_id', $user->getAuthIdentifier())
+            ->where('personal_access_token_id', $accessTokenId)
+            ->first();
+
+        if ($login === null) {
+            return new JsonResponse(['message' => __('uzairid::messages.session_ended')], 401);
+        }
+
+        try {
+            if ($login->hasExpired() || $login->expiresWithin(60)) {
+                $refreshed = $refreshAccessToken($login);
+
+                if (! $refreshed) {
+                    $endSessions->end($login);
+
+                    return new JsonResponse(['message' => __('uzairid::messages.session_expired')], 401);
+                }
+            }
+
+            $rawDeviceName = $request->input('device_name');
+            $deviceName = is_string($rawDeviceName) && $rawDeviceName !== ''
+                ? $rawDeviceName
+                : ($login->deviceLabel() ?: 'Mobile Client');
+            $expiresAt = $this->tokenExpiresAt();
+
+            ['plainTextToken' => $plainTextToken, 'expiresAt' => $newExpiresAt] = OauthToken::query()
+                ->getConnection()
+                ->transaction(function () use ($user, $login, $deviceName, $expiresAt, $endSessions, $accessTokenId): array {
+                    $newAccessToken = method_exists($user, 'createToken')
+                        ? $user->createToken($deviceName, $this->tokenAbilities(), $expiresAt)
+                        : null;
+
+                    if (! $newAccessToken instanceof NewAccessToken) {
+                        throw new RuntimeException('The account model did not issue a Sanctum token.');
+                    }
+
+                    $newKey = $newAccessToken->accessToken->getKey();
+
+                    $login->forceFill(['personal_access_token_id' => $newKey])->save();
+
+                    $endSessions->dropAccessTokens([$accessTokenId]);
+
+                    return [
+                        'plainTextToken' => $newAccessToken->plainTextToken,
+                        'expiresAt' => $expiresAt ?? $this->globalExpiry($newAccessToken),
+                    ];
+                });
+        } catch (Throwable $e) {
+            Log::error('UzAirports API token refresh failed.', [
+                'exception_class' => $e::class,
+            ]);
+
+            return new JsonResponse(['message' => __('uzairid::messages.temporarily_unavailable')], 503);
+        }
+
+        return new JsonResponse([
+            'token' => $plainTextToken,
+            'token_type' => 'Bearer',
+            'expires_at' => $newExpiresAt?->toIso8601String(),
         ]);
     }
 

@@ -4,6 +4,7 @@ namespace Uzairports\Uzairid\Tests;
 
 use Illuminate\Foundation\Application;
 use Illuminate\Routing\Router;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Testing\TestResponse;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
@@ -12,6 +13,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use stdClass;
 use Symfony\Component\HttpFoundation\Response;
+use Uzairports\Uzairid\Events\UzairBackchannelLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 use Uzairports\Uzairid\Uzair;
@@ -116,6 +118,21 @@ class UzairBackchannelLogoutTest extends TestCase
         $this->logout(['sid' => 'idp-session'])->assertOk();
 
         $this->assertModelMissing($login);
+    }
+
+    public function test_backchannel_logout_dispatches_event(): void
+    {
+        Event::fake([UzairBackchannelLoggedOut::class]);
+        $this->acceptRevocations();
+
+        $user = TestUser::query()->create(['uzair_id' => '9007']);
+        $this->login($user, 'idp-session-event');
+
+        $this->logout(['sid' => 'idp-session-event'])->assertOk();
+
+        Event::assertDispatched(UzairBackchannelLoggedOut::class, function (UzairBackchannelLoggedOut $event): bool {
+            return $event->claims['sid'] === 'idp-session-event' && $event->endedCount === 1;
+        });
     }
 
     /**

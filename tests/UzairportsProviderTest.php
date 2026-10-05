@@ -526,6 +526,65 @@ class UzairportsProviderTest extends TestCase
         );
     }
 
+    public function test_an_id_token_algorithm_not_allowed_is_refused(): void
+    {
+        config(['uzairports.oidc.enabled' => true, 'uzairports.oidc.algorithms' => ['ES256']]);
+
+        $revoker = Mockery::mock(UzairportsProvider::class);
+        $revoker->shouldReceive('logoutAsync')->with('issued-access')->once()->andReturn($this->revoked());
+        $revoker->shouldReceive('revokeRefreshTokenAsync')->with('issued-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
+
+        $provider = $this->providerIssuing($this->signed($this->idTokenClaims()))->stateless();
+
+        $this->expectException(UnexpectedValueException::class);
+        $provider->user();
+    }
+
+    public function test_redirect_includes_nonce_when_oidc_is_enabled(): void
+    {
+        config(['uzairports.oidc.enabled' => true]);
+
+        $request = Request::create('https://app.test/auth/redirect');
+        $session = app('session.store');
+        $request->setLaravelSession($session);
+
+        $provider = new UzairportsProvider($request, 'test-client', 'test-secret', 'https://app.test/callback', []);
+
+        $response = $provider->redirect();
+        $url = $response->getTargetUrl();
+
+        $this->assertTrue($session->has('uzairid.nonce'));
+        $nonce = $session->get('uzairid.nonce');
+        $this->assertIsString($nonce);
+        $this->assertNotEmpty($nonce);
+        $this->assertStringContainsString('nonce='.$nonce, $url);
+    }
+
+    public function test_id_token_with_mismatched_nonce_is_rejected(): void
+    {
+        config(['uzairports.oidc.enabled' => true]);
+
+        $request = Request::create('https://app.test/auth/callback?code=the-code&state=the-state&iss=https://my.uzairports.com');
+        $session = app('session.store');
+        $session->put('state', 'the-state');
+        $session->put('uzairid.nonce', 'expected-nonce-value');
+        $request->setLaravelSession($session);
+
+        $revoker = Mockery::mock(UzairportsProvider::class);
+        $revoker->shouldReceive('logoutAsync')->with('issued-access')->once()->andReturn($this->revoked());
+        $revoker->shouldReceive('revokeRefreshTokenAsync')->with('issued-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
+
+        $provider = $this->providerIssuing($this->signed([...$this->idTokenClaims(), 'nonce' => 'wrong-nonce']));
+        $provider->setRequest($request);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('The UzAirports ID token nonce does not match the session nonce.');
+
+        $provider->user();
+    }
+
     /**
      * A provider answering a callback whose state matches.
      *

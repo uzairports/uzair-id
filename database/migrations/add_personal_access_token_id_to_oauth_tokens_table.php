@@ -3,6 +3,7 @@
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
+use Uzairports\Uzairid\Uzair;
 
 return new class extends Migration
 {
@@ -26,7 +27,15 @@ return new class extends Migration
         }
 
         Schema::table('oauth_tokens', function (Blueprint $table) {
-            $table->unsignedBigInteger('personal_access_token_id')->nullable()->after('session_id');
+            $tokenModel = Uzair::accessTokenModel();
+            $isStringKey = $tokenModel !== null && class_exists($tokenModel) && (new $tokenModel)->getKeyType() === 'string';
+
+            if ($isStringKey) {
+                $table->string('personal_access_token_id', 64)->nullable()->after('session_id');
+            } else {
+                $table->unsignedBigInteger('personal_access_token_id')->nullable()->after('session_id');
+            }
+
             $table->unique('personal_access_token_id', self::UPGRADE_UNIQUE);
         });
     }

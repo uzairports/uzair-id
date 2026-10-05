@@ -18,6 +18,7 @@ use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
+use Uzairports\Uzairid\Events\UzairDeviceLoggedOut;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -123,6 +124,8 @@ abstract class UzairController
         }
 
         $endSessions->end($login);
+
+        UzairDeviceLoggedOut::dispatch($user instanceof Model ? $user : null, $login);
 
         return $request->wantsJson()
             ? new JsonResponse([], 204)

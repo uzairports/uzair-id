@@ -7,6 +7,7 @@ use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\RequestOptions;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use Laravel\Socialite\Two\AbstractProvider;
 use Laravel\Socialite\Two\InvalidStateException;
 use Laravel\Socialite\Two\ProviderInterface;
@@ -62,6 +63,23 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     protected function getAuthUrl($state): string
     {
         return $this->buildAuthUrlFromBase($this->getHost().'/oauth/authorize', (string) $state);
+    }
+
+    /**
+     * @param  string|null  $state
+     * @return array<string, mixed>
+     */
+    protected function getCodeFields($state = null)
+    {
+        $fields = parent::getCodeFields($state);
+
+        if (Uzair::oidcEnabled() && ! $this->isStateless() && $this->request->hasSession()) {
+            $nonce = Str::random(40);
+            $this->request->session()->put('uzairid.nonce', $nonce);
+            $fields['nonce'] = $nonce;
+        }
+
+        return $fields;
     }
 
     protected function getTokenUrl(): string
@@ -226,6 +244,14 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
         if (($claims['sub'] ?? null) !== (string) $user->getId()) {
             throw new RuntimeException('The UzAirports ID token names another subject than the profile.');
+        }
+
+        if (! $this->isStateless() && $this->request->hasSession()) {
+            $expectedNonce = $this->request->session()->pull('uzairid.nonce');
+
+            if (is_string($expectedNonce) && $expectedNonce !== '' && ($claims['nonce'] ?? null) !== $expectedNonce) {
+                throw new RuntimeException('The UzAirports ID token nonce does not match the session nonce.');
+            }
         }
 
         $sid = $claims['sid'] ?? null;
