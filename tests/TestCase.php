@@ -10,6 +10,7 @@ use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Routing\Router;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\SocialiteServiceProvider;
@@ -28,6 +29,8 @@ abstract class TestCase extends Orchestra
     protected function setUp(): void
     {
         parent::setUp();
+
+        DB::connection()->setTablePrefix('');
 
         EnsureTokenStorageMatchesProvider::flushVerified();
         OauthToken::flushAccessTokensTables();
@@ -166,10 +169,22 @@ abstract class TestCase extends Orchestra
     {
         Schema::disableForeignKeyConstraints();
 
+        Schema::dropIfExists('token_references');
         Schema::dropIfExists('oauth_tokens');
         Schema::dropIfExists('personal_access_tokens');
         Schema::dropIfExists('sessions');
         Schema::dropIfExists('users');
+        Schema::dropIfExists('provider_accounts');
+        Schema::dropIfExists('members');
+        Schema::dropIfExists('other_accounts');
+        Schema::dropIfExists('callback_admins');
+
+        Schema::dropIfExists('app_token_references');
+        Schema::dropIfExists('app_oauth_tokens');
+        Schema::dropIfExists('app_personal_access_tokens');
+        Schema::dropIfExists('app_sessions');
+        Schema::dropIfExists('app_users');
+        Schema::dropIfExists('app_provider_accounts');
 
         Schema::enableForeignKeyConstraints();
 

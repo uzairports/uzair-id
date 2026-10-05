@@ -37,6 +37,8 @@ class UzairAuthControllerTest extends TestCase
 {
     protected function tearDown(): void
     {
+        Schema::dropIfExists('callback_admins');
+
         Mockery::close();
 
         parent::tearDown();

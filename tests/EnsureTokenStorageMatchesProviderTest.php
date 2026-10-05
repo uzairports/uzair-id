@@ -13,6 +13,13 @@ use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 
 class EnsureTokenStorageMatchesProviderTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        Schema::dropIfExists('other_accounts');
+
+        parent::tearDown();
+    }
+
     public function test_a_verified_storage_is_not_read_again(): void
     {
         $check = app(EnsureTokenStorageMatchesProvider::class);

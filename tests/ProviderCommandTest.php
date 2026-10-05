@@ -114,22 +114,34 @@ class ProviderCommandTest extends TestCase
         // Index names are not prefixed, and SQLite keeps them database-wide.
         Schema::disableForeignKeyConstraints();
         foreach (['oauth_tokens', 'personal_access_tokens', 'sessions', 'users'] as $table) {
-            Schema::drop($table);
+            Schema::dropIfExists($table);
         }
         Schema::enableForeignKeyConstraints();
 
         DB::connection()->setTablePrefix('app_');
         $this->setUpDatabase();
 
-        $this->maintenance();
-        $this->useOtherProvider();
-        Schema::create('token_references', function (Blueprint $table): void {
-            $table->foreignId('token_id')->constrained('oauth_tokens');
-        });
+        try {
+            $this->maintenance();
+            $this->useOtherProvider();
+            Schema::create('token_references', function (Blueprint $table): void {
+                $table->foreignId('token_id')->constrained('oauth_tokens');
+            });
 
-        $this->assertSame(1, Artisan::call('uzair:provider', ['--rebuild-empty' => true]));
-        $this->assertStringContainsString('Another table references', Artisan::output());
-        $this->assertSame('app_users', Schema::getForeignKeys('oauth_tokens')[0]['foreign_table']);
+            $this->assertSame(1, Artisan::call('uzair:provider', ['--rebuild-empty' => true]));
+            $this->assertStringContainsString('Another table references', Artisan::output());
+            $this->assertSame('app_users', Schema::getForeignKeys('oauth_tokens')[0]['foreign_table']);
+        } finally {
+            Schema::disableForeignKeyConstraints();
+            Schema::dropIfExists('token_references');
+            foreach (['oauth_tokens', 'personal_access_tokens', 'sessions', 'users', 'provider_accounts'] as $table) {
+                Schema::dropIfExists($table);
+            }
+            Schema::enableForeignKeyConstraints();
+
+            DB::connection()->setTablePrefix('');
+            $this->setUpDatabase();
+        }
     }
 
     public function test_transition_ends_old_logins_then_rebuilds_empty_storage_for_a_uuid_owner(): void
@@ -204,6 +216,8 @@ class ProviderCommandTest extends TestCase
 
     protected function tearDown(): void
     {
+        Schema::disableForeignKeyConstraints();
+        Schema::dropIfExists('token_references');
         Schema::dropIfExists('oauth_tokens');
         foreach (Schema::getTableListing(schemaQualified: false) as $table) {
             if (str_starts_with($table, 'uzair_tokens_')) {
@@ -211,6 +225,18 @@ class ProviderCommandTest extends TestCase
             }
         }
         Schema::dropIfExists('provider_accounts');
+        Schema::enableForeignKeyConstraints();
+
+        if (DB::connection()->getTablePrefix() !== '') {
+            Schema::disableForeignKeyConstraints();
+            Schema::dropIfExists('token_references');
+            foreach (['oauth_tokens', 'personal_access_tokens', 'sessions', 'users', 'provider_accounts'] as $table) {
+                Schema::dropIfExists($table);
+            }
+            Schema::enableForeignKeyConstraints();
+            DB::connection()->setTablePrefix('');
+        }
+
         parent::tearDown();
     }
 }
