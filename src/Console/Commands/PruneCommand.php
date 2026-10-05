@@ -39,10 +39,19 @@ class PruneCommand extends Command
             $parameters['--chunk'] = (int) $this->option('chunk');
         }
 
-        if ($this->option('no-revoke')) {
-            config(['uzairports.revoke_on_prune' => false]);
+        if (! $this->option('no-revoke')) {
+            return $this->call('model:prune', $parameters);
         }
 
-        return $this->call('model:prune', $parameters);
+        // Restored afterwards: inside a worker or the scheduler the process
+        // lives on, and every later prune would skip revocation too.
+        $revokes = config('uzairports.revoke_on_prune');
+        config(['uzairports.revoke_on_prune' => false]);
+
+        try {
+            return $this->call('model:prune', $parameters);
+        } finally {
+            config(['uzairports.revoke_on_prune' => $revokes]);
+        }
     }
 }

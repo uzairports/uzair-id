@@ -6,6 +6,7 @@ use Illuminate\Contracts\Foundation\MaintenanceMode;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Session\Store;
 use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
@@ -106,6 +107,29 @@ class ProviderCommandTest extends TestCase
         } finally {
             Schema::drop('token_references');
         }
+    }
+
+    public function test_rebuild_refuses_incoming_foreign_keys_behind_a_table_prefix(): void
+    {
+        // Index names are not prefixed, and SQLite keeps them database-wide.
+        Schema::disableForeignKeyConstraints();
+        foreach (['oauth_tokens', 'personal_access_tokens', 'sessions', 'users'] as $table) {
+            Schema::drop($table);
+        }
+        Schema::enableForeignKeyConstraints();
+
+        DB::connection()->setTablePrefix('app_');
+        $this->setUpDatabase();
+
+        $this->maintenance();
+        $this->useOtherProvider();
+        Schema::create('token_references', function (Blueprint $table): void {
+            $table->foreignId('token_id')->constrained('oauth_tokens');
+        });
+
+        $this->assertSame(1, Artisan::call('uzair:provider', ['--rebuild-empty' => true]));
+        $this->assertStringContainsString('Another table references', Artisan::output());
+        $this->assertSame('app_users', Schema::getForeignKeys('oauth_tokens')[0]['foreign_table']);
     }
 
     public function test_transition_ends_old_logins_then_rebuilds_empty_storage_for_a_uuid_owner(): void

@@ -48,6 +48,10 @@ class ProviderCommand extends Command
                     throw new RuntimeException('Some token rows could not be deleted. Keep the old provider configured and resolve the deletion failures.');
                 }
 
+                // The provider is about to change; the pass verified for the old one
+                // must not be trusted if the configuration is rolled back to it.
+                $check->forgetVerified();
+
                 $this->info('SSO logins ended locally; remote revocation was attempted. Check revocation warnings before continuing.');
 
                 return self::SUCCESS;
@@ -90,7 +94,13 @@ class ProviderCommand extends Command
         }
 
         foreach ($schema->getTables() as $existing) {
-            foreach ($schema->getForeignKeys($existing['schema_qualified_name']) as $key) {
+            // The listed names already carry the prefix, which getForeignKeys()
+            // would add a second time and then find no such table.
+            $keys = $connection->withoutTablePrefix(
+                fn ($unprefixed) => $unprefixed->getSchemaBuilder()->getForeignKeys($existing['schema_qualified_name']),
+            );
+
+            foreach ($keys as $key) {
                 if ($key['foreign_table'] === $connection->getTablePrefix().$table) {
                     throw new RuntimeException('Another table references oauth_tokens. Prepare an application-specific migration preserving that reference.');
                 }

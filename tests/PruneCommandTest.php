@@ -79,6 +79,7 @@ class PruneCommandTest extends TestCase
 
         $this->assertSame(0, $exitCode);
         $this->assertModelMissing($abandoned);
+        $this->assertTrue(config('uzairports.revoke_on_prune'), 'The option must not outlive the command.');
     }
 
     /**

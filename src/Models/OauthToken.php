@@ -178,6 +178,10 @@ class OauthToken extends Model
         $accessTokenModel = Uzair::accessTokenModel();
         $accessToken = $accessTokenModel !== null ? new $accessTokenModel : null;
 
+        if ($accessToken !== null && ! self::accessTokensTableExists($accessToken)) {
+            $accessToken = null;
+        }
+
         return $this->newQuery()->where(
             fn (Builder $query) => $query
                 ->where(
@@ -232,6 +236,43 @@ class OauthToken extends Model
     public static function flushPruner(): void
     {
         static::$pruner = null;
+    }
+
+    /**
+     * Sanctum token tables found to exist in this process, by connection and table.
+     *
+     * @var array<string, true>
+     */
+    private static array $accessTokensTables = [];
+
+    /**
+     * Whether Sanctum's token table exists, so pruning can ask about it.
+     *
+     * Sanctum may be installed for an SPA's cookie authentication alone, with
+     * its token table never migrated; pruning must not fail on that. Only a
+     * table found is remembered, since `prunable()` runs once per pruned row.
+     */
+    private static function accessTokensTableExists(Model $accessToken): bool
+    {
+        $key = $accessToken->getConnection()->getName().'|'.$accessToken->getTable();
+
+        if (isset(self::$accessTokensTables[$key])) {
+            return true;
+        }
+
+        if (! $accessToken->getConnection()->getSchemaBuilder()->hasTable($accessToken->getTable())) {
+            return false;
+        }
+
+        return self::$accessTokensTables[$key] = true;
+    }
+
+    /**
+     * Forget the Sanctum token tables found, between requests or tests.
+     */
+    public static function flushAccessTokensTables(): void
+    {
+        self::$accessTokensTables = [];
     }
 
     /**
@@ -396,8 +437,10 @@ class OauthToken extends Model
      * Scoped to the account, because a session id does not prove ownership;
      * `Uzair::followRegeneratedSession()` checks the session payload first.
      * Written without model events: only the filing changed, not the grants.
-     * A unique-constraint collision means a concurrent request already filed a
-     * login under the new id, so it counts as found.
+     * Nothing moved is not proof there is nothing to find: a concurrent request
+     * of the same browser may have moved the row a moment earlier. The caller
+     * looks again either way; the note it keeps means this happens once per
+     * regeneration. A unique-constraint collision is the same race.
      *
      * @return bool whether the login is worth looking for under the new id
      */
@@ -417,7 +460,7 @@ class OauthToken extends Model
         }
 
         if ($moved === 0) {
-            return false;
+            return true;
         }
 
         // Every session id this package stops using has its cache entry dropped.

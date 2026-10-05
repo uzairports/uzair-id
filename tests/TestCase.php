@@ -30,6 +30,7 @@ abstract class TestCase extends Orchestra
         parent::setUp();
 
         EnsureTokenStorageMatchesProvider::flushVerified();
+        OauthToken::flushAccessTokensTables();
 
         $this->setUpDatabase();
     }

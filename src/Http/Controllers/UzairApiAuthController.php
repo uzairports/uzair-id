@@ -65,6 +65,7 @@ class UzairApiAuthController extends UzairController
         ]);
 
         $uzairUser = null;
+        $login = null;
         $storeAccount = app(StoreAccount::class, ['resolveUser' => $resolveUser]);
 
         try {
@@ -83,8 +84,20 @@ class UzairApiAuthController extends UzairController
             ['login' => $login, 'plainTextToken' => $plainTextToken] = $this->issueAccessToken(
                 $request, $uzairUser, $user, $validated['device_name'],
             );
+
+            // See the callback: `single_session` ends the account's other logins,
+            // browsers and phones alike, and spares the one just written by its row.
+            if (config('uzairports.single_session', false)) {
+                $endSessions(
+                    $storeAccount->keyOf($user),
+                    revoke: (bool) config('uzairports.revoke_on_single_session', true),
+                    exceptLoginId: $login->id,
+                );
+            }
+
+            UzairAuthenticated::dispatch($user, $uzairUser, $login);
         } catch (Throwable $e) {
-            $this->surrenderIssuedGrants($endSessions, $uzairUser);
+            $this->abandon($endSessions, $uzairUser, $login);
 
             Log::error('UzAirports API token exchange failed.', [
                 'exception_class' => $e::class,
@@ -93,22 +106,34 @@ class UzairApiAuthController extends UzairController
             return new JsonResponse(['message' => __('uzairid::messages.authentication_failed')], 401);
         }
 
-        // See the callback: `single_session` ends the account's other logins,
-        // browsers and phones alike, and spares the one just written by its row.
-        if (config('uzairports.single_session', false)) {
-            $endSessions(
-                $storeAccount->keyOf($user),
-                revoke: (bool) config('uzairports.revoke_on_single_session', true),
-                exceptLoginId: $login->id,
-            );
-        }
-
-        UzairAuthenticated::dispatch($user, $uzairUser, $login);
-
         return new JsonResponse([
             'token' => $plainTextToken,
             'token_type' => 'Bearer',
         ]);
+    }
+
+    /**
+     * Undo what a failed exchange left behind.
+     *
+     * Once the login is written, the client that never received its token
+     * cannot end it, so it is ended here — Sanctum token and grants with it.
+     * Before that, only the issued grants exist to surrender. Never raises.
+     */
+    private function abandon(EndSessions $endSessions, ?SocialiteUser $uzairUser, ?OauthToken $login): void
+    {
+        if ($login === null) {
+            $this->surrenderIssuedGrants($endSessions, $uzairUser);
+
+            return;
+        }
+
+        try {
+            $endSessions->end($login);
+        } catch (Throwable $exception) {
+            Log::warning('Failed to end an UzAirports login whose token could not be handed to the client.', [
+                'exception_class' => $exception::class,
+            ]);
+        }
     }
 
     protected function guardName(): string

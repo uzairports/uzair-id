@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Actions;
 
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -57,6 +58,15 @@ class EnsureTokenStorageMatchesProvider
 
         try {
             $problem = $this->problem();
+        } catch (QueryException $exception) {
+            // A database failure is not a configuration problem, and its message
+            // names hosts, users and SQL: it is logged, never sent to the client.
+            Log::error('The UzAirports token storage could not be checked.', [
+                'exception_class' => $exception::class,
+                'message' => $exception->getMessage(),
+            ]);
+
+            throw new ServiceUnavailableHttpException(null, 'The UzAirports token storage could not be checked.');
         } catch (RuntimeException $exception) {
             $problem = $exception->getMessage();
         }
@@ -148,6 +158,9 @@ class EnsureTokenStorageMatchesProvider
     /**
      * What the answer of `problem()` depends on, read without a query.
      *
+     * The database name and the table prefix are part of it: a multi-tenant
+     * application may point one connection name at several databases.
+     *
      * @throws RuntimeException when the configured guard names no account model
      */
     private function fingerprint(): string
@@ -156,10 +169,16 @@ class EnsureTokenStorageMatchesProvider
         $user = new $model;
         $token = new OauthToken;
 
+        $tokens = $token->getConnection();
+        $accounts = $user->getConnection();
+
         return implode('|', [
-            $token->getConnection()->getName(),
+            $tokens->getName(),
+            $tokens->getDatabaseName(),
+            $tokens->getTablePrefix(),
             $token->getTable(),
-            $user->getConnection()->getName(),
+            $accounts->getName(),
+            $accounts->getDatabaseName(),
             $model,
             $user->getTable(),
             $user->getKeyName(),

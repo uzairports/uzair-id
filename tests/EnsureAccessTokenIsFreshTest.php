@@ -417,6 +417,37 @@ class EnsureAccessTokenIsFreshTest extends TestCase
         $this->assertSame(1, $user->tokens()->count());
     }
 
+    public function test_a_login_moved_by_a_concurrent_request_of_the_same_browser_is_still_found(): void
+    {
+        $user = TestUser::create(['uzair_id' => '4027']);
+        $session = $this->startedSession();
+
+        $token = $user->tokens()->create([
+            'access_token' => 'valid_token',
+            'expires_at' => now()->addHour(),
+            'session_id' => $session->getId(),
+        ]);
+
+        $this->handle($this->sessionRequest($user, $session));
+
+        $session->regenerate();
+
+        // A parallel request carrying the new id moves the row right after this
+        // one looked under the new id and found nothing.
+        $moved = false;
+        DB::listen(function (QueryExecuted $query) use (&$moved, $token, $session): void {
+            if ($moved || ! str_starts_with($this->unquotedSql($query->sql), 'select * from oauth_tokens')) {
+                return;
+            }
+
+            $moved = true;
+            DB::table('oauth_tokens')->where('id', $token->id)->update(['session_id' => $session->getId()]);
+        });
+
+        $this->assertSame('OK', $this->handle($this->sessionRequest($user, $session))->getContent());
+        $this->assertModelExists($token);
+    }
+
     /**
      * A session id names a session and not an account, so what says the two ids
      * are one browser is the payload — and the move is still scoped to whoever

@@ -3,9 +3,11 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
+use PDOException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 
@@ -75,6 +77,37 @@ class EnsureTokenStorageMatchesProviderTest extends TestCase
 
         $this->dropTheSanctumTokenColumn();
         $check->forgetVerified();
+
+        $this->expectException(ServiceUnavailableHttpException::class);
+
+        $check();
+    }
+
+    public function test_a_database_failure_is_logged_and_not_shown_to_the_client(): void
+    {
+        $check = new class extends EnsureTokenStorageMatchesProvider
+        {
+            public function problem(): ?string
+            {
+                throw new QueryException('testing', 'select secret_column from secret_host', [], new PDOException('SQLSTATE[HY000] secret'));
+            }
+        };
+
+        try {
+            $check();
+            $this->fail('A database failure must refuse the request.');
+        } catch (ServiceUnavailableHttpException $exception) {
+            $this->assertStringNotContainsString('secret', $exception->getMessage());
+        }
+    }
+
+    public function test_another_database_behind_the_same_connection_name_is_checked_at_once(): void
+    {
+        $check = app(EnsureTokenStorageMatchesProvider::class);
+        $check();
+
+        config(['database.connections.testing.prefix' => 'tenant_']);
+        DB::purge('testing');
 
         $this->expectException(ServiceUnavailableHttpException::class);
 

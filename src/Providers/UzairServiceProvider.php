@@ -156,23 +156,50 @@ class UzairServiceProvider extends ServiceProvider
 
         $time = time();
 
-        $this->publishesMigrations([
-            __DIR__.'/../../database/migrations/add_uzair_id_to_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_uzair_id_to_users_table.php'),
-            __DIR__.'/../../database/migrations/create_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_create_oauth_tokens_table.php'),
-        ], 'uzairid-migrations');
+        $this->publishesMigrations($this->unpublishedMigrations([
+            'add_uzair_id_to_users_table',
+            'create_oauth_tokens_table',
+        ], $time), 'uzairid-migrations');
 
-        $this->publishesMigrations([
-            __DIR__.'/../../database/migrations/remove_password_column_from_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_remove_password_column_from_users_table.php'),
-            __DIR__.'/../../database/migrations/relax_email_column_on_users_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_relax_email_column_on_users_table.php'),
-        ], 'uzairid-user-migrations');
+        $this->publishesMigrations($this->unpublishedMigrations([
+            'remove_password_column_from_users_table',
+            'relax_email_column_on_users_table',
+        ], $time), 'uzairid-user-migrations');
 
-        $this->publishesMigrations([
-            __DIR__.'/../../database/migrations/add_session_id_to_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_session_id_to_oauth_tokens_table.php'),
-            __DIR__.'/../../database/migrations/make_oauth_tokens_per_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_make_oauth_tokens_per_session.php'),
-            __DIR__.'/../../database/migrations/index_oauth_tokens_for_pruning.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_for_pruning.php'),
-            __DIR__.'/../../database/migrations/index_oauth_tokens_by_session.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_index_oauth_tokens_by_session.php'),
-            __DIR__.'/../../database/migrations/add_personal_access_token_id_to_oauth_tokens_table.php' => database_path('migrations/'.date('Y_m_d_His', $time++).'_add_personal_access_token_id_to_oauth_tokens_table.php'),
-        ], 'uzairid-upgrade-migrations');
+        $this->publishesMigrations($this->unpublishedMigrations([
+            'add_session_id_to_oauth_tokens_table',
+            'make_oauth_tokens_per_session',
+            'index_oauth_tokens_for_pruning',
+            'index_oauth_tokens_by_session',
+            'add_personal_access_token_id_to_oauth_tokens_table',
+        ], $time), 'uzairid-upgrade-migrations');
+    }
+
+    /**
+     * The package migrations the application has not published yet, mapped to
+     * their timestamped destinations.
+     *
+     * Each publish stamps a new timestamp, so a migration already in
+     * `database/migrations` would be copied again under a new name. The copy
+     * runs as a no-op, but a later `migrate:rollback` runs its `down()`, which
+     * finds the marker the original left and undoes that upgrade.
+     *
+     * @param  list<string>  $names
+     * @return array<string, string>
+     */
+    private function unpublishedMigrations(array $names, int &$time): array
+    {
+        $paths = [];
+
+        foreach ($names as $name) {
+            if ((glob(database_path("migrations/*_{$name}.php")) ?: []) !== []) {
+                continue;
+            }
+
+            $paths[__DIR__."/../../database/migrations/{$name}.php"] = database_path('migrations/'.date('Y_m_d_His', $time++)."_{$name}.php");
+        }
+
+        return $paths;
     }
 
     /**

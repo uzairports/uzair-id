@@ -3,8 +3,10 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Illuminate\Foundation\Application;
+use Illuminate\Support\ServiceProvider;
 use Laravel\Socialite\Contracts\Factory;
 use Laravel\Socialite\Facades\Socialite;
+use Uzairports\Uzairid\Providers\UzairServiceProvider;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class UzairServiceProviderTest extends TestCase
@@ -33,6 +35,27 @@ class UzairServiceProviderTest extends TestCase
      *
      * The registration waits for a manager to be built instead.
      */
+    public function test_a_migration_already_published_is_not_offered_again(): void
+    {
+        $published = database_path('migrations/2026_01_01_000000_index_oauth_tokens_by_session.php');
+        file_put_contents($published, '<?php');
+
+        // What a provider publishes is kept statically and only ever merged.
+        ServiceProvider::$publishes = [];
+        ServiceProvider::$publishGroups = [];
+
+        try {
+            $this->refreshApplication();
+
+            $destinations = array_values(ServiceProvider::pathsToPublish(UzairServiceProvider::class, 'uzairid-upgrade-migrations'));
+        } finally {
+            unlink($published);
+        }
+
+        $this->assertCount(4, $destinations);
+        $this->assertEmpty(array_filter($destinations, fn (string $path): bool => str_ends_with($path, '_index_oauth_tokens_by_session.php')));
+    }
+
     public function test_booting_the_package_does_not_build_a_socialite_manager(): void
     {
         $this->assertFalse($this->app?->resolved(Factory::class));

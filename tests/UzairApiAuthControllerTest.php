@@ -145,6 +145,22 @@ class UzairApiAuthControllerTest extends TestCase
         $this->assertSame(0, OauthToken::query()->count());
     }
 
+    public function test_a_failure_after_the_token_is_issued_ends_the_login_the_client_never_received(): void
+    {
+        $provider = $this->fakeExchange(['id' => '7009', 'token' => 'sso-access', 'refreshToken' => 'sso-refresh']);
+        $provider->shouldReceive('logoutAsync')->with('sso-access')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('sso-refresh')->once()->andReturn($this->revoked());
+
+        Event::listen(UzairAuthenticated::class, function (): void {
+            throw new RuntimeException('A listener of the application failed.');
+        });
+
+        $this->postJson(route('uzair.api.token'), $this->exchange())->assertUnauthorized();
+
+        $this->assertSame(0, PersonalAccessToken::query()->count());
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
     public function test_each_phone_is_answered_by_its_own_login(): void
     {
         $user = SanctumUser::query()->create(['uzair_id' => '7003']);
@@ -156,6 +172,18 @@ class UzairApiAuthControllerTest extends TestCase
             ->assertJsonPath('login', $secondLogin->id);
 
         $this->assertNotSame($firstPhone, $secondPhone);
+    }
+
+    public function test_a_phone_is_answered_where_sanctum_lists_no_session_guard(): void
+    {
+        config(['sanctum.guard' => []]);
+
+        $user = SanctumUser::query()->create(['uzair_id' => '7011']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+
+        $this->withToken($plainTextToken)->getJson('/api/me')
+            ->assertOk()
+            ->assertJsonPath('login', $login->id);
     }
 
     public function test_a_phone_whose_login_was_ended_is_refused_and_loses_its_sanctum_token(): void
@@ -188,6 +216,16 @@ class UzairApiAuthControllerTest extends TestCase
         $this->assertModelExists($otherLogin);
         $this->assertNull(PersonalAccessToken::findToken($plainTextToken));
         $this->assertSame(1, PersonalAccessToken::query()->count());
+    }
+
+    public function test_signing_out_revokes_a_bearer_token_no_login_is_filed_under(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7010']);
+        $issuedByTheApplication = $user->createToken('password-login')->plainTextToken;
+
+        $this->withToken($issuedByTheApplication)->postJson(route('uzair.api.logout'))->assertNoContent();
+
+        $this->assertNull(PersonalAccessToken::findToken($issuedByTheApplication));
     }
 
     public function test_a_login_whose_sanctum_token_is_gone_is_pruned(): void

@@ -11,6 +11,7 @@ use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
+use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
@@ -202,6 +203,21 @@ class RefreshAccessTokenTest extends TestCase
 
         $this->assertFalse($result);
         Event::assertDispatched(UzairTokenRefreshFailed::class);
+    }
+
+    public function test_a_queued_listener_on_the_failure_does_not_keep_a_refused_grant_from_ending_the_login(): void
+    {
+        Event::listen(UzairTokenRefreshFailed::class, QueuedRefreshFailureListener::class);
+
+        $token = $this->expiredToken('queued-failure-listener', 'faulty_refresh');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')
+            ->andThrow(new BadResponseException('Rejected grant', new Request('POST', 'https://sso.test/oauth/token'), new Response(400, [], '{"error":"invalid_grant"}')));
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertFalse((new RefreshAccessToken)($token));
+        $this->assertSame(BadResponseException::class, QueuedRefreshFailureListener::$handled);
     }
 
     public function test_dispatches_failed_event_when_remote_refresh_returns_401(): void
@@ -473,6 +489,44 @@ class RefreshAccessTokenTest extends TestCase
         $this->assertNotNull($stored);
         $this->assertSame('new_access', $stored->access_token);
         $this->assertSame('old_refresh', $stored->refresh_token);
+    }
+
+    public function test_a_request_that_waited_for_the_lock_does_not_call_a_provider_the_holder_found_unreachable(): void
+    {
+        config()->set('uzairports.lock_store', 'shared');
+
+        $token = $this->expiredToken('waited-out-a-failing-holder');
+
+        $lock = Mockery::mock(Lock::class);
+        $lock->shouldReceive('block')->once()->andReturnTrue();
+        $lock->shouldReceive('release')->once()->andReturnTrue();
+
+        // Not in cooldown when the request arrives; the holder it waited for
+        // started one before letting go.
+        $store = Mockery::mock(CacheRepository::class, LockProvider::class);
+        $store->shouldReceive('has')->with('uzairid:provider-unreachable')->andReturn(false, true);
+        $store->shouldReceive('lock')->once()->andReturn($lock);
+
+        Cache::shouldReceive('store')->with('shared')->andReturn($store);
+        Socialite::shouldReceive('driver')->never();
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($token));
+    }
+
+    public function test_a_token_still_valid_inside_the_leeway_goes_through_while_the_provider_is_unreachable(): void
+    {
+        config()->set('uzairports.lock_store', 'shared');
+
+        $token = $this->expiredToken('inside-the-leeway');
+        $token->forceFill(['expires_at' => now()->addSeconds(30)])->saveQuietly();
+
+        $store = Mockery::mock(CacheRepository::class, LockProvider::class);
+        $store->shouldReceive('has')->with('uzairid:provider-unreachable')->andReturnTrue();
+
+        Cache::shouldReceive('store')->with('shared')->andReturn($store);
+        Socialite::shouldReceive('driver')->never();
+
+        $this->assertTrue((new RefreshAccessToken)($token, 60));
     }
 
     public function test_the_lock_is_taken_from_the_configured_store(): void
@@ -1046,5 +1100,15 @@ class RefreshAccessTokenTest extends TestCase
         $store->shouldReceive('lock')->once()->andReturn($lock);
 
         Cache::shouldReceive('store')->once()->andReturn($store);
+    }
+}
+
+class QueuedRefreshFailureListener implements ShouldQueue
+{
+    public static ?string $handled = null;
+
+    public function handle(UzairTokenRefreshFailed $event): void
+    {
+        self::$handled = $event->exceptionClass;
     }
 }

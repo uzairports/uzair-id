@@ -8,6 +8,7 @@ use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
 use Mockery;
@@ -374,6 +375,22 @@ class OauthTokenTest extends TestCase
         $token->keepAlive();
 
         $this->assertSame(0, (new OauthToken)->prunable()->count());
+    }
+
+    public function test_pruning_works_where_sanctum_is_installed_without_its_token_table(): void
+    {
+        Schema::drop('personal_access_tokens');
+
+        $user = TestUser::create(['uzair_id' => '1016']);
+
+        $user->tokens()->create([
+            'access_token' => 'left_behind_by_a_closed_browser',
+            'session_id' => 'abandoned-session',
+        ]);
+
+        $this->travel(5)->hours();
+
+        $this->assertSame(1, (new OauthToken)->prunable()->count());
     }
 
     public function test_a_login_nothing_has_touched_is_pruned(): void

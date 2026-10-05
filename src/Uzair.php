@@ -88,9 +88,11 @@ class Uzair
             return $guard;
         }
 
-        $guards = (array) config('sanctum.guard', ['web']);
+        // An API-only Sanctum lists no session guards at all; the application's
+        // `web` guard still names the accounts its tokens belong to.
+        $guards = array_values(array_filter((array) config('sanctum.guard', ['web']), 'is_string'));
 
-        return $guards[array_key_first($guards)] ?? $guard;
+        return $guards[0] ?? (config('auth.guards.web') !== null ? 'web' : $guard);
     }
 
     /**
@@ -183,6 +185,7 @@ class Uzair
     public static function flushState(): void
     {
         OauthToken::flushPruner();
+        OauthToken::flushAccessTokensTables();
         OauthToken::flushLoginCacheWarnings();
         RefreshAccessToken::flushLockStoreWarnings();
         self::flushLoginRouteWarnings();

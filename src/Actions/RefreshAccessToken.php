@@ -68,6 +68,12 @@ class RefreshAccessToken
         }
 
         try {
+            // The holder this request waited for may have tripped the cooldown;
+            // calling the provider again would hold this worker for a timeout too.
+            if ($this->providerIsUnreachable()) {
+                return $this->answerWithoutCalling($token, $leeway);
+            }
+
             return $this->exchange($token, $leeway);
         } finally {
             $this->release($lock);
@@ -116,7 +122,8 @@ class RefreshAccessToken
      * Answer from the row alone, without spending the refresh token.
      *
      * Adopts a login another process renewed, returns false for one that is
-     * gone, and otherwise throws 503. Never return false for a still-due login:
+     * gone, lets through one whose access token has not expired yet, and
+     * otherwise throws 503. Never return false for a still-due login:
      * the middleware would end it, so a brief outage would sign out every user,
      * who could not sign back in through the same provider.
      *
@@ -128,6 +135,12 @@ class RefreshAccessToken
 
         if ($adopted !== null) {
             return $adopted;
+        }
+
+        // Due for renewal is not expired: inside the leeway the access token
+        // still works, so the request goes through on it.
+        if (! $token->hasExpired()) {
+            return true;
         }
 
         throw $this->temporarilyUnavailable();
@@ -157,6 +170,8 @@ class RefreshAccessToken
      * There is no half-open probe; the entry lapses, so the cooldown should be
      * several times the request timeout. A per-process store is acceptable
      * here because the breaker only spares work.
+     *
+     * @phpstan-impure
      */
     private function providerIsUnreachable(): bool
     {

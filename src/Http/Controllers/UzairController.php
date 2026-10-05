@@ -61,6 +61,12 @@ abstract class UzairController
                 $endSessions->end($token);
             }
 
+            // Signing out revokes the bearer token even when no login is filed
+            // under it, such as one the application issued itself.
+            if ($accessTokenId !== null) {
+                $endSessions->dropAccessTokens([$accessTokenId]);
+            }
+
             $this->signOut();
 
             UzairLoggedOut::dispatch($user instanceof Model ? $user : null);
