@@ -37,7 +37,14 @@ class UzairAuthControllerTest extends TestCase
 {
     protected function tearDown(): void
     {
+        config(['uzairports.guard' => null]);
+        config(['auth.defaults.guard' => 'web']);
+        config(['auth.providers.users.model' => TestUser::class]);
+
+        Schema::disableForeignKeyConstraints();
+        Schema::dropIfExists('oauth_tokens');
         Schema::dropIfExists('callback_admins');
+        Schema::enableForeignKeyConstraints();
 
         Mockery::close();
 

@@ -15,7 +15,15 @@ class EnsureTokenStorageMatchesProviderTest extends TestCase
 {
     protected function tearDown(): void
     {
+        $connection = DB::getDefaultConnection();
+        if (config("database.connections.{$connection}.prefix") !== '') {
+            config(["database.connections.{$connection}.prefix" => '']);
+            DB::purge($connection);
+        }
+
+        Schema::disableForeignKeyConstraints();
         Schema::dropIfExists('other_accounts');
+        Schema::enableForeignKeyConstraints();
 
         parent::tearDown();
     }
@@ -113,12 +121,18 @@ class EnsureTokenStorageMatchesProviderTest extends TestCase
         $check = app(EnsureTokenStorageMatchesProvider::class);
         $check();
 
-        config(['database.connections.testing.prefix' => 'tenant_']);
-        DB::purge('testing');
+        $connection = DB::getDefaultConnection();
+        config(["database.connections.{$connection}.prefix" => 'tenant_']);
+        DB::purge($connection);
 
-        $this->expectException(ServiceUnavailableHttpException::class);
+        try {
+            $this->expectException(ServiceUnavailableHttpException::class);
 
-        $check();
+            $check();
+        } finally {
+            config(["database.connections.{$connection}.prefix" => '']);
+            DB::purge($connection);
+        }
     }
 
     private function dropTheSanctumTokenColumn(): void

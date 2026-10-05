@@ -132,9 +132,14 @@ class ProviderCommandTest extends TestCase
             $this->assertStringContainsString('Another table references', Artisan::output());
             $this->assertSame('app_users', Schema::getForeignKeys('oauth_tokens')[0]['foreign_table']);
         } finally {
+            config(['uzairports.guard' => null]);
+            config(['auth.defaults.guard' => 'web']);
+            config(['auth.providers.users.model' => TestUser::class]);
+
             Schema::disableForeignKeyConstraints();
             Schema::dropIfExists('token_references');
-            foreach (['oauth_tokens', 'personal_access_tokens', 'sessions', 'users', 'provider_accounts'] as $table) {
+            Schema::dropIfExists('oauth_tokens');
+            foreach (['personal_access_tokens', 'sessions', 'users', 'provider_accounts'] as $table) {
                 Schema::dropIfExists($table);
             }
             Schema::enableForeignKeyConstraints();
@@ -216,12 +221,16 @@ class ProviderCommandTest extends TestCase
 
     protected function tearDown(): void
     {
+        config(['uzairports.guard' => null]);
+        config(['auth.defaults.guard' => 'web']);
+        config(['auth.providers.users.model' => TestUser::class]);
+
         Schema::disableForeignKeyConstraints();
         Schema::dropIfExists('token_references');
         Schema::dropIfExists('oauth_tokens');
         foreach (Schema::getTableListing(schemaQualified: false) as $table) {
             if (str_starts_with($table, 'uzair_tokens_')) {
-                Schema::drop($table);
+                Schema::dropIfExists($table);
             }
         }
         Schema::dropIfExists('provider_accounts');
@@ -230,7 +239,8 @@ class ProviderCommandTest extends TestCase
         if (DB::connection()->getTablePrefix() !== '') {
             Schema::disableForeignKeyConstraints();
             Schema::dropIfExists('token_references');
-            foreach (['oauth_tokens', 'personal_access_tokens', 'sessions', 'users', 'provider_accounts'] as $table) {
+            Schema::dropIfExists('oauth_tokens');
+            foreach (['personal_access_tokens', 'sessions', 'users', 'provider_accounts'] as $table) {
                 Schema::dropIfExists($table);
             }
             Schema::enableForeignKeyConstraints();

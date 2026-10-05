@@ -20,6 +20,20 @@ abstract class RunnableMigration extends Migration {}
 
 class PackageMigrationsTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        config(['uzairports.guard' => null]);
+        config(['auth.defaults.guard' => 'web']);
+        config(['auth.providers.users.model' => TestUser::class]);
+
+        Schema::disableForeignKeyConstraints();
+        Schema::dropIfExists('oauth_tokens');
+        Schema::dropIfExists('members');
+        Schema::enableForeignKeyConstraints();
+
+        parent::tearDown();
+    }
+
     public function test_invalid_provider_configuration_never_falls_back_to_users(): void
     {
         $this->createStandardUsersTable();
