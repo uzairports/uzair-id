@@ -4,7 +4,6 @@ namespace Uzairports\Uzairid\Http\Controllers;
 
 use DomainException;
 use Illuminate\Database\Eloquent\Builder;
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
@@ -149,23 +148,28 @@ class UzairBackchannelLogoutController
     {
         $sid = $this->claim($claims, 'sid');
         $sub = $this->claim($claims, 'sub');
+        $accountKeys = $sub !== null ? $this->accountKeysOf((string) $sub) : null;
 
         return OauthToken::query()
             ->when($sid !== null, fn (Builder $query) => $query->where('sid', $sid))
-            ->when($sub !== null, fn (Builder $query) => $query->whereIn('user_id', $this->accountsOf((string) $sub)));
+            ->when($sub !== null, fn (Builder $query) => $query->whereIn('user_id', $accountKeys ?? []));
     }
 
     /**
      * The keys of the accounts linked to an UzAirports identity.
      *
-     * @return Builder<Model>
+     * @return list<int|string>
      */
-    private function accountsOf(string $uzairId): Builder
+    private function accountKeysOf(string $uzairId): array
     {
         $model = Uzair::userModel();
         $account = new $model;
 
-        return $account->newQuery()->where('uzair_id', $uzairId)->select($account->getKeyName());
+        /** @var list<int|string> */
+        return $account->newQuery()
+            ->where('uzair_id', $uzairId)
+            ->pluck($account->getKeyName())
+            ->all();
     }
 
     /**

@@ -580,9 +580,57 @@ class UzairportsProviderTest extends TestCase
         $provider->setRequest($request);
 
         $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('The UzAirports ID token nonce does not match the session nonce.');
+        $this->expectExceptionMessage('The UzAirports ID token nonce is missing or does not match the session nonce.');
 
         $provider->user();
+    }
+
+    public function test_id_token_without_session_nonce_is_rejected(): void
+    {
+        config(['uzairports.oidc.enabled' => true]);
+
+        $request = Request::create('https://app.test/auth/callback?code=the-code&state=the-state&iss=https://my.uzairports.com');
+        $session = app('session.store');
+        $session->put('state', 'the-state');
+        // No uzairid.nonce in session
+        $request->setLaravelSession($session);
+
+        $revoker = Mockery::mock(UzairportsProvider::class);
+        $revoker->shouldReceive('logoutAsync')->with('issued-access')->once()->andReturn($this->revoked());
+        $revoker->shouldReceive('revokeRefreshTokenAsync')->with('issued-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
+
+        $provider = $this->providerIssuing($this->signed([...$this->idTokenClaims(), 'nonce' => 'any-nonce']));
+        $provider->setRequest($request);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('The UzAirports ID token nonce is missing or does not match the session nonce.');
+
+        $provider->user();
+    }
+
+    public function test_jwks_with_unrelated_algorithm_key_still_allows_supported_key(): void
+    {
+        config(['uzairports.oidc.enabled' => true, 'uzairports.oidc.algorithms' => ['RS256']]);
+
+        $jwks = $this->keySet();
+        $jwks['keys'][] = [
+            'kty' => 'EC',
+            'alg' => 'ES256',
+            'crv' => 'P-256',
+            'x' => 'f83OJ3D2xFmTtx9ErC2PEUtqEZ_ZMVAEBmmT3BmvpHg',
+            'y' => 'x_daQauBhQ0tZxFlGQM25odEL9VEqOCTWhGC24A9xCY',
+            'use' => 'sig',
+            'kid' => 'key-ec',
+        ];
+
+        $provider = $this->providerIssuing(
+            $this->signed($this->idTokenClaims()),
+            keySet: $jwks,
+        )->stateless();
+
+        $user = $provider->user();
+        $this->assertSame('42', $user->getId());
     }
 
     /**
@@ -601,8 +649,10 @@ class UzairportsProviderTest extends TestCase
 
     /**
      * A provider whose exchange issues the given ID token beside the grants.
+     *
+     * @param  array<string, mixed>|null  $keySet
      */
-    private function providerIssuing(string $idToken): UzairportsProvider
+    private function providerIssuing(string $idToken, ?array $keySet = null): UzairportsProvider
     {
         return $this->provider(['handler' => HandlerStack::create(new MockHandler([
             new Response(200, [], (string) json_encode([
@@ -612,7 +662,7 @@ class UzairportsProviderTest extends TestCase
                 'id_token' => $idToken,
             ])),
             new Response(200, [], '{"id":"42"}'),
-            new Response(200, [], (string) json_encode($this->keySet())),
+            new Response(200, [], (string) json_encode($keySet ?? $this->keySet())),
         ]))]);
     }
 

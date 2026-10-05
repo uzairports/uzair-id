@@ -210,6 +210,7 @@ class OauthToken extends Model
                 ->orWhere(
                     fn (Builder $issued) => $issued
                         ->whereNull('session_id')
+                        ->whereNull('personal_access_token_id')
                         ->whereNull('refresh_token')
                         ->where(
                             fn (Builder $spent) => $spent

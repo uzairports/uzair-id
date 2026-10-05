@@ -151,6 +151,10 @@ trait HasUzairToken
 
     private function currentSessionId(): ?string
     {
+        if (! app()->bound('request')) {
+            return null;
+        }
+
         $request = request();
 
         return $request->hasSession() ? $request->session()->getId() : null;

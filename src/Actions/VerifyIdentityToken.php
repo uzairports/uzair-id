@@ -106,10 +106,13 @@ class VerifyIdentityToken
         $defaultAlg = $allowed[0] ?? 'RS256';
         $keys = JWK::parseKeySet($jwks, $defaultAlg);
 
-        foreach ($keys as $key) {
-            if (! in_array($key->getAlgorithm(), $allowed, true)) {
-                throw new UnexpectedValueException("The UzAirports signing keys include an algorithm [{$key->getAlgorithm()}] that is not allowed.");
-            }
+        $keys = array_filter(
+            $keys,
+            fn ($key): bool => in_array($key->getAlgorithm(), $allowed, true),
+        );
+
+        if ($keys === []) {
+            throw new UnexpectedValueException('The UzAirports signing keys include no keys with an allowed algorithm.');
         }
 
         // The library reads its clock and skew from statics; both are put back.

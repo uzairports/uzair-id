@@ -66,13 +66,20 @@ class RecordLogin
         ?string $sessionId,
         int|string|null $accessTokenId,
     ): OauthToken {
-        $heldBy = $accessTokenId !== null
-            ? ['personal_access_token_id' => $accessTokenId]
-            : ['session_id' => $sessionId];
+        $query = OauthToken::query()->where('user_id', $user->getKey());
 
-        $token = OauthToken::query()->firstOrNew(['user_id' => $user->getKey(), ...$heldBy]);
+        if ($accessTokenId !== null) {
+            $token = $query->firstOrNew(['user_id' => $user->getKey(), 'personal_access_token_id' => $accessTokenId]);
+        } elseif ($sessionId !== null) {
+            $token = $query->firstOrNew(['user_id' => $user->getKey(), 'session_id' => $sessionId]);
+        } else {
+            $token = $query->whereNull('session_id')->whereNull('personal_access_token_id')->latest('id')->first()
+                ?? new OauthToken;
+        }
 
         $records = (bool) config('uzairports.record_device', true);
+        $rawIp = $request->ip();
+        $ip = is_string($rawIp) && $rawIp !== '' ? Str::limit($rawIp, 45, '') : null;
 
         // Written only under OpenID Connect, whose upgrade migration adds them.
         if (Uzair::oidcEnabled()) {
@@ -89,7 +96,7 @@ class RecordLogin
             'access_token' => $uzairUser->token,
             'refresh_token' => $uzairUser->refreshToken,
             'expires_at' => $this->expiresAt($uzairUser),
-            'ip_address' => $records ? $request->ip() : null,
+            'ip_address' => $records ? $ip : null,
             'user_agent' => $records ? Str::limit((string) $request->userAgent(), 500, '') : null,
         ])->save();
 

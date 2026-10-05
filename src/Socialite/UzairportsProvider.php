@@ -248,9 +248,10 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
         if (! $this->isStateless() && $this->request->hasSession()) {
             $expectedNonce = $this->request->session()->pull('uzairid.nonce');
+            $claimNonce = $claims['nonce'] ?? null;
 
-            if (is_string($expectedNonce) && $expectedNonce !== '' && ($claims['nonce'] ?? null) !== $expectedNonce) {
-                throw new RuntimeException('The UzAirports ID token nonce does not match the session nonce.');
+            if (! is_string($expectedNonce) || $expectedNonce === '' || ! is_string($claimNonce) || ! hash_equals($expectedNonce, $claimNonce)) {
+                throw new RuntimeException('The UzAirports ID token nonce is missing or does not match the session nonce.');
             }
         }
 

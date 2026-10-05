@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Http\Controllers;
 
 use Carbon\CarbonInterface;
+use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
@@ -142,8 +143,11 @@ class UzairApiAuthController extends UzairController
         }
 
         try {
-            if ($login->hasExpired() || $login->expiresWithin(60)) {
-                $refreshed = $refreshAccessToken($login);
+            $refreshLeeway = config('uzairports.refresh_leeway', 60);
+            $leeway = is_numeric($refreshLeeway) ? (int) $refreshLeeway : 60;
+
+            if ($login->hasExpired() || $login->expiresWithin($leeway)) {
+                $refreshed = $refreshAccessToken($login, $leeway);
 
                 if (! $refreshed) {
                     $endSessions->end($login);
@@ -161,6 +165,15 @@ class UzairApiAuthController extends UzairController
             ['plainTextToken' => $plainTextToken, 'expiresAt' => $newExpiresAt] = OauthToken::query()
                 ->getConnection()
                 ->transaction(function () use ($user, $login, $deviceName, $expiresAt, $endSessions, $accessTokenId): array {
+                    $lockedLogin = OauthToken::query()
+                        ->whereKey($login->getKey())
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($lockedLogin === null || (string) $lockedLogin->personal_access_token_id !== (string) $accessTokenId) {
+                        throw new AuthenticationException(__('uzairid::messages.session_ended'));
+                    }
+
                     $newAccessToken = method_exists($user, 'createToken')
                         ? $user->createToken($deviceName, $this->tokenAbilities(), $expiresAt)
                         : null;
@@ -171,7 +184,7 @@ class UzairApiAuthController extends UzairController
 
                     $newKey = $newAccessToken->accessToken->getKey();
 
-                    $login->forceFill(['personal_access_token_id' => $newKey])->save();
+                    $lockedLogin->forceFill(['personal_access_token_id' => $newKey])->save();
 
                     $endSessions->dropAccessTokens([$accessTokenId]);
 
@@ -180,6 +193,8 @@ class UzairApiAuthController extends UzairController
                         'expiresAt' => $expiresAt ?? $this->globalExpiry($newAccessToken),
                     ];
                 });
+        } catch (AuthenticationException $e) {
+            return new JsonResponse(['message' => $e->getMessage()], 401);
         } catch (Throwable $e) {
             Log::error('UzAirports API token refresh failed.', [
                 'exception_class' => $e::class,

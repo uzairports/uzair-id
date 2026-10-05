@@ -336,6 +336,37 @@ class UzairApiAuthControllerTest extends TestCase
         $this->postJson(route('uzair.api.refresh'))->assertUnauthorized();
     }
 
+    public function test_mobile_login_with_expired_access_and_no_refresh_is_not_pruned_while_sanctum_token_exists(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7021']);
+        [, $phoneLogin] = $this->phoneLogin($user, 'phone');
+
+        $phoneLogin->forceFill([
+            'refresh_token' => null,
+            'expires_at' => now()->subMinute(),
+        ])->save();
+
+        $this->assertSame(0, (new OauthToken)->prunable()->count());
+
+        PersonalAccessToken::query()->whereKey($phoneLogin->personal_access_token_id)->delete();
+
+        $this->assertSame(1, (new OauthToken)->prunable()->count());
+    }
+
+    public function test_refresh_endpoint_returns_unauthorized_when_token_was_already_rotated(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7022']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+
+        // Simulate another concurrent request having rotated the personal_access_token_id
+        $login->forceFill(['personal_access_token_id' => 999999])->save();
+
+        $response = $this->withToken($plainTextToken)->postJson(route('uzair.api.refresh'));
+
+        $response->assertUnauthorized()
+            ->assertJsonPath('message', __('uzairid::messages.session_ended'));
+    }
+
     /**
      * The plain-text Sanctum token an exchange answered with.
      *
