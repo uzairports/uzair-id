@@ -365,6 +365,16 @@ return [
     | `guard` is the guard that authenticates those tokens, and the one the
     | endpoints read the account off.
     |
+    | `pkce` says whether a client must post the verifier its code is bound
+    | to. It follows the browser's `pkce` unless set, and should stay on: a
+    | code intercepted on its way into the app is otherwise anybody's.
+    |
+    | `token_abilities` are the Sanctum abilities each issued token carries (a
+    | comma-separated list, `*` for all). `token_expiration` is its lifetime in
+    | minutes; null leaves it to `sanctum.expiration`. The exchange answers
+    | with the token's `expires_at` either way, so the client knows when to
+    | sign in again.
+    |
     */
 
     'api' => [
@@ -377,6 +387,15 @@ return [
             'trim',
             explode(',', (string) env('UZAIR_API_REDIRECT_URIS', '')),
         ))),
+
+        'pkce' => (bool) env('UZAIR_API_PKCE', env('UZAIR_PKCE', true)),
+
+        'token_abilities' => array_values(array_filter(array_map(
+            'trim',
+            explode(',', (string) env('UZAIR_API_TOKEN_ABILITIES', '*')),
+        ))),
+
+        'token_expiration' => env('UZAIR_API_TOKEN_EXPIRATION'),
 
     ],
 

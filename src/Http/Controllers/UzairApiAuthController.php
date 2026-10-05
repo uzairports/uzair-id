@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Http\Controllers;
 
+use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\JsonResponse;
@@ -55,7 +56,7 @@ class UzairApiAuthController extends UzairController
             'code' => ['required', 'string', 'max:2048'],
             'redirect_uri' => ['required', 'string', Rule::in(Uzair::apiRedirectUris())],
             'code_verifier' => [
-                config('uzairports.pkce', true) ? 'required' : 'nullable',
+                config('uzairports.api.pkce', true) ? 'required' : 'nullable',
                 'string',
                 'min:43',
                 'max:128',
@@ -81,7 +82,7 @@ class UzairApiAuthController extends UzairController
 
             $user = $storeAccount($uzairUser);
 
-            ['login' => $login, 'plainTextToken' => $plainTextToken] = $this->issueAccessToken(
+            ['login' => $login, 'plainTextToken' => $plainTextToken, 'expiresAt' => $expiresAt] = $this->issueAccessToken(
                 $request, $uzairUser, $user, $validated['device_name'],
             );
 
@@ -109,6 +110,7 @@ class UzairApiAuthController extends UzairController
         return new JsonResponse([
             'token' => $plainTextToken,
             'token_type' => 'Bearer',
+            'expires_at' => $expiresAt?->toIso8601String(),
         ]);
     }
 
@@ -183,14 +185,18 @@ class UzairApiAuthController extends UzairController
      * token back with it.
      *
      * @param  Authenticatable&Model  $user
-     * @return array{login: OauthToken, plainTextToken: string}
+     * @return array{login: OauthToken, plainTextToken: string, expiresAt: CarbonInterface|null}
      *
      * @throws Throwable
      */
     private function issueAccessToken(Request $request, SocialiteUser $uzairUser, Authenticatable $user, string $deviceName): array
     {
-        return OauthToken::query()->getConnection()->transaction(function () use ($request, $uzairUser, $user, $deviceName): array {
-            $accessToken = method_exists($user, 'createToken') ? $user->createToken($deviceName) : null;
+        $expiresAt = $this->tokenExpiresAt();
+
+        return OauthToken::query()->getConnection()->transaction(function () use ($request, $uzairUser, $user, $deviceName, $expiresAt): array {
+            $accessToken = method_exists($user, 'createToken')
+                ? $user->createToken($deviceName, $this->tokenAbilities(), $expiresAt)
+                : null;
 
             if (! $accessToken instanceof NewAccessToken) {
                 throw new RuntimeException('The account model did not issue a Sanctum token.');
@@ -204,7 +210,54 @@ class UzairApiAuthController extends UzairController
 
             $login = app(RecordLogin::class)($request, $uzairUser, $user, null, $accessTokenId);
 
-            return ['login' => $login, 'plainTextToken' => $accessToken->plainTextToken];
+            return [
+                'login' => $login,
+                'plainTextToken' => $accessToken->plainTextToken,
+                'expiresAt' => $expiresAt ?? $this->globalExpiry($accessToken),
+            ];
         });
+    }
+
+    /**
+     * The abilities an issued token carries, `*` when none are configured.
+     *
+     * @return list<string>
+     */
+    private function tokenAbilities(): array
+    {
+        $abilities = config('uzairports.api.token_abilities', ['*']);
+
+        $abilities = is_array($abilities)
+            ? array_values(array_filter($abilities, fn (mixed $ability): bool => is_string($ability) && $ability !== ''))
+            : [];
+
+        return $abilities === [] ? ['*'] : $abilities;
+    }
+
+    /**
+     * When an issued token stops being accepted, from `api.token_expiration`
+     * (minutes); null leaves it to Sanctum's own setting.
+     */
+    private function tokenExpiresAt(): ?CarbonInterface
+    {
+        $minutes = config('uzairports.api.token_expiration');
+
+        return is_numeric($minutes) && (int) $minutes > 0 ? now()->addMinutes((int) $minutes) : null;
+    }
+
+    /**
+     * When `sanctum.expiration` retires a token issued without its own expiry,
+     * so the client is told either way. Null where nothing retires it.
+     */
+    private function globalExpiry(NewAccessToken $accessToken): ?CarbonInterface
+    {
+        $minutes = config('sanctum.expiration');
+        $createdAt = $accessToken->accessToken->getAttribute('created_at');
+
+        if (! is_numeric($minutes) || (int) $minutes <= 0 || ! $createdAt instanceof CarbonInterface) {
+            return null;
+        }
+
+        return $createdAt->copy()->addMinutes((int) $minutes);
     }
 }

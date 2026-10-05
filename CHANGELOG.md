@@ -6,6 +6,48 @@
 
 ## [Unreleased]
 
+### Обратите внимание при обновлении
+
+- **Refresh-токен теперь отзывается при выходе по умолчанию.** `revoke_endpoint` по умолчанию
+  `/oauth/revoke` (было пусто): UzAirports ID публикует его как `revocation_endpoint`. Выход
+  делает на один запрос к SSO больше; вернуть прежнее поведение — `UZAIR_REVOKE_ENDPOINT=`.
+- **Callback требует параметр `iss` (RFC 9207).** Ответ авторизации, где `iss` не совпадает с
+  `issuer` (по умолчанию — `host`) или отсутствует, отклоняется до обмена кода. Проверьте вход
+  на стенде; для провайдера, который не присылает `iss`, — `UZAIR_REQUIRE_ISS=false`.
+- **`?error=` в callback.** `access_denied` показывает «Вход был отменён» (`messages.access_denied`,
+  новый ключ — обновите опубликованные переводы), `server_error` и `temporarily_unavailable` —
+  «Сервис временно недоступен». Прочие коды пишутся в лог как `warning` с `oauth_error`, а не
+  `info`; код не из RFC 6749 записывается как `other`.
+- **Новая зависимость `firebase/php-jwt`** (`^6.4 || ^7.0`, уже приходила через Socialite).
+- **Новая upgrade-миграция `add_oidc_columns_to_oauth_tokens_table`** (`uzairid-upgrade-migrations`).
+  Нужна только для OpenID Connect; без него колонки не используются.
+
+### Added
+
+- **OpenID Connect (`UZAIR_OIDC`, по умолчанию выключен).** Запрашивается scope `openid`,
+  ID-токен проверяется по ключам `/oauth/jwks` (только RS256; `iss`, `aud`/`azp`, `exp`/`iat`,
+  совпадение `sub` с профилем), вход записывается с `sid` и `id_token`. Не прошедший проверку
+  ID-токен отменяет вход и отзывает выданные гранты.
+- **Выход на стороне UzAirports ID (`UZAIR_END_SESSION_ENDPOINT`).** После выхода браузер
+  уходит на `/oauth/logout` с `client_id`, `id_token_hint` и `post_logout_redirect_uri`.
+- **Back-channel logout: `Uzair::backchannelLogoutRoutes()`.** Провайдер сообщает о выходе
+  подписанным `logout_token`; входы с его `sid` (или все входы `sub`) завершаются, гранты
+  отзываются (`revoke_on_backchannel_logout`). Маршрут по умолчанию без лимита запросов.
+- **Срок и abilities мобильного токена.** `api.token_abilities` (`UZAIR_API_TOKEN_ABILITIES`) и
+  `api.token_expiration` (`UZAIR_API_TOKEN_EXPIRATION`, минуты); ответ `POST auth/token`
+  содержит `expires_at` (с учётом `sanctum.expiration`).
+- **`api.pkce` (`UZAIR_API_PKCE`).** Обязательность `code_verifier` для мобильного клиента
+  настраивается отдельно от браузерного `pkce`; по умолчанию следует за ним.
+- **`EndSessions::endWhere()`** завершает входы по произвольному запросу.
+
+### Fixed
+
+- **Мобильный API отвечал редиректами** клиенту без `Accept: application/json`: ошибки
+  валидации — 302 вместо 422, выход — редирект вместо 204. Маршруты `apiRoutes()` теперь
+  всегда отвечают JSON, включая 429.
+- **Запись аккаунта на отдельном соединении не откатывалась.** `StoreAccount` открывал
+  транзакцию и читал схему на соединении по умолчанию, а не на соединении модели аккаунтов.
+
 ### Changed
 
 - **Проверка схемы `oauth_tokens` больше не идёт на каждом запросе.** `uzair.token` и

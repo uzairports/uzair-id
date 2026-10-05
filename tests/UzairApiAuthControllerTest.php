@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use Carbon\CarbonInterface;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Http\Request;
@@ -94,6 +95,51 @@ class UzairApiAuthControllerTest extends TestCase
 
         $provider->shouldHaveReceived('userFromCode')->with('code-from-the-app', self::REDIRECT_URI, self::VERIFIER);
         Event::assertDispatched(UzairAuthenticated::class, fn (UzairAuthenticated $event): bool => $event->token?->is($login) === true);
+    }
+
+    public function test_the_issued_token_carries_the_configured_abilities_and_lifetime(): void
+    {
+        $this->freezeSecond();
+        config(['uzairports.api.token_abilities' => ['flights:read'], 'uzairports.api.token_expiration' => 60]);
+
+        $this->fakeExchange(['id' => '7012']);
+
+        $response = $this->postJson(route('uzair.api.token'), $this->exchange())
+            ->assertOk()
+            ->assertJsonPath('expires_at', now()->addHour()->toIso8601String());
+
+        $accessToken = PersonalAccessToken::findToken($this->issuedToken($response));
+
+        $this->assertNotNull($accessToken);
+        $this->assertSame(['flights:read'], $accessToken->getAttribute('abilities'));
+        $expiresAt = $accessToken->getAttribute('expires_at');
+
+        $this->assertInstanceOf(CarbonInterface::class, $expiresAt);
+        $this->assertSame(now()->addHour()->getTimestamp(), $expiresAt->getTimestamp());
+    }
+
+    public function test_the_client_is_told_when_sanctum_retires_a_token_issued_without_its_own_lifetime(): void
+    {
+        $this->freezeSecond();
+
+        $this->fakeExchange(['id' => '7013']);
+        $this->postJson(route('uzair.api.token'), $this->exchange())->assertOk()->assertJsonPath('expires_at', null);
+
+        config(['sanctum.expiration' => 30]);
+
+        $this->fakeExchange(['id' => '7014']);
+        $this->postJson(route('uzair.api.token'), $this->exchange())
+            ->assertOk()
+            ->assertJsonPath('expires_at', now()->addMinutes(30)->toIso8601String());
+    }
+
+    public function test_a_verifier_is_not_demanded_of_a_client_where_api_pkce_is_off(): void
+    {
+        config(['uzairports.pkce' => true, 'uzairports.api.pkce' => false]);
+
+        $this->fakeExchange(['id' => '7015']);
+
+        $this->postJson(route('uzair.api.token'), $this->exchange(['code_verifier' => null]))->assertOk();
     }
 
     public function test_single_session_ends_the_other_logins_but_spares_the_one_just_issued(): void

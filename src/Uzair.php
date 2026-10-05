@@ -525,7 +525,12 @@ class Uzair
      * `backchannel_logout_uri`. Needs `uzairports.oidc.enabled`, since logins
      * are found by the session id their ID token named.
      *
-     * Throttling and options are the same as for `apiRoutes()`.
+     * Unlike the other endpoints it is not throttled by default: every call
+     * comes from the provider's few addresses, and ending many sessions at
+     * once (an employee blocked, a mass sign-out) must not be refused with a
+     * 429 the provider may never retry. A forged token costs one signature
+     * check, and fetching the keys again is capped at once a minute. Pass
+     * `throttle` to limit it anyway; the other options are as for `apiRoutes()`.
      *
      * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string}  $options
      */
@@ -533,7 +538,7 @@ class Uzair
     {
         $controller = $options['controller'] ?? UzairBackchannelLogoutController::class;
 
-        self::jsonRouteGroup($options)->group(function () use ($controller): void {
+        self::jsonRouteGroup(['throttle' => null, ...$options])->group(function () use ($controller): void {
             Route::post('backchannel-logout', $controller)->name('uzair.backchannelLogout');
         });
     }

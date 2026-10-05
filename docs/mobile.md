@@ -13,7 +13,7 @@
 App ── authorize (PKCE, тот же client_id) ──> UzAirports ID ── code ──> App
 App ── POST /api/auth/token {code, code_verifier, redirect_uri, device_name} ──> Backend
        обмен кода с client_secret → грант SSO, аккаунт, токен Sanctum, строка oauth_tokens
-   <── {"token": "1|…", "token_type": "Bearer"}
+   <── {"token": "1|…", "token_type": "Bearer", "expires_at": "…"|null}
 ```
 
 Код обменивает сервер, а не приложение, поэтому refresh token остаётся у сервера и
@@ -72,7 +72,7 @@ UZAIR_API_REDIRECT_URIS=uzapp://auth/callback
 
 | Метод | URI | Имя | Ответ |
 | --- | --- | --- | --- |
-| `POST` | `/api/auth/token` | `uzair.api.token` | `200 {token, token_type}`, `422` при неверных полях, `401` если вход не удался |
+| `POST` | `/api/auth/token` | `uzair.api.token` | `200 {token, token_type, expires_at}`, `422` при неверных полях, `401` если вход не удался |
 | `POST` | `/api/auth/logout` | `uzair.api.logout` | `204` — завершает вход этого устройства |
 | `POST` | `/api/auth/logout-device/{token}` | `uzair.api.logoutDevice` | `204` — завершает один вход аккаунта по `id` строки |
 

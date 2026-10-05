@@ -150,6 +150,18 @@ class UzairBackchannelLogoutTest extends TestCase
         ];
     }
 
+    /**
+     * Ending many sessions at once is many calls from one address; a 429 the
+     * provider may never retry would leave those logins standing.
+     */
+    public function test_the_endpoint_is_not_held_to_the_sign_in_budget(): void
+    {
+        config(['uzairports.routes.throttle' => '1,1', 'uzairports.routes.ip_throttle' => '1,1']);
+
+        $this->post(route('uzair.backchannelLogout'))->assertStatus(400);
+        $this->post(route('uzair.backchannelLogout'))->assertStatus(400);
+    }
+
     public function test_a_request_without_a_logout_token_is_refused(): void
     {
         $this->post(route('uzair.backchannelLogout'))->assertStatus(400);

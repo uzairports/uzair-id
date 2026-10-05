@@ -53,6 +53,9 @@ php artisan vendor:publish --tag=uzairid-config
 | `api.prefix` | `UZAIR_API_ROUTE_PREFIX` | `auth` | Префикс маршрутов `Uzair::apiRoutes()` (внутри `routes/api.php`) |
 | `api.guard` | `UZAIR_API_GUARD` | `sanctum` | Guard, которым аутентифицируются токены мобильных клиентов |
 | `api.redirect_uris` | `UZAIR_API_REDIRECT_URIS` | — | Redirect URI мобильных клиентов через запятую; пусто — обмен кода отклоняется |
+| `api.pkce` | `UZAIR_API_PKCE` | как `pkce` | Требовать ли от мобильного клиента `code_verifier` |
+| `api.token_abilities` | `UZAIR_API_TOKEN_ABILITIES` | `*` | Abilities выдаваемого токена Sanctum через запятую |
+| `api.token_expiration` | `UZAIR_API_TOKEN_EXPIRATION` | — | Срок токена Sanctum в минутах; пусто — по `sanctum.expiration` |
 | `routes.ip_throttle` | `UZAIR_ROUTE_IP_THROTTLE` | `120,1` | Потолок запросов на адрес (`попыток,минут`) для защиты от ротации cookie |
 | `timeout` | `UZAIR_TIMEOUT` | `10` | Таймаут HTTP-запросов к SSO (сек) |
 | `connect_timeout` | `UZAIR_CONNECT_TIMEOUT` | `5` | Таймаут соединения с SSO (сек) |
