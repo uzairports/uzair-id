@@ -45,6 +45,38 @@ class UzairportsProviderTest extends TestCase
         }
     }
 
+    /**
+     * Every call carries a credential and the signing keys come back the same
+     * way, so a plain-text host would hand both to whoever sits in between.
+     */
+    public function test_a_plain_http_host_is_refused_outside_local_and_testing(): void
+    {
+        app()->detectEnvironment(fn (): string => 'production');
+        config(['uzairports.host' => 'http://my.uzairports.com']);
+
+        $this->expectException(RuntimeException::class);
+
+        $this->provider()->getHost();
+    }
+
+    public function test_a_plain_http_endpoint_is_refused_outside_local_and_testing(): void
+    {
+        app()->detectEnvironment(fn (): string => 'production');
+        config(['uzairports.oidc.jwks_endpoint' => 'http://keys.test/jwks']);
+
+        $this->expectException(RuntimeException::class);
+
+        $this->provider()->jwksUrl();
+    }
+
+    public function test_a_plain_http_host_is_accepted_in_the_local_environment(): void
+    {
+        app()->detectEnvironment(fn (): string => 'local');
+        config(['uzairports.host' => 'http://localhost:8001', 'uzairports.user_endpoint' => '/api/user']);
+
+        $this->assertSame('http://localhost:8001/api/user', $this->provider()->userUrl());
+    }
+
     public function test_code_exchange_preserves_pkce_and_client_credentials(): void
     {
         $request = Request::create('/callback');

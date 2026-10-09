@@ -27,6 +27,10 @@ return [
     | The base address every OAuth and API call is built on. Override it to
     | point the application at a staging instance of UzAirports ID.
     |
+    | It, and every endpoint below given as a full URL, must be HTTPS: each
+    | call carries a credential, and the signing keys arrive the same way.
+    | Plain HTTP is accepted only in the `local` and `testing` environments.
+    |
     */
 
     'host' => env('UZAIR_HOST', 'https://my.uzairports.com'),

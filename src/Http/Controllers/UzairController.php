@@ -259,7 +259,8 @@ abstract class UzairController
      * The identity provider's sign-out address, or null when there is none.
      *
      * Never raises: the browser is already signed out here, and a driver that
-     * cannot be built must not turn that into a 500.
+     * cannot be built or an endpoint refused as plain HTTP must not turn that
+     * into a 500.
      */
     private function endSessionUrl(string $postLogoutRedirectUri, ?string $idTokenHint): ?string
     {
@@ -269,8 +270,13 @@ abstract class UzairController
             return null;
         }
 
+        // A driver that cannot be built, or an endpoint refused as plain HTTP.
         try {
             $provider = Socialite::driver('uzairports');
+
+            return $provider instanceof UzairportsProvider
+                ? $provider->endSessionUrl($postLogoutRedirectUri, $idTokenHint)
+                : null;
         } catch (Throwable $exception) {
             Log::warning('The UzAirports session could not be ended at the identity provider.', [
                 'exception_class' => $exception::class,
@@ -278,9 +284,5 @@ abstract class UzairController
 
             return null;
         }
-
-        return $provider instanceof UzairportsProvider
-            ? $provider->endSessionUrl($postLogoutRedirectUri, $idTokenHint)
-            : null;
     }
 }

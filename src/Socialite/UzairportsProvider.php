@@ -50,16 +50,38 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      *
      * It is read from the configuration on each call so that the host can be
      * pointed at a staging instance without rebuilding the driver.
+     *
+     * @throws RuntimeException when the host is not HTTPS outside local and testing
      */
     public function getHost(): string
     {
         if (is_string($this->host) && $this->host !== '') {
-            return rtrim($this->host, '/');
+            return $this->secure(rtrim($this->host, '/'));
         }
 
         $host = config('uzairports.host');
 
-        return rtrim(is_string($host) && $host !== '' ? $host : self::DEFAULT_HOST, '/');
+        return $this->secure(rtrim(is_string($host) && $host !== '' ? $host : self::DEFAULT_HOST, '/'));
+    }
+
+    /**
+     * Refuse an address the provider would be reached at in plain text.
+     *
+     * Every call carries a credential — the client secret, a grant, a bearer
+     * token — and the signing keys come back the same way, so whoever sits
+     * on a plain-text connection could read the secrets and forge ID and
+     * logout tokens. Plain HTTP is let through only in the `local` and
+     * `testing` environments, for an identity provider run on a laptop.
+     *
+     * @throws RuntimeException when the address is not HTTPS
+     */
+    private function secure(string $url): string
+    {
+        if (str_starts_with(strtolower($url), 'https://') || app()->environment(['local', 'testing'])) {
+            return $url;
+        }
+
+        throw new RuntimeException("UzAirports ID must be reached over HTTPS; [{$url}] is refused outside the local and testing environments.");
     }
 
     protected function getAuthUrl($state): string
@@ -270,6 +292,18 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
     }
 
     /**
+     * Where the profile behind an access token is read.
+     *
+     * @throws RuntimeException when the address is not HTTPS outside local and testing
+     */
+    public function userUrl(): string
+    {
+        $endpoint = config('uzairports.user_endpoint', '/api/user');
+
+        return $this->absoluteUrl(is_string($endpoint) && $endpoint !== '' ? $endpoint : '/api/user');
+    }
+
+    /**
      * Where the provider publishes its signing keys.
      */
     public function jwksUrl(): string
@@ -435,13 +469,8 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     protected function getUserByToken($token): array
     {
-        $endpoint = config('uzairports.user_endpoint', '/api/user');
-        $url = is_string($endpoint) && $endpoint !== ''
-            ? $this->absoluteUrl($endpoint)
-            : $this->getHost().'/api/user';
-
         $response = $this->getHttpClient()->get(
-            $url, $this->getRequestOptions((string) $token)
+            $this->userUrl(), $this->getRequestOptions((string) $token)
         );
 
         if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
@@ -576,11 +605,13 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
     /**
      * Resolve a configured endpoint, which may be a full URL or a path on the host.
+     *
+     * @throws RuntimeException when the address is not HTTPS outside local and testing
      */
     private function absoluteUrl(string $endpoint): string
     {
         if (str_starts_with($endpoint, 'http://') || str_starts_with($endpoint, 'https://')) {
-            return $endpoint;
+            return $this->secure($endpoint);
         }
 
         return $this->getHost().'/'.ltrim($endpoint, '/');
