@@ -91,7 +91,6 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
     /**
      * @param  string|null  $state
-     *
      * @return array<string, mixed>
      */
     protected function getCodeFields($state = null): array

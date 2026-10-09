@@ -279,7 +279,7 @@ class UzairAuthController extends UzairController
      * pointing at a session nobody holds. The id names a session, not an
      * account, so several rows may go — together, in one revocation wait.
      *
-     * @param list<string> $previousSessionIds
+     * @param  list<string>  $previousSessionIds
      *
      * @throws Throwable
      */
