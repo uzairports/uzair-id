@@ -527,19 +527,27 @@ class Uzair
      *
      * Throttling and options are the same as for `routes()`.
      *
-     * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string}  $options
+     * `authenticated_middleware` allows applying route middleware specifically to
+     * authenticated actions (`refresh`, `logout`, `logoutDevice`), preserving `token`
+     * as an unauthenticated authorization code exchange endpoint.
+     *
+     * @param  array{prefix?: string, throttle?: string|null, controller?: class-string, middleware?: array<array-key, mixed>|string, authenticated_middleware?: array<array-key, mixed>|string}  $options
      */
     public static function apiRoutes(array $options = []): void
     {
         $controller = $options['controller'] ?? UzairApiAuthController::class;
+        $authenticatedMiddleware = (array) ($options['authenticated_middleware'] ?? []);
 
-        self::jsonRouteGroup($options)->group(function () use ($controller): void {
+        self::jsonRouteGroup($options)->group(function () use ($controller, $authenticatedMiddleware): void {
             Route::post('token', [$controller, 'token'])->name('uzair.api.token');
-            Route::post('refresh', [$controller, 'refresh'])->name('uzair.api.refresh');
-            Route::post('logout', [$controller, 'logout'])->name('uzair.api.logout');
-            Route::post('logout-device/{token}', [$controller, 'logoutDevice'])
-                ->whereNumber('token')
-                ->name('uzair.api.logoutDevice');
+
+            Route::group(! empty($authenticatedMiddleware) ? ['middleware' => $authenticatedMiddleware] : [], function () use ($controller): void {
+                Route::post('refresh', [$controller, 'refresh'])->name('uzair.api.refresh');
+                Route::post('logout', [$controller, 'logout'])->name('uzair.api.logout');
+                Route::post('logout-device/{token}', [$controller, 'logoutDevice'])
+                    ->whereNumber('token')
+                    ->name('uzair.api.logoutDevice');
+            });
         });
     }
 

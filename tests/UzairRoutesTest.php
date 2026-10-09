@@ -165,6 +165,41 @@ class UzairRoutesTest extends TestCase
         $this->assertNull($this->findRoute('sso/logout-all'));
     }
 
+    public function test_api_routes_register_expected_endpoints(): void
+    {
+        Uzair::apiRoutes(['prefix' => 'api/auth']);
+
+        $this->assertSame(['POST'], $this->routeFor('api/auth/token')->methods());
+        $this->assertSame(['POST'], $this->routeFor('api/auth/refresh')->methods());
+        $this->assertSame(['POST'], $this->routeFor('api/auth/logout')->methods());
+        $this->assertSame(['POST'], $this->routeFor('api/auth/logout-device/{token}')->methods());
+    }
+
+    public function test_api_routes_can_apply_authenticated_middleware_only_to_protected_endpoints(): void
+    {
+        Uzair::apiRoutes([
+            'prefix' => 'api/sso',
+            'middleware' => ['api'],
+            'authenticated_middleware' => ['auth:sanctum'],
+        ]);
+
+        $tokenMiddleware = $this->routeFor('api/sso/token')->middleware();
+        $this->assertContains('api', $tokenMiddleware);
+        $this->assertNotContains('auth:sanctum', $tokenMiddleware);
+
+        $refreshMiddleware = $this->routeFor('api/sso/refresh')->middleware();
+        $this->assertContains('api', $refreshMiddleware);
+        $this->assertContains('auth:sanctum', $refreshMiddleware);
+
+        $logoutMiddleware = $this->routeFor('api/sso/logout')->middleware();
+        $this->assertContains('api', $logoutMiddleware);
+        $this->assertContains('auth:sanctum', $logoutMiddleware);
+
+        $logoutDeviceMiddleware = $this->routeFor('api/sso/logout-device/{token}')->middleware();
+        $this->assertContains('api', $logoutDeviceMiddleware);
+        $this->assertContains('auth:sanctum', $logoutDeviceMiddleware);
+    }
+
     private function routeFor(string $uri): RegisteredRoute
     {
         return $this->findRoute($uri) ?? $this->fail("No route is registered for [{$uri}].");
