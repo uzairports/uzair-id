@@ -657,6 +657,69 @@ class UzairportsProviderTest extends TestCase
         $provider->user();
     }
 
+    public function test_multiple_concurrent_login_nonces_are_supported(): void
+    {
+        config(['uzairports.oidc.enabled' => true]);
+
+        $session = app('session.store');
+
+        $request1 = Request::create('https://app.test/auth/redirect');
+        $request1->setLaravelSession($session);
+        $provider1 = new UzairportsProvider($request1, 'test-client', 'test-secret', 'https://app.test/callback', []);
+        $response1 = $provider1->redirect();
+        preg_match('/state=([^&]+)/', $response1->getTargetUrl(), $stateMatches1);
+        $state1 = $stateMatches1[1] ?? '';
+        preg_match('/nonce=([^&]+)/', $response1->getTargetUrl(), $matches1);
+        $nonce1 = $matches1[1] ?? '';
+
+        $request2 = Request::create('https://app.test/auth/redirect');
+        $request2->setLaravelSession($session);
+        $provider2 = new UzairportsProvider($request2, 'test-client', 'test-secret', 'https://app.test/callback', []);
+        $response2 = $provider2->redirect();
+        preg_match('/state=([^&]+)/', $response2->getTargetUrl(), $stateMatches2);
+        $state2 = $stateMatches2[1] ?? '';
+        preg_match('/nonce=([^&]+)/', $response2->getTargetUrl(), $matches2);
+        $nonce2 = $matches2[1] ?? '';
+
+        $this->assertNotEmpty($nonce1);
+        $this->assertNotEmpty($nonce2);
+        $this->assertNotSame($nonce1, $nonce2);
+
+        $nonces = $session->get('uzairid.nonces');
+        $this->assertIsArray($nonces);
+        $this->assertContains($nonce1, $nonces);
+        $this->assertContains($nonce2, $nonces);
+
+        $callbackRequest1 = Request::create('https://app.test/auth/callback?code=the-code-1&state='.$state1.'&iss=https://my.uzairports.com');
+        $callbackRequest1->setLaravelSession($session);
+        $providerForCallback1 = $this->providerIssuing($this->signed([...$this->idTokenClaims(), 'nonce' => $nonce1]));
+        $providerForCallback1->setRequest($callbackRequest1);
+
+        $user1 = $providerForCallback1->user();
+        $this->assertSame('42', $user1->getId());
+
+        $noncesAfter1 = (array) $session->get('uzairid.nonces');
+        $this->assertNotContains($nonce1, $noncesAfter1);
+        $this->assertContains($nonce2, $noncesAfter1);
+
+        $replayRequest = Request::create('https://app.test/auth/callback?code=the-code-2&state='.$state2.'&iss=https://my.uzairports.com');
+        $replayRequest->setLaravelSession($session);
+        $revoker = Mockery::mock(UzairportsProvider::class);
+        $revoker->shouldReceive('logoutAsync')->once()->andReturn($this->revoked());
+        $revoker->shouldReceive('revokeRefreshTokenAsync')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
+
+        $replayProvider = $this->providerIssuing($this->signed([...$this->idTokenClaims(), 'nonce' => $nonce1]));
+        $replayProvider->setRequest($replayRequest);
+
+        try {
+            $replayProvider->user();
+            $this->fail('Replaying consumed nonce should fail');
+        } catch (RuntimeException $e) {
+            $this->assertStringContainsString('session nonce', $e->getMessage());
+        }
+    }
+
     public function test_jwks_with_unrelated_algorithm_key_still_allows_supported_key(): void
     {
         config(['uzairports.oidc.enabled' => true, 'uzairports.oidc.algorithms' => ['RS256']]);

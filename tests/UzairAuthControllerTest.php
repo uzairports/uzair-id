@@ -528,6 +528,21 @@ class UzairAuthControllerTest extends TestCase
         $this->assertGuest();
     }
 
+    public function test_a_handshake_with_mismatched_session_nonce_is_reported_as_handshake_lost(): void
+    {
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andThrow(new RuntimeException('The UzAirports ID token nonce is missing or does not match the session nonce.'));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $response = $this->get(route('uzair.callback'));
+
+        $response->assertRedirect(url('/'));
+        $response->assertSessionHasErrors(['oauth' => __('uzairid::messages.handshake_lost')]);
+
+        $this->assertGuest();
+    }
+
     /**
      * A browser that sent no session cookie never had one to send, which is a
      * host mismatch rather than a stale tab — and the log has to say which.

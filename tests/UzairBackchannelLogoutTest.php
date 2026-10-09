@@ -165,6 +165,7 @@ class UzairBackchannelLogoutTest extends TestCase
             'carrying a nonce' => [['sid' => 'idp-session', 'nonce' => 'n'], 'identity-provider'],
             'naming nobody' => [[], 'identity-provider'],
             'issued too long ago' => [['sid' => 'idp-session', 'iat' => time() - 3600], 'identity-provider'],
+            'issued in the future' => [['sid' => 'idp-session', 'iat' => time() + 3600], 'identity-provider'],
         ];
     }
 

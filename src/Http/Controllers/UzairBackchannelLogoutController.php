@@ -131,6 +131,10 @@ class UzairBackchannelLogoutController
         if ($issuedAt < now()->getTimestamp() - self::MAX_AGE - VerifyIdentityToken::leeway()) {
             throw new UnexpectedValueException('The token is too old.');
         }
+
+        if ($issuedAt > now()->getTimestamp() + VerifyIdentityToken::leeway()) {
+            throw new UnexpectedValueException('The token was issued in the future.');
+        }
     }
 
     /**

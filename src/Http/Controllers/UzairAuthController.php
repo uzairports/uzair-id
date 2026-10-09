@@ -85,6 +85,12 @@ class UzairAuthController extends UzairController
                 $request->session()->regenerateToken();
             }
 
+            if ($e instanceof RuntimeException && str_contains($e->getMessage(), 'session nonce')) {
+                $this->reportLostHandshake($request);
+
+                return $this->handshakeFailed(__('uzairid::messages.handshake_lost'));
+            }
+
             Log::error('UzAirports OAuth callback failed.', [
                 'exception_class' => $e::class,
             ]);
@@ -273,7 +279,9 @@ class UzairAuthController extends UzairController
      * pointing at a session nobody holds. The id names a session, not an
      * account, so several rows may go — together, in one revocation wait.
      *
-     * @param  list<string>  $previousSessionIds
+     * @param list<string> $previousSessionIds
+     *
+     * @throws Throwable
      */
     private function endPreviousLogin(EndSessions $endSessions, OauthToken $token, array $previousSessionIds): void
     {
