@@ -31,6 +31,8 @@ use Uzairports\Uzairid\Uzair;
  *
  * A token that cannot be trusted is answered 400; a failure on this side
  * (keys unreachable, misconfiguration) raises, so the provider tries again.
+ * OpenID Connect being off is answered 400 and logged instead: retrying
+ * cannot fix it.
  */
 class UzairBackchannelLogoutController
 {
@@ -48,6 +50,14 @@ class UzairBackchannelLogoutController
      */
     public function __invoke(Request $request, VerifyIdentityToken $verify, EndSessions $endSessions): JsonResponse
     {
+        // Without OpenID Connect no login is filed under a `sid`, and the
+        // columns may not exist; a 500 would have the provider retry forever.
+        if (! Uzair::oidcEnabled()) {
+            Log::error('An UzAirports back-channel logout arrived, but [uzairports.oidc.enabled] is off, so no login could be ended.');
+
+            return $this->refuse();
+        }
+
         $logoutToken = $request->input('logout_token');
 
         if (! is_string($logoutToken) || $logoutToken === '') {

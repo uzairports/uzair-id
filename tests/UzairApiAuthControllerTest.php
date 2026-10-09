@@ -331,6 +331,19 @@ class UzairApiAuthControllerTest extends TestCase
         $this->assertSame($foundNew->getKey(), $login->fresh()?->personal_access_token_id);
     }
 
+    public function test_refresh_endpoint_refuses_an_overlong_device_name_and_keeps_the_token(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7023']);
+        [$plainTextToken] = $this->phoneLogin($user, 'phone');
+
+        $this->withToken($plainTextToken)
+            ->postJson(route('uzair.api.refresh'), ['device_name' => str_repeat('a', 256)])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('device_name');
+
+        $this->assertNotNull(PersonalAccessToken::findToken($plainTextToken));
+    }
+
     public function test_refresh_endpoint_requires_authentication(): void
     {
         $this->postJson(route('uzair.api.refresh'))->assertUnauthorized();

@@ -118,6 +118,10 @@ class UzairApiAuthController extends UzairController
 
     /**
      * Refresh the mobile client's Sanctum token and remote grant.
+     *
+     * A `device_name` renames the token, under the same rule `token()` applies.
+     *
+     * @throws ValidationException
      */
     public function refresh(Request $request, RefreshAccessToken $refreshAccessToken, EndSessions $endSessions): JsonResponse
     {
@@ -126,6 +130,10 @@ class UzairApiAuthController extends UzairController
         if ($user === null) {
             return new JsonResponse(['message' => __('uzairid::messages.session_ended')], 401);
         }
+
+        $validated = $request->validate([
+            'device_name' => ['nullable', 'string', 'max:255'],
+        ]);
 
         $accessTokenId = Uzair::accessTokenId($user);
 
@@ -156,7 +164,7 @@ class UzairApiAuthController extends UzairController
                 }
             }
 
-            $rawDeviceName = $request->input('device_name');
+            $rawDeviceName = $validated['device_name'] ?? null;
             $deviceName = is_string($rawDeviceName) && $rawDeviceName !== ''
                 ? $rawDeviceName
                 : ($login->deviceLabel() ?: 'Mobile Client');
