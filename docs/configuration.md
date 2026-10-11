@@ -60,6 +60,7 @@ php artisan vendor:publish --tag=uzairid-config
 | `timeout` | `UZAIR_TIMEOUT` | `10` | Таймаут HTTP-запросов к SSO (сек) |
 | `connect_timeout` | `UZAIR_CONNECT_TIMEOUT` | `5` | Таймаут соединения с SSO (сек) |
 | `revocation_timeout` | `UZAIR_REVOCATION_TIMEOUT` | `3` | Таймаут запросов отзыва токенов (сек) |
+| `guzzle` | — | `[]` | Дополнительные опции Guzzle для всех запросов к SSO (`proxy`, `verify`, `handler`…). В конфиге закомментирован. `guzzle.timeout` и `guzzle.connect_timeout` перекрывают `timeout` и `connect_timeout`; `revocation_timeout` не затрагивают. Редиректы запрещены при любых опциях, а `http_errors => false` не делает ответ 4xx/5xx успешным |
 | `revocation_concurrency` | `UZAIR_REVOCATION_CONCURRENCY` | `10` | Сколько грантов отзывается у SSO одновременно; `1` — по одному |
 | `login_cache_ttl` | `UZAIR_LOGIN_CACHE_TTL` | `0` | Сколько секунд `uzair.token` может пропускать запрос по уже найденному входу, не читая строку; `0` — читать всегда |
 | `login_cache_store` | `UZAIR_LOGIN_CACHE_STORE` | — | Имя хранилища кеша для кеширования входов (по умолчанию — системный кеш) |
@@ -84,6 +85,13 @@ Route::get('/admin', [AdminController::class, 'index'])
     ->middleware(['auth:admin', 'uzair.token:admin']);
 ```
 
+Названный в маршруте guard определяет и то, с какой моделью аккаунтов сверяется таблица
+`oauth_tokens` перед каждым запросом: это модель провайдера guard `admin`, а не
+`uzairports.guard`. Таблица по-прежнему одна, поэтому её `user_id` должен ссылаться на аккаунты
+этой модели (например, `Admin` поверх той же таблицы `users`); иначе запрос получит `503`, как
+и при смене провайдера ниже. Если провайдер guard не называет Eloquent-модели
+(`Auth::viaRequest()`, свой драйвер), проверка идёт по `uzairports.guard`.
+
 Guard, который аутентифицирует каждый запрос заново (token guard, Sanctum), сессии не держит:
 `login()`/`logout()` у него нет. Callback такой guard отвергнет как ошибку конфигурации, а
 `uzair.token` и `logout` просто не станут его разлогинивать — строка входа, грант и сессия
@@ -93,6 +101,14 @@ Guard, который аутентифицирует каждый запрос �
 
 Если в приложении меняется guard (`uzairports.guard`) или модель пользователей (`auth.providers.{provider}.model`), внешний ключ `user_id` таблицы `oauth_tokens` перестаёт соответствовать целевой таблице. Чтобы предотвратить рассинхронизацию данных, middleware защищает систему и при расхождении отвечает `503 Service Unavailable`:
 > *«The UzAirports token owner is [old_table], but the configured provider uses [new_table]. Run php artisan uzair:provider for the transition procedure.»*
+
+Таблица без внешнего ключа на `user_id` (её пишет `create_oauth_tokens_table`, когда таблицы
+пользователей ещё нет или её ключ не прочитать) принимается, если тип колонки подходит к
+ключу модели: строковая колонка — для любого ключа, целочисленная — только для
+целочисленного. Владельца её строк проверить нечем, поэтому пакет один раз за процесс пишет
+об этом предупреждение в лог, а меняйте провайдер у такой установки только через
+`uzair:provider`. Неподходящий тип колонки (целочисленная `user_id` при строковом ключе)
+по-прежнему даёт `503`.
 
 Для контролируемого перехода предусмотрена команда `php artisan uzair:provider`:
 

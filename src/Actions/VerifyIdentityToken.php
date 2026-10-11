@@ -44,6 +44,13 @@ class VerifyIdentityToken
     ];
 
     /**
+     * The sets of ignored algorithms reported in this process, by name.
+     *
+     * @var array<string, true>
+     */
+    private static array $reportedIgnoredAlgorithms = [];
+
+    /**
      * `$types` names the JOSE `typ` values the caller accepts. A token that
      * declares another is refused — an access token (`at+jwt`) must not pass
      * for a logout token because it is signed by the same keys. A token that
@@ -202,12 +209,43 @@ class VerifyIdentityToken
         $refused = array_values(array_diff($algorithms, $allowed, ['']));
 
         if ($refused !== []) {
-            Log::warning('UzAirports ID tokens are only verified with asymmetric algorithms; the rest of oidc.algorithms is ignored.', [
-                'ignored' => $refused,
-            ]);
+            self::reportIgnoredAlgorithms($refused);
         }
 
         return $allowed === [] ? ['RS256'] : $allowed;
+    }
+
+    /**
+     * Forget which ignored algorithms were reported, so a test can assert on
+     * the warning.
+     */
+    public static function flushAlgorithmWarnings(): void
+    {
+        self::$reportedIgnoredAlgorithms = [];
+    }
+
+    /**
+     * Say once per process which algorithms `oidc.algorithms` names in vain.
+     *
+     * This runs on every verification, and the setting does not change
+     * between them; a line per sign-in and per back-channel logout said
+     * nothing the first one had not. A different set is reported on its own.
+     *
+     * @param  list<string>  $refused
+     */
+    private static function reportIgnoredAlgorithms(array $refused): void
+    {
+        $key = implode(',', $refused);
+
+        if (isset(self::$reportedIgnoredAlgorithms[$key])) {
+            return;
+        }
+
+        self::$reportedIgnoredAlgorithms[$key] = true;
+
+        Log::warning('UzAirports ID tokens are only verified with asymmetric algorithms; the rest of oidc.algorithms is ignored.', [
+            'ignored' => $refused,
+        ]);
     }
 
     /**

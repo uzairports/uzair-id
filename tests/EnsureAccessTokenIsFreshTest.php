@@ -9,11 +9,14 @@ use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Contracts\Session\Session as SessionContract;
 use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Session;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
@@ -23,6 +26,7 @@ use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
+use Uzairports\Uzairid\Concerns\HasUzairToken;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Http\Middleware\EnsureAccessTokenIsFresh;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -867,6 +871,47 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     }
 
     /**
+     * `uzair.token:admin` behind `auth:admin` serves the accounts of the
+     * `admin` guard's provider. The storage used to be checked against the
+     * model of `uzairports.guard` instead, so every request of a second guard
+     * backed by another model was answered with a 503.
+     */
+    public function test_the_storage_is_checked_against_the_accounts_of_the_guard_the_route_names(): void
+    {
+        $this->defineAdminGuard(MiddlewareAdmin::class);
+
+        $admin = MiddlewareAdmin::query()->create(['uzair_id' => '4210']);
+        $admin->uzairTokens()->create(['access_token' => 'admins-access', 'expires_at' => now()->addHour()]);
+
+        $this->assertSame('OK', $this->handle($this->adminRequest($admin), 'admin')->getContent());
+    }
+
+    /**
+     * Naming the guard moves the check, it does not skip it: a model whose
+     * accounts the foreign key does not point at is still refused.
+     */
+    public function test_a_guard_whose_accounts_the_storage_does_not_belong_to_is_still_refused(): void
+    {
+        Schema::create('other_accounts', function (Blueprint $table): void {
+            $table->id();
+            $table->string('uzair_id')->nullable();
+            $table->timestamps();
+        });
+
+        $this->defineAdminGuard(MiddlewareOtherAdmin::class);
+
+        $admin = MiddlewareOtherAdmin::query()->create(['uzair_id' => '4211']);
+
+        try {
+            $this->expectException(ServiceUnavailableHttpException::class);
+
+            $this->handle($this->adminRequest($admin), 'admin');
+        } finally {
+            Schema::dropIfExists('other_accounts');
+        }
+    }
+
+    /**
      * A route that names none falls back to the configured guard, which is what
      * the endpoints in the controller go by — they carry no parameter.
      */
@@ -987,6 +1032,30 @@ class EnsureAccessTokenIsFreshTest extends TestCase
     }
 
     /**
+     * A second guard, backed by a provider of its own.
+     *
+     * @param  class-string<MiddlewareAdmin>  $model
+     */
+    private function defineAdminGuard(string $model): void
+    {
+        config([
+            'auth.providers.admins' => ['driver' => 'eloquent', 'model' => $model],
+            'auth.guards.admin' => ['driver' => 'session', 'provider' => 'admins'],
+        ]);
+    }
+
+    /**
+     * A request only the `admin` guard answers for.
+     */
+    private function adminRequest(MiddlewareAdmin $admin): Request
+    {
+        $request = Request::create('/admin');
+        $request->setUserResolver(fn (?string $asked = null): ?MiddlewareAdmin => $asked === 'admin' ? $admin : null);
+
+        return $request;
+    }
+
+    /**
      * A request only one named guard can answer for.
      *
      * The resolver is handed the guard the caller asked about, the way
@@ -1035,6 +1104,26 @@ class EnsureAccessTokenIsFreshTest extends TestCase
 }
 
 class MiddlewareOtherAccount extends TestUser
+{
+    protected $table = 'other_accounts';
+}
+
+/**
+ * An account model of its own over the same table, the way an application
+ * separates its staff behind a guard of their own.
+ *
+ * @property int $id
+ */
+class MiddlewareAdmin extends Authenticatable
+{
+    use HasUzairToken;
+
+    protected $table = 'users';
+
+    protected $guarded = [];
+}
+
+class MiddlewareOtherAdmin extends MiddlewareAdmin
 {
     protected $table = 'other_accounts';
 }

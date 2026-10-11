@@ -3,8 +3,12 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Schema;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use Mockery;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
@@ -101,17 +105,53 @@ class StateFlushingTest extends TestCase
         $this->assertSame($resolver, Uzair::getUserResolver());
     }
 
-    public function test_flushing_clears_verified_token_storage(): void
+    /**
+     * The verified storage is not request state: it is keyed by everything the
+     * answer depends on and lapses on its own. Dropped after every request, it
+     * made each Octane request read the schema again — three queries for an
+     * answer the worker already had.
+     */
+    public function test_a_terminated_operation_keeps_the_verified_token_storage(): void
     {
         $check = new EnsureTokenStorageMatchesProvider;
         $check();
 
-        $property = new \ReflectionProperty(EnsureTokenStorageMatchesProvider::class, 'verifiedUntil');
-        $this->assertNotEmpty($property->getValue());
+        Event::dispatch(self::OCTANE_OPERATION_TERMINATED);
 
-        Uzair::flushState();
+        $queries = 0;
+        DB::listen(function () use (&$queries): void {
+            $queries++;
+        });
 
-        $this->assertEmpty($property->getValue());
+        Cache::flush();
+        $check();
+
+        $this->assertSame(0, $queries);
+    }
+
+    /**
+     * A token table without a `user_id` foreign key is reported once per
+     * process, like the other warnings here, and again on the next request a
+     * worker serves.
+     */
+    public function test_a_terminated_operation_lets_the_storage_warning_be_said_again(): void
+    {
+        EnsureTokenStorageMatchesProvider::flushStorageWarnings();
+
+        Schema::table('oauth_tokens', function (Blueprint $table): void {
+            $table->dropForeign(['user_id']);
+        });
+
+        Log::shouldReceive('warning')->twice()->with(Mockery::pattern('/no user_id foreign key/'), Mockery::type('array'));
+
+        $check = new EnsureTokenStorageMatchesProvider;
+
+        $this->assertNull($check->problem());
+        $this->assertNull($check->problem());
+
+        Event::dispatch(self::OCTANE_OPERATION_TERMINATED);
+
+        $this->assertNull($check->problem());
     }
 
     /**
@@ -123,6 +163,7 @@ class StateFlushingTest extends TestCase
     {
         OauthToken::flushLoginCacheWarnings();
         Uzair::flushLoginRouteWarnings();
+        EnsureTokenStorageMatchesProvider::flushStorageWarnings();
         Uzair::resolveUserUsing(null);
         Uzair::updateUserAttributesUsing(null);
 

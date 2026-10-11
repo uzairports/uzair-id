@@ -3,7 +3,9 @@
 namespace Uzairports\Uzairid\Actions;
 
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
+use Illuminate\Database\Schema\Builder;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -21,12 +23,64 @@ class EnsureTokenStorageMatchesProvider
      */
     private static array $verifiedUntil = [];
 
+    /**
+     * Whether a token table without a `user_id` foreign key was reported in
+     * this process.
+     */
+    private static bool $reportedTheUnverifiedOwner = false;
+
+    /**
+     * The column types `user_id` is stored as when it holds integer keys.
+     */
+    private const array INTEGER_TYPES = ['integer', 'int', 'bigint', 'smallint', 'mediumint', 'tinyint', 'int2', 'int4', 'int8', 'serial', 'bigserial', 'smallserial'];
+
+    /**
+     * The column types `user_id` is stored as when it holds string keys; any
+     * key fits one of them.
+     */
+    private const array STRING_TYPES = ['varchar', 'char', 'bpchar', 'uuid', 'text', 'tinytext', 'mediumtext', 'longtext', 'nvarchar', 'nchar', 'character varying', 'character', 'string'];
+
     public function forUser(Authenticatable $user): void
     {
         $this();
 
         if (! Uzair::accountMatchesProvider($user)) {
             $this->refuse('The route account does not belong to the UzAirports provider.');
+        }
+    }
+
+    /**
+     * Check the storage against the accounts of the guard a route names.
+     *
+     * `uzair.token:admin` behind `auth:admin` serves the accounts of the
+     * `admin` guard's provider; checking them against `uzairports.guard`
+     * refused every request of a second guard backed by another model.
+     *
+     * Without a guard this is `forUser()`, and so it is for a guard whose
+     * provider names no Eloquent model (`Auth::viaRequest()`, a custom
+     * driver): nothing says which accounts it serves, so the configured
+     * provider's stand, as they always did.
+     *
+     * @throws ServiceUnavailableHttpException when the storage or the account does not fit
+     */
+    public function forGuard(Authenticatable $user, ?string $guard): void
+    {
+        try {
+            $model = $guard === null ? null : Uzair::userModelFor($guard);
+        } catch (RuntimeException) {
+            $model = null;
+        }
+
+        if ($guard === null || $model === null) {
+            $this->forUser($user);
+
+            return;
+        }
+
+        $this->verify($model);
+
+        if (! Uzair::accountMatchesProvider($user, $guard)) {
+            $this->refuse("The route account does not belong to the provider of the [{$guard}] guard.");
         }
     }
 
@@ -46,8 +100,21 @@ class EnsureTokenStorageMatchesProvider
      */
     public function __invoke(): void
     {
+        $this->verify(null);
+    }
+
+    /**
+     * Check the storage against an account model, or against the configured
+     * provider's when none is given.
+     *
+     * @param  class-string<Model>|null  $model
+     *
+     * @throws ServiceUnavailableHttpException when the storage does not fit
+     */
+    private function verify(?string $model): void
+    {
         try {
-            $fingerprint = $this->fingerprint();
+            $fingerprint = $this->fingerprint($model ?? Uzair::userModel());
         } catch (RuntimeException $exception) {
             $this->refuse($exception->getMessage());
         }
@@ -57,7 +124,7 @@ class EnsureTokenStorageMatchesProvider
         }
 
         try {
-            $problem = $this->problem();
+            $problem = $model === null ? $this->problem() : $this->problemFor($model);
         } catch (QueryException $exception) {
             // A database failure is not a configuration problem, and its message
             // names hosts, users and SQL: it is logged, never sent to the client.
@@ -86,7 +153,7 @@ class EnsureTokenStorageMatchesProvider
         self::$verifiedUntil = [];
 
         try {
-            Cache::store()->forget($this->cacheKey($this->fingerprint()));
+            Cache::store()->forget($this->cacheKey($this->fingerprint(Uzair::userModel())));
         } catch (Throwable) {
             // An entry that cannot be dropped lapses on its own.
         }
@@ -101,12 +168,40 @@ class EnsureTokenStorageMatchesProvider
     }
 
     /**
-     * The existing foreign key is the evidence of which accounts own these ids.
-     * Never reinterpret existing rows after a guard or model configuration change.
+     * Forget that a table without a `user_id` foreign key was reported, so a
+     * test can assert on the warning.
+     */
+    public static function flushStorageWarnings(): void
+    {
+        self::$reportedTheUnverifiedOwner = false;
+    }
+
+    /**
+     * What is wrong with the token storage for the configured provider, if anything.
      */
     public function problem(): ?string
     {
-        $model = Uzair::userModel();
+        return $this->problemFor(Uzair::userModel());
+    }
+
+    /**
+     * What is wrong with the token storage for the given account model, if anything.
+     *
+     * The existing foreign key is the evidence of which accounts own these ids,
+     * so one pointing elsewhere is refused: never reinterpret existing rows
+     * after a guard or model configuration change.
+     *
+     * A table without one is accepted when `user_id` can hold the model's keys,
+     * and reported once per process. `create_oauth_tokens_table` writes such a
+     * column on purpose when the accounts table does not exist yet or its key
+     * cannot be read, and the installation guide promises those installations
+     * keep working; refusing them answered every request with a 503. What is
+     * given up is the check above — that is what the warning says.
+     *
+     * @param  class-string<Model>  $model
+     */
+    public function problemFor(string $model): ?string
+    {
         $user = new $model;
         $token = new OauthToken;
         $connection = $token->getConnection();
@@ -146,7 +241,45 @@ class EnsureTokenStorageMatchesProvider
             return "The UzAirports token owner is [{$key['foreign_table']}], but the configured provider uses [{$expected}]. Run php artisan uzair:provider for the transition procedure.";
         }
 
-        return 'The UzAirports token owner cannot be verified without a user_id foreign key. Run php artisan uzair:provider.';
+        return $this->unconstrainedOwnerProblem($schema, $token->getTable(), $user);
+    }
+
+    /**
+     * Accept a `user_id` without a foreign key when its type can hold the
+     * account model's keys: a string column holds any key, an integer column
+     * only integer ones.
+     */
+    private function unconstrainedOwnerProblem(Builder $schema, string $table, Model $user): ?string
+    {
+        $column = array_find($schema->getColumns($table), fn (array $column): bool => $column['name'] === 'user_id');
+
+        if ($column === null) {
+            return 'The UzAirports token table has no user_id column. Publish and run the package migrations.';
+        }
+
+        $type = strtolower($column['type_name']);
+        $integerKeys = in_array($user->getKeyType(), ['int', 'integer'], true);
+
+        $fits = in_array($type, self::STRING_TYPES, true)
+            || (in_array($type, self::INTEGER_TYPES, true) && $integerKeys);
+
+        if (! $fits) {
+            $keys = $integerKeys ? 'integer' : 'string';
+
+            return "The UzAirports token table stores user_id as [{$type}], which cannot hold the {$keys} keys of [".$user::class.']. Run php artisan uzair:provider.';
+        }
+
+        if (! self::$reportedTheUnverifiedOwner) {
+            self::$reportedTheUnverifiedOwner = true;
+
+            Log::warning('The UzAirports token table has no user_id foreign key, so which accounts own its rows cannot be verified. Its rows are read as ids of the configured account model; change that model only through php artisan uzair:provider.', [
+                'table' => $table,
+                'user_id_type' => $type,
+                'account_model' => $user::class,
+            ]);
+        }
+
+        return null;
     }
 
     /**
@@ -175,11 +308,10 @@ class EnsureTokenStorageMatchesProvider
      * The database name and the table prefix are part of it: a multi-tenant
      * application may point one connection name at several databases.
      *
-     * @throws RuntimeException when the configured guard names no account model
+     * @param  class-string<Model>  $model
      */
-    private function fingerprint(): string
+    private function fingerprint(string $model): string
     {
-        $model = Uzair::userModel();
         $user = new $model;
         $token = new OauthToken;
 

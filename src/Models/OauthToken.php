@@ -283,7 +283,7 @@ class OauthToken extends Model
      * Formerly flushed a cached `EndSessions` instance; nothing is cached any
      * more, since the container resolves the action cheaply.
      *
-     * @deprecated nothing to flush; kept so existing callers keep working
+     * @deprecated nothing to flush; kept so existing callers keep working, and will be removed in 4.0
      */
     public static function flushPruner(): void
     {

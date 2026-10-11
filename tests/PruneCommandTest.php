@@ -13,8 +13,6 @@ class PruneCommandTest extends TestCase
 {
     protected function tearDown(): void
     {
-        OauthToken::flushPruner();
-
         Mockery::close();
 
         parent::tearDown();

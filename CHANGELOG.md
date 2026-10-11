@@ -6,6 +6,47 @@
 
 ## [Unreleased]
 
+### Added
+
+- `Uzair::userModelFor()`, `EnsureTokenStorageMatchesProvider::forGuard()` / `problemFor()` /
+  `flushStorageWarnings()`, `VerifyIdentityToken::flushAlgorithmWarnings()`;
+  `Uzair::accountMatchesProvider()` принимает необязательный guard.
+- Опция `uzairports.guzzle` описана в `config/uzairports.php` и в документации.
+
+### Changed
+
+- Предупреждение об игнорируемых значениях `oidc.algorithms` пишется один раз за процесс на
+  каждый набор, а не при каждой проверке токена.
+- `Uzair::flushState()` больше не сбрасывает запомненную проверку хранилища токенов после
+  каждого запроса Octane — только реестры предупреждений и состояние запроса.
+- Одиночный ключ сессии `uzairid.nonce` больше не пишется и не читается: nonce сверяется только
+  по пулу `uzairid.nonces`, который пишется с 3.0.0.
+- `OauthToken::flushPruner()` будет удалён в 4.0.
+- Документация приведена в соответствие с поведением: порядок записи при входе,
+  `routes.ip_throttle`, `currentToken()` без сессии, пример ручного обновления токена,
+  общие хранилища блокировок.
+
+### Fixed
+
+- **Первый вход падал с `MassAssignmentException`** в приложениях с `Model::shouldBeStrict()` /
+  `preventSilentlyDiscardingAttributes()` — и в браузере, и при обмене кода в API: `RecordLogin`
+  заполнял защищённые `user_id` и `personal_access_token_id` через `firstOrNew()`.
+- **Таблица `oauth_tokens` без внешнего ключа на `user_id` давала `503` на каждом запросе**,
+  хотя такую таблицу создаёт сама `create_oauth_tokens_table`, если таблицы пользователей ещё
+  нет. Теперь она принимается, если тип колонки подходит к ключу модели, а в лог один раз за
+  процесс пишется предупреждение. Внешний ключ на чужую таблицу и неподходящий тип колонки
+  по-прежнему отклоняются.
+- **`uzair.token:{guard}` сверял хранилище с моделью `uzairports.guard`**, а не guard'а
+  маршрута: `auth:admin` + `uzair.token:admin` с отдельной моделью получал `503`.
+- **`invalid_scope` и `unsupported_grant_type` при обновлении токена** теперь считаются
+  ошибками клиента, как `invalid_client` и `unauthorized_client`: лог уровня error с
+  `client_id`, `503`, вход не завершается — в том числе при ответе `401`.
+- **Проигравший из двух параллельных `POST {prefix}/refresh` с одним токеном** получает
+  `409 {"error":"token_rotated"}` вместо `401 session_ended`, чтобы клиент не выходил из живого
+  входа.
+- **`uzair:provider --end-sessions` печатал «temporarily unavailable»** вместо настоящей причины
+  отказа.
+
 ## [3.1.0] - 2026-10-11
 
 ### Обратите внимание при обновлении

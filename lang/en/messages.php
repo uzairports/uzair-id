@@ -14,6 +14,8 @@ return [
 
     'session_ended' => 'This device has been signed out.',
 
+    'token_rotated' => 'This token was just replaced by another refresh request. Use the token that request received.',
+
     'unknown_device' => 'Unknown device',
 
     'rate_limited' => 'Too many requests. Please try again shortly.',

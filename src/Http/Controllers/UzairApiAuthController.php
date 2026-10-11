@@ -167,16 +167,23 @@ class UzairApiAuthController extends UzairController
                 : ($login->deviceLabel() ?: 'Mobile Client');
             $expiresAt = $this->tokenExpiresAt();
 
-            ['plainTextToken' => $plainTextToken, 'expiresAt' => $newExpiresAt] = OauthToken::query()
+            $rotated = OauthToken::query()
                 ->getConnection()
-                ->transaction(function () use ($user, $login, $deviceName, $expiresAt, $endSessions, $accessTokenId): array {
+                ->transaction(function () use ($user, $login, $deviceName, $expiresAt, $endSessions, $accessTokenId): ?array {
                     $lockedLogin = OauthToken::query()
                         ->whereKey($login->getKey())
                         ->lockForUpdate()
                         ->first();
 
-                    if ($lockedLogin === null || (string) $lockedLogin->personal_access_token_id !== (string) $accessTokenId) {
+                    if ($lockedLogin === null) {
                         throw new AuthenticationException(__('uzairid::messages.session_ended'));
+                    }
+
+                    // A concurrent `refresh` with the same bearer won the lock
+                    // and rotated it: the login lives on under the token that
+                    // request answered with.
+                    if ((string) $lockedLogin->personal_access_token_id !== (string) $accessTokenId) {
+                        return null;
                     }
 
                     ['accessToken' => $newAccessToken, 'key' => $newKey] = $this->createSanctumToken($user, $deviceName, $expiresAt);
@@ -192,6 +199,12 @@ class UzairApiAuthController extends UzairController
                         'expiresAt' => $this->effectiveExpiry($newAccessToken),
                     ];
                 });
+
+            if ($rotated === null) {
+                return $this->tokenWasRotated();
+            }
+
+            ['plainTextToken' => $plainTextToken, 'expiresAt' => $newExpiresAt] = $rotated;
         } catch (AuthenticationException $e) {
             return new JsonResponse(['message' => $e->getMessage()], 401);
         } catch (Throwable $e) {
@@ -207,6 +220,22 @@ class UzairApiAuthController extends UzairController
             'token_type' => 'Bearer',
             'expires_at' => $newExpiresAt?->toIso8601String(),
         ]);
+    }
+
+    /**
+     * Answer the loser of two `refresh` calls made with one bearer.
+     *
+     * It waited on the row lock while the winner rotated the token, and used
+     * to be told 401 `session_ended` — so a client signing out on a 401
+     * discarded a login that was alive under the winner's token. A 409 with
+     * its own code can be told apart: keep the token the other call received.
+     */
+    private function tokenWasRotated(): JsonResponse
+    {
+        return new JsonResponse([
+            'error' => 'token_rotated',
+            'message' => __('uzairid::messages.token_rotated'),
+        ], 409);
     }
 
     /**

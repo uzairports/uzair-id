@@ -489,6 +489,27 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | HTTP Client Options
+    |--------------------------------------------------------------------------
+    |
+    | Extra Guzzle request options for every call to the identity provider —
+    | a proxy, `verify` with a CA bundle, a `handler` stack for logging or
+    | testing. They reach the Socialite driver's client as they are.
+    |
+    | `timeout` and `connect_timeout` set here take precedence over the two
+    | keys above; `revocation_timeout` is not affected. Redirects are refused
+    | on every token, profile and revocation request whatever is set here,
+    | and turning `http_errors` off does not make a 4xx or 5xx count as an
+    | answer: the status is checked either way.
+    |
+    | Unset (the default) is the same as an empty array.
+    |
+    */
+
+    // 'guzzle' => [],
+
+    /*
+    |--------------------------------------------------------------------------
     | Identity Provider Cooldown
     |--------------------------------------------------------------------------
     |

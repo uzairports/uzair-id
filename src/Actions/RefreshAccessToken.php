@@ -33,9 +33,14 @@ class RefreshAccessToken
      * refused grant: returning false would end each login as it came due, and
      * nobody could sign back in with the same broken credentials.
      *
+     * `invalid_scope` and `unsupported_grant_type` belong here as well: the
+     * scopes asked for and the grant type are the client's configuration, the
+     * same for every account. `invalid_request` stays out — it is about the
+     * one request that carried it.
+     *
      * @var list<string>
      */
-    private const array CLIENT_ERRORS = ['invalid_client', 'unauthorized_client'];
+    private const array CLIENT_ERRORS = ['invalid_client', 'unauthorized_client', 'invalid_scope', 'unsupported_grant_type'];
 
     /**
      * Lock store warnings already logged in this process.
@@ -591,7 +596,7 @@ class RefreshAccessToken
      */
     private function refuseTheClient(OauthToken $token, string $error): never
     {
-        Log::error('UzAirports ID refused this application, so no login can be renewed until its credentials are fixed.', [
+        Log::error('UzAirports ID refused this application, so no login can be renewed until its credentials or client configuration are fixed.', [
             'user_id' => $token->user_id,
             'oauth_error' => $error,
             'client_id' => config('uzairports.client_id'),

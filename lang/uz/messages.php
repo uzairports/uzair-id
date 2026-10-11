@@ -14,6 +14,8 @@ return [
 
     'session_ended' => 'Ushbu qurilmadagi seans yakunlandi.',
 
+    'token_rotated' => 'Bu token boshqa yangilash so‘rovi bilan almashtirildi. O‘sha so‘rov javobidagi tokendan foydalaning.',
+
     'unknown_device' => 'Noma’lum qurilma',
 
     'rate_limited' => 'So‘rovlar soni juda ko‘p. Iltimos, birozdan so‘ng qayta urinib ko‘ring.',

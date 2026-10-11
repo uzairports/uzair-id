@@ -39,7 +39,8 @@ class EnsureAccessTokenIsFresh
      *
      * The guard comes from the route (`uzair.token:admin`), then
      * `uzairports.guard`, then the application default; it must match the guard
-     * that authenticated the route.
+     * that authenticated the route. A guard named on the route also names the
+     * accounts the token storage is checked against: its provider's model.
      *
      * @param  Closure(Request): Response  $next
      *
@@ -48,6 +49,7 @@ class EnsureAccessTokenIsFresh
      */
     public function handle(Request $request, Closure $next, ?string $guard = null): Response
     {
+        $routeGuard = $guard;
         $guard ??= Uzair::guard();
 
         $user = $request->user($guard);
@@ -56,7 +58,7 @@ class EnsureAccessTokenIsFresh
             return $next($request);
         }
 
-        app(EnsureTokenStorageMatchesProvider::class)->forUser($user);
+        app(EnsureTokenStorageMatchesProvider::class)->forGuard($user, $routeGuard);
 
         $leeway = Uzair::refreshLeeway();
         $accessTokenId = Uzair::accessTokenId($user);

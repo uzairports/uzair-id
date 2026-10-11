@@ -84,6 +84,27 @@ class UzairAuthControllerTest extends TestCase
         Event::assertDispatched(UzairAuthenticated::class);
     }
 
+    /**
+     * `user_id` is not fillable on the login model, and a first sign-in used
+     * to build the row through `firstOrNew()` — which fills it — so an
+     * application running `Model::shouldBeStrict()` could not sign anybody in.
+     */
+    public function test_a_first_sign_in_succeeds_under_strict_mass_assignment(): void
+    {
+        Model::preventSilentlyDiscardingAttributes();
+
+        try {
+            $this->fakeIdentity(['id' => '5040', 'name' => 'Strict Pilot', 'token' => 'access_token_value']);
+
+            $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+            $this->assertAuthenticated();
+            $this->assertSame('access_token_value', OauthToken::query()->sole()->access_token);
+        } finally {
+            Model::preventSilentlyDiscardingAttributes(false);
+        }
+    }
+
     public function test_the_login_records_the_device_it_was_made_from(): void
     {
         $this->fakeIdentity(['id' => '5002', 'name' => 'Phone', 'token' => 'access_token_value']);

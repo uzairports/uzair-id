@@ -40,7 +40,14 @@ class ProviderCommand extends Command
                     return self::SUCCESS;
                 }
 
-                $check();
+                // The problem itself, not the request-facing refusal: the
+                // invokable answers an HTTP 503 whose text says only
+                // "temporarily unavailable", which is all the console printed.
+                $problem = $check->problem();
+                if ($problem !== null) {
+                    throw new RuntimeException($problem);
+                }
+
                 OauthToken::query()->chunkById(100, function (Collection $tokens) use ($endSessions): void {
                     $endSessions->endAll($tokens);
                 });

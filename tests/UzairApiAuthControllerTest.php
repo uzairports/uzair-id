@@ -8,6 +8,7 @@ use GuzzleHttp\Exception\ConnectException;
 use GuzzleHttp\Psr7\Request as PsrRequest;
 use GuzzleHttp\Psr7\Response as PsrResponse;
 use Illuminate\Auth\AuthenticationException;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Auth\User as Authenticatable;
@@ -106,6 +107,29 @@ class UzairApiAuthControllerTest extends TestCase
 
         $provider->shouldHaveReceived('userFromCode')->with('code-from-the-app', self::REDIRECT_URI, self::VERIFIER);
         Event::assertDispatched(UzairAuthenticated::class, fn (UzairAuthenticated $event): bool => $event->token?->is($login) === true);
+    }
+
+    /**
+     * `user_id` and `personal_access_token_id` are not fillable on the login
+     * model; filling them refused every first sign-in under strict mode.
+     */
+    public function test_a_first_exchange_succeeds_under_strict_mass_assignment(): void
+    {
+        Model::preventSilentlyDiscardingAttributes();
+
+        try {
+            $this->fakeExchange(['id' => '7040', 'token' => 'sso-access', 'refreshToken' => 'sso-refresh']);
+
+            $response = $this->postJson(route('uzair.api.token'), $this->exchange());
+
+            $response->assertOk();
+
+            $login = OauthToken::query()->sole();
+
+            $this->assertSame(PersonalAccessToken::findToken($this->issuedToken($response))?->getKey(), (int) $login->personal_access_token_id);
+        } finally {
+            Model::preventSilentlyDiscardingAttributes(false);
+        }
     }
 
     public function test_the_issued_token_carries_the_configured_abilities_and_lifetime(): void
@@ -702,6 +726,39 @@ class UzairApiAuthControllerTest extends TestCase
 
         $response->assertUnauthorized()
             ->assertJsonPath('message', __('uzairid::messages.session_ended'));
+    }
+
+    /**
+     * Two `refresh` calls with one bearer: the loser read the login, then
+     * waited on the row lock while the winner rotated it. It used to be told
+     * 401 `session_ended`, and a client signing out on a 401 threw away a
+     * login alive under the winner's token.
+     */
+    public function test_refresh_that_lost_the_race_to_rotate_the_token_is_told_apart_from_an_ended_login(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7023']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+
+        $rotated = false;
+        OauthToken::retrieved(function (OauthToken $read) use (&$rotated, $login): void {
+            if ($rotated || ! $read->is($login)) {
+                return;
+            }
+
+            $rotated = true;
+
+            // The winner commits between this request's read and its lock.
+            DB::table('oauth_tokens')->where('id', $login->getKey())->update(['personal_access_token_id' => 999999]);
+        });
+
+        $response = $this->withToken($plainTextToken)->postJson(route('uzair.api.refresh'));
+
+        $response->assertConflict()
+            ->assertJsonPath('error', 'token_rotated')
+            ->assertJsonPath('message', __('uzairid::messages.token_rotated'));
+
+        $this->assertModelExists($login);
+        $this->assertSame(999999, (int) $login->fresh()?->personal_access_token_id);
     }
 
     /**

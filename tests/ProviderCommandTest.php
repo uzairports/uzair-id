@@ -234,6 +234,11 @@ class ProviderCommandTest extends TestCase
         $this->assertSame(1, Artisan::call('uzair:provider', ['--end-sessions' => true]));
         $this->assertModelExists($token);
 
+        // The operator is told what is wrong, not the 503 a request gets.
+        $output = Artisan::output();
+        $this->assertStringContainsString('owner is [users]', $output);
+        $this->assertStringNotContainsString(__('uzairid::messages.temporarily_unavailable'), $output);
+
         config(['uzairports.guard' => 'web']);
         OauthToken::deleting(fn (): bool => false);
         try {

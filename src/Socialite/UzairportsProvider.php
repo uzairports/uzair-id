@@ -122,7 +122,6 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
             if (Uzair::oidcEnabled()) {
                 $nonce = Str::random(40);
-                $session->put('uzairid.nonce', $nonce);
 
                 /** @var array<string, string> $nonces */
                 $nonces = (array) $session->get('uzairid.nonces', []);
@@ -379,7 +378,6 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
         if (! $this->isStateless() && $this->request->hasSession()) {
             $session = $this->request->session();
-            $legacyNonce = $session->pull('uzairid.nonce');
 
             /** @var array<string, string> $nonces */
             $nonces = (array) $session->get('uzairid.nonces', []);
@@ -400,16 +398,12 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
                 }
             }
 
-            $matched = $matchedKey !== null || (is_string($legacyNonce) && is_string($claimNonce) && hash_equals($legacyNonce, $claimNonce));
-
-            if (! $matched) {
+            if ($matchedKey === null) {
                 throw IdentityNonceMismatch::make();
             }
 
-            if ($matchedKey !== null) {
-                unset($nonces[$matchedKey]);
-                $session->put('uzairid.nonces', $nonces);
-            }
+            unset($nonces[$matchedKey]);
+            $session->put('uzairid.nonces', $nonces);
         }
 
         $sid = $claims['sid'] ?? null;

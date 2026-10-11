@@ -16,6 +16,7 @@ use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
+use Uzairports\Uzairid\Actions\VerifyIdentityToken;
 use Uzairports\Uzairid\Http\Controllers\UzairApiAuthController;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Http\Controllers\UzairBackchannelLogoutController;
@@ -96,7 +97,23 @@ class Uzair
      */
     public static function userModel(): string
     {
-        $guard = self::accountGuard(self::guard() ?? config('auth.defaults.guard'));
+        return self::userModelFor(null);
+    }
+
+    /**
+     * The account model belonging to the provider of the given guard, or of
+     * the configured one when none is given.
+     *
+     * `uzair.token:admin` names its own guard, and the accounts behind it are
+     * the ones its route authenticated — not those of `uzairports.guard`.
+     *
+     * @return class-string<Model>
+     *
+     * @throws RuntimeException when the guard's provider names no Eloquent model
+     */
+    public static function userModelFor(?string $guard): string
+    {
+        $guard = self::accountGuard($guard ?? self::guard() ?? config('auth.defaults.guard'));
         $provider = is_string($guard) ? config("auth.guards.{$guard}.provider") : null;
         $model = is_string($provider) ? config("auth.providers.{$provider}.model") : null;
 
@@ -202,9 +219,13 @@ class Uzair
         return is_int($key) || is_string($key) ? $key : null;
     }
 
-    public static function accountMatchesProvider(Authenticatable $user): bool
+    /**
+     * Whether the account belongs to the provider of the given guard, or of
+     * the configured one when none is given.
+     */
+    public static function accountMatchesProvider(Authenticatable $user, ?string $guard = null): bool
     {
-        $model = self::userModel();
+        $model = self::userModelFor($guard);
         $expected = new $model;
 
         return $user instanceof $model
@@ -215,12 +236,17 @@ class Uzair
 
     /**
      * Drop the static state that must not outlive a request on a long-lived
-     * worker: the container-resolved `OauthToken` pruner and the once-per-process
-     * warning registers (login cache, lock store, login route).
+     * worker: the Sanctum token tables found, and the once-per-process warning
+     * registers (login cache, lock store, login route, token storage, ignored
+     * ID token algorithms).
      *
      * The user and local-request resolvers are deliberately kept: they are
      * registered once at boot, and a worker that dropped them would serve every
-     * later request without them.
+     * later request without them. So is the verified token storage: it is
+     * keyed by everything its answer depends on and lapses after
+     * `storage_check_ttl`, and flushing it made every Octane request read the
+     * schema again. `EnsureTokenStorageMatchesProvider::flushVerified()` stays
+     * for a suite that changes the schema.
      *
      * `UzairServiceProvider` calls this on Octane's terminating events; other
      * long-lived runtimes should call it at the end of each request.
@@ -231,7 +257,8 @@ class Uzair
         OauthToken::flushLoginCacheWarnings();
         RefreshAccessToken::flushLockStoreWarnings();
         self::flushLoginRouteWarnings();
-        EnsureTokenStorageMatchesProvider::flushVerified();
+        EnsureTokenStorageMatchesProvider::flushStorageWarnings();
+        VerifyIdentityToken::flushAlgorithmWarnings();
     }
 
     public const string DEFAULT_HOST = 'https://my.uzairports.com';

@@ -19,6 +19,7 @@ use UnexpectedValueException;
 use Uzairports\Uzairid\Actions\VerifyIdentityToken;
 use Uzairports\Uzairid\Exceptions\IdentityNonceMismatch;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
+use Uzairports\Uzairid\Uzair;
 
 class UzairportsProviderTest extends TestCase
 {
@@ -598,15 +599,46 @@ class UzairportsProviderTest extends TestCase
      */
     public function test_an_hmac_algorithm_cannot_be_allowed(): void
     {
+        VerifyIdentityToken::flushAlgorithmWarnings();
+
         Log::shouldReceive('warning')
             ->with(Mockery::pattern('/asymmetric/'), ['ignored' => ['HS256']])
-            ->twice();
+            ->once();
 
         config(['uzairports.oidc.algorithms' => ['HS256', 'RS256']]);
         $this->assertSame(['RS256'], VerifyIdentityToken::allowedAlgorithms());
 
         config(['uzairports.oidc.algorithms' => ['HS256']]);
         $this->assertSame(['RS256'], VerifyIdentityToken::allowedAlgorithms());
+    }
+
+    /**
+     * The algorithms are read on every verification, so the warning about the
+     * ones ignored is said once per process for each set — a line per sign-in
+     * said nothing the first had not. Flushing the state says it again.
+     */
+    public function test_ignored_algorithms_are_reported_once_per_set(): void
+    {
+        VerifyIdentityToken::flushAlgorithmWarnings();
+
+        Log::shouldReceive('warning')
+            ->with(Mockery::pattern('/asymmetric/'), ['ignored' => ['HS256']])
+            ->twice();
+        Log::shouldReceive('warning')
+            ->with(Mockery::pattern('/asymmetric/'), ['ignored' => ['HS512']])
+            ->once();
+
+        config(['uzairports.oidc.algorithms' => ['HS256', 'RS256']]);
+        VerifyIdentityToken::allowedAlgorithms();
+        VerifyIdentityToken::allowedAlgorithms();
+
+        config(['uzairports.oidc.algorithms' => ['HS512', 'RS256']]);
+        VerifyIdentityToken::allowedAlgorithms();
+
+        Uzair::flushState();
+
+        config(['uzairports.oidc.algorithms' => ['HS256', 'RS256']]);
+        VerifyIdentityToken::allowedAlgorithms();
     }
 
     public function test_a_key_naming_no_algorithm_is_read_by_its_type(): void
@@ -634,11 +666,17 @@ class UzairportsProviderTest extends TestCase
         $response = $provider->redirect();
         $url = $response->getTargetUrl();
 
-        $this->assertTrue($session->has('uzairid.nonce'));
-        $nonce = $session->get('uzairid.nonce');
+        $nonces = $session->get('uzairid.nonces');
+        $this->assertIsArray($nonces);
+        $state = $session->get('state');
+        $this->assertIsString($state);
+        $nonce = $nonces[$state] ?? null;
         $this->assertIsString($nonce);
         $this->assertNotEmpty($nonce);
         $this->assertStringContainsString('nonce='.$nonce, $url);
+
+        // The single key 3.0 wrote beside the per-state pool is gone.
+        $this->assertFalse($session->has('uzairid.nonce'));
     }
 
     public function test_id_token_with_mismatched_nonce_is_rejected(): void
@@ -648,7 +686,7 @@ class UzairportsProviderTest extends TestCase
         $request = Request::create('https://app.test/auth/callback?code=the-code&state=the-state&iss=https://my.uzairports.com');
         $session = app('session.store');
         $session->put('state', 'the-state');
-        $session->put('uzairid.nonce', 'expected-nonce-value');
+        $session->put('uzairid.nonces', ['the-state' => 'expected-nonce-value']);
         $request->setLaravelSession($session);
 
         $revoker = Mockery::mock(UzairportsProvider::class);
@@ -671,7 +709,7 @@ class UzairportsProviderTest extends TestCase
         $request = Request::create('https://app.test/auth/callback?code=the-code&state=the-state&iss=https://my.uzairports.com');
         $session = app('session.store');
         $session->put('state', 'the-state');
-        // No uzairid.nonce in session
+        // No uzairid.nonces in session
         $request->setLaravelSession($session);
 
         $revoker = Mockery::mock(UzairportsProvider::class);
@@ -680,6 +718,34 @@ class UzairportsProviderTest extends TestCase
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
 
         $provider = $this->providerIssuing($this->signed([...$this->idTokenClaims(), 'nonce' => 'any-nonce']));
+        $provider->setRequest($request);
+
+        $this->expectException(IdentityNonceMismatch::class);
+
+        $provider->user();
+    }
+
+    /**
+     * Every handshake since 3.0.0 files its nonce under its state as well, so
+     * the single `uzairid.nonce` key read beside the pool answered nothing the
+     * pool did not — except a nonce no handshake still in flight had issued.
+     */
+    public function test_the_retired_single_nonce_key_is_not_matched(): void
+    {
+        config(['uzairports.oidc.enabled' => true]);
+
+        $request = Request::create('https://app.test/auth/callback?code=the-code&state=the-state&iss=https://my.uzairports.com');
+        $session = app('session.store');
+        $session->put('state', 'the-state');
+        $session->put('uzairid.nonce', 'retired-nonce');
+        $request->setLaravelSession($session);
+
+        $revoker = Mockery::mock(UzairportsProvider::class);
+        $revoker->shouldReceive('logoutAsync')->with('issued-access')->once()->andReturn($this->revoked());
+        $revoker->shouldReceive('revokeRefreshTokenAsync')->with('issued-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($revoker);
+
+        $provider = $this->providerIssuing($this->signed([...$this->idTokenClaims(), 'nonce' => 'retired-nonce']));
         $provider->setRequest($request);
 
         $this->expectException(IdentityNonceMismatch::class);

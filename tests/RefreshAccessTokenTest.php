@@ -23,6 +23,7 @@ use InvalidArgumentException;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
 use Mockery;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use stdClass;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
@@ -292,6 +293,37 @@ class RefreshAccessTokenTest extends TestCase
     public function test_a_client_refused_this_grant_type_does_not_end_the_login(): void
     {
         $this->assertTheApplicationIsRefusedWithoutEndingTheLogin('unauthorized_client', 400);
+    }
+
+    /**
+     * RFC 6749 §5.2 puts two more codes on the client: a scope it asks for
+     * that the provider no longer grants, and a grant type it is no longer
+     * allowed. Both are the same answer for every account, so a change at the
+     * provider used to be logged as one warning per expiring request — never
+     * at error level, never naming the client — and answered with a 503.
+     * A 401 carrying either must not end the login as a refused grant either.
+     */
+    #[DataProvider('clientWideRefusals')]
+    public function test_a_refusal_about_the_client_configuration_is_reported_as_one(string $error, int $status): void
+    {
+        $log = Log::spy();
+
+        $this->assertTheApplicationIsRefusedWithoutEndingTheLogin($error, $status);
+
+        $log->shouldHaveReceived('error')->withArgs(
+            fn (string $message, array $context): bool => ($context['oauth_error'] ?? null) === $error
+                && ($context['client_id'] ?? null) === 'test-client-id',
+        );
+    }
+
+    /** @return array<string, array{string, int}> */
+    public static function clientWideRefusals(): array
+    {
+        return [
+            'invalid_scope' => ['invalid_scope', 400],
+            'invalid_scope as 401' => ['invalid_scope', 401],
+            'unsupported_grant_type' => ['unsupported_grant_type', 400],
+        ];
     }
 
     /**

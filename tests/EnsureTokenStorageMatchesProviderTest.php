@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Mockery;
 use PDOException;
+use PHPUnit\Framework\Attributes\DataProvider;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 
@@ -150,6 +151,87 @@ class EnsureTokenStorageMatchesProviderTest extends TestCase
         }
     }
 
+    /**
+     * `create_oauth_tokens_table` writes `user_id` without a foreign key when
+     * the accounts table does not exist yet, and the installation guide says
+     * such an installation keeps working. Refusing it answered every request
+     * with a 503; a column that can hold the keys is accepted and reported.
+     *
+     * @param  class-string<TestUser>  $model
+     */
+    #[DataProvider('unconstrainedOwners')]
+    public function test_a_table_without_a_foreign_key_is_judged_by_what_user_id_can_hold(string $column, string $model, bool $accepted): void
+    {
+        config(['uzairports.storage_check_ttl' => 0, 'auth.providers.users.model' => $model]);
+        $this->rebuildWithoutForeignKey($column);
+
+        EnsureTokenStorageMatchesProvider::flushStorageWarnings();
+        $log = Log::spy();
+
+        $problem = app(EnsureTokenStorageMatchesProvider::class)->problem();
+
+        if (! $accepted) {
+            $this->assertStringContainsString('cannot hold the string keys', (string) $problem);
+            $log->shouldNotHaveReceived('warning');
+
+            return;
+        }
+
+        $this->assertNull($problem);
+
+        // Checked on every request with the TTL at zero, and said once.
+        app(EnsureTokenStorageMatchesProvider::class)();
+        app(EnsureTokenStorageMatchesProvider::class)();
+
+        $log->shouldHaveReceived('warning')->once()->withArgs(fn (string $message): bool => str_contains($message, 'no user_id foreign key'));
+    }
+
+    /** @return array<string, array{string, class-string<TestUser>, bool}> */
+    public static function unconstrainedOwners(): array
+    {
+        return [
+            'string column, integer keys' => ['string', TestUser::class, true],
+            'string column, string keys' => ['string', StringKeyAccount::class, true],
+            'integer column, integer keys' => ['integer', TestUser::class, true],
+            'integer column, string keys' => ['integer', StringKeyAccount::class, false],
+        ];
+    }
+
+    /**
+     * Going without a foreign key accepts the column; one that points at
+     * another accounts table is still the evidence it always was.
+     */
+    public function test_a_foreign_key_naming_other_accounts_is_still_refused(): void
+    {
+        Schema::create('other_accounts', function (Blueprint $table): void {
+            $table->id();
+        });
+        config(['auth.providers.users.model' => OtherAccount::class]);
+
+        $this->assertStringContainsString('but the configured provider uses', (string) app(EnsureTokenStorageMatchesProvider::class)->problem());
+    }
+
+    /**
+     * The token table in the shape the create migration writes when it has
+     * nothing to reference.
+     */
+    private function rebuildWithoutForeignKey(string $column): void
+    {
+        Schema::drop('oauth_tokens');
+        Schema::create('oauth_tokens', function (Blueprint $table) use ($column): void {
+            $table->id();
+            $column === 'string' ? $table->string('user_id') : $table->unsignedBigInteger('user_id');
+            $table->text('access_token');
+            $table->text('refresh_token')->nullable();
+            $table->timestamp('expires_at')->nullable();
+            $table->string('session_id')->nullable();
+            $table->unsignedBigInteger('personal_access_token_id')->nullable()->unique();
+            $table->string('sid')->nullable();
+            $table->text('id_token')->nullable();
+            $table->timestamps();
+        });
+    }
+
     private function dropTheSanctumTokenColumn(): void
     {
         Schema::table('oauth_tokens', function (Blueprint $table): void {
@@ -175,4 +257,11 @@ class EnsureTokenStorageMatchesProviderTest extends TestCase
 class OtherAccount extends TestUser
 {
     protected $table = 'other_accounts';
+}
+
+class StringKeyAccount extends TestUser
+{
+    protected $keyType = 'string';
+
+    public $incrementing = false;
 }

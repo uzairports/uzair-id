@@ -83,6 +83,12 @@ class RecordLogin
      * The device columns are written as null, not skipped, while
      * `record_device` is off: the row may hold what an earlier sign-in stored.
      *
+     * The row is found with a plain query and never through `firstOrNew()`,
+     * which fills a new model through `$fillable`: `user_id` and
+     * `personal_access_token_id` are guarded, so an application running
+     * `Model::shouldBeStrict()` had every first sign-in refused. The
+     * `forceFill()` below writes every column either way.
+     *
      * @param  Authenticatable&Model  $user
      * @return array{OauthToken, ?string, ?string}
      *
@@ -98,9 +104,9 @@ class RecordLogin
         $query = OauthToken::query()->where('user_id', $user->getKey())->lockForUpdate();
 
         if ($accessTokenId !== null) {
-            $token = $query->firstOrNew(['user_id' => $user->getKey(), 'personal_access_token_id' => $accessTokenId]);
+            $token = $query->where('personal_access_token_id', $accessTokenId)->first() ?? new OauthToken;
         } elseif ($sessionId !== null) {
-            $token = $query->firstOrNew(['user_id' => $user->getKey(), 'session_id' => $sessionId]);
+            $token = $query->where('session_id', $sessionId)->first() ?? new OauthToken;
         } else {
             $token = $query->whereNull('session_id')->whereNull('personal_access_token_id')->latest('id')->first()
                 ?? new OauthToken;
