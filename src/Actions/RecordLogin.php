@@ -54,7 +54,7 @@ class RecordLogin
      * spend and gives up its own. The surrender itself waits for the commit:
      * it is a round trip to the identity provider and holds no lock.
      *
-     * @param Authenticatable&Model $user
+     * @param  Authenticatable&Model  $user
      *
      * @throws RuntimeException when a model listener refused the write
      * @throws Throwable
