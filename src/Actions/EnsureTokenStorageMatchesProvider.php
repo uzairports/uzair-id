@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Actions;
 
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Builder;
@@ -38,7 +39,7 @@ class EnsureTokenStorageMatchesProvider
      * The column types `user_id` is stored as when it holds string keys; any
      * key fits one of them.
      */
-    private const array STRING_TYPES = ['varchar', 'char', 'bpchar', 'uuid', 'text', 'tinytext', 'mediumtext', 'longtext', 'nvarchar', 'nchar', 'character varying', 'character', 'string'];
+    private const array STRING_TYPES = ['varchar', 'char', 'bpchar', 'text', 'tinytext', 'mediumtext', 'longtext', 'nvarchar', 'nchar', 'character varying', 'character', 'string'];
 
     public function forUser(Authenticatable $user): void
     {
@@ -50,16 +51,44 @@ class EnsureTokenStorageMatchesProvider
     }
 
     /**
+     * Check the storage for an account that may be read through another model.
+     *
+     * Logins are only ever written for the configured model's accounts, and
+     * read back by `user_id` alone. A second model over the very same table —
+     * an `Admin` class narrowing `users` — names the same rows and is let
+     * through; any other account goes through `forUser()`, which refuses it.
+     *
+     * @throws ServiceUnavailableHttpException when the storage or the account does not fit
+     */
+    public function forAccount(Authenticatable $user): void
+    {
+        $configured = $this->configuredModel();
+
+        if ($configured !== null && ! $user instanceof $configured
+            && $user instanceof Model && $this->sharesTheAccountsTable($user, new $configured)) {
+            $this();
+
+            return;
+        }
+
+        $this->forUser($user);
+    }
+
+    /**
      * Check the storage against the accounts of the guard a route names.
      *
      * `uzair.token:admin` behind `auth:admin` serves the accounts of the
-     * `admin` guard's provider; checking them against `uzairports.guard`
-     * refused every request of a second guard backed by another model.
+     * `admin` guard's provider. Logins are written for the configured model
+     * and found by `user_id` alone, so that provider's model has to keep its
+     * accounts in the very same table: an `Admin` over `admins` would read the
+     * login of the user who happens to share its id — and be handed that
+     * user's UzAirports token. With a foreign key the storage check refused
+     * it; without one only this comparison does.
      *
-     * Without a guard this is `forUser()`, and so it is for a guard whose
+     * Without a guard, for the configured model itself, or for a guard whose
      * provider names no Eloquent model (`Auth::viaRequest()`, a custom
-     * driver): nothing says which accounts it serves, so the configured
-     * provider's stand, as they always did.
+     * driver), this is `forUser()` — so an application's override of it, or
+     * of `problem()`, still has the last word.
      *
      * @throws ServiceUnavailableHttpException when the storage or the account does not fit
      */
@@ -71,16 +100,48 @@ class EnsureTokenStorageMatchesProvider
             $model = null;
         }
 
-        if ($guard === null || $model === null) {
+        $configured = $this->configuredModel();
+
+        if ($guard === null || $model === null || $configured === null || $model === $configured) {
             $this->forUser($user);
 
             return;
         }
 
-        $this->verify($model);
+        if (! $this->sharesTheAccountsTable(new $model, new $configured)) {
+            $this->refuse("The [{$guard}] guard reads accounts from [".(new $model)->getTable().'], but UzAirports logins are filed under ['.(new $configured)->getTable().'] accounts. A route guard must read the same accounts table as uzairports.guard.');
+        }
+
+        $this();
 
         if (! Uzair::accountMatchesProvider($user, $guard)) {
             $this->refuse("The route account does not belong to the provider of the [{$guard}] guard.");
+        }
+    }
+
+    /**
+     * Whether two account models read the same rows: one connection, one
+     * table, one key.
+     */
+    private function sharesTheAccountsTable(Model $account, Model $configured): bool
+    {
+        return $account->getConnection()->getName() === $configured->getConnection()->getName()
+            && $account->getTable() === $configured->getTable()
+            && $account->getKeyName() === $configured->getKeyName();
+    }
+
+    /**
+     * The configured account model, or null where it cannot be read — the
+     * storage check then refuses on its own.
+     *
+     * @return class-string<Model>|null
+     */
+    private function configuredModel(): ?string
+    {
+        try {
+            return Uzair::userModel();
+        } catch (RuntimeException) {
+            return null;
         }
     }
 
@@ -100,21 +161,8 @@ class EnsureTokenStorageMatchesProvider
      */
     public function __invoke(): void
     {
-        $this->verify(null);
-    }
-
-    /**
-     * Check the storage against an account model, or against the configured
-     * provider's when none is given.
-     *
-     * @param  class-string<Model>|null  $model
-     *
-     * @throws ServiceUnavailableHttpException when the storage does not fit
-     */
-    private function verify(?string $model): void
-    {
         try {
-            $fingerprint = $this->fingerprint($model ?? Uzair::userModel());
+            $fingerprint = $this->fingerprint(Uzair::userModel());
         } catch (RuntimeException $exception) {
             $this->refuse($exception->getMessage());
         }
@@ -124,7 +172,7 @@ class EnsureTokenStorageMatchesProvider
         }
 
         try {
-            $problem = $model === null ? $this->problem() : $this->problemFor($model);
+            $problem = $this->problem();
         } catch (QueryException $exception) {
             // A database failure is not a configuration problem, and its message
             // names hosts, users and SQL: it is logged, never sent to the client.
@@ -247,7 +295,9 @@ class EnsureTokenStorageMatchesProvider
     /**
      * Accept a `user_id` without a foreign key when its type can hold the
      * account model's keys: a string column holds any key, an integer column
-     * only integer ones.
+     * only integer ones, and a native `uuid` column (PostgreSQL, MariaDB) only
+     * the UUIDs of a model using `HasUuids` — anything else is refused by the
+     * database on the first sign-in, as a 500 instead of this line.
      */
     private function unconstrainedOwnerProblem(Builder $schema, string $table, Model $user): ?string
     {
@@ -260,11 +310,14 @@ class EnsureTokenStorageMatchesProvider
         $type = strtolower($column['type_name']);
         $integerKeys = in_array($user->getKeyType(), ['int', 'integer'], true);
 
+        $uuidKeys = in_array(HasUuids::class, class_uses_recursive($user), true);
+
         $fits = in_array($type, self::STRING_TYPES, true)
-            || (in_array($type, self::INTEGER_TYPES, true) && $integerKeys);
+            || (in_array($type, self::INTEGER_TYPES, true) && $integerKeys)
+            || ($type === 'uuid' && $uuidKeys);
 
         if (! $fits) {
-            $keys = $integerKeys ? 'integer' : 'string';
+            $keys = $integerKeys ? 'integer' : ($uuidKeys ? 'UUID' : 'string');
 
             return "The UzAirports token table stores user_id as [{$type}], which cannot hold the {$keys} keys of [".$user::class.']. Run php artisan uzair:provider.';
         }

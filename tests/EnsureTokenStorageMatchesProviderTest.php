@@ -2,9 +2,11 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
@@ -212,6 +214,109 @@ class EnsureTokenStorageMatchesProviderTest extends TestCase
     }
 
     /**
+     * Logins are written for the configured model and read by `user_id` alone.
+     * 3.2.0 let a guard over another accounts table through when the token
+     * table had no foreign key, and `Admin #1` then read `User #1`'s login —
+     * and its UzAirports token.
+     */
+    public function test_a_route_guard_over_another_accounts_table_is_refused_without_a_foreign_key(): void
+    {
+        $this->rebuildWithoutForeignKey('integer');
+        Schema::create('other_accounts', function (Blueprint $table): void {
+            $table->id();
+            $table->string('uzair_id')->nullable();
+            $table->timestamps();
+        });
+        $this->defineAdminGuard(OtherAccount::class);
+
+        $user = TestUser::create(['uzair_id' => 'user-1']);
+        $user->uzairTokens()->create(['access_token' => 'the-users-token']);
+        $admin = OtherAccount::create(['uzair_id' => 'admin-1']);
+        $this->assertSame($user->getKey(), $admin->getKey());
+
+        Log::shouldReceive('error')->once()->with(Mockery::pattern('/same accounts table/'));
+        $this->expectException(ServiceUnavailableHttpException::class);
+
+        app(EnsureTokenStorageMatchesProvider::class)->forGuard($admin, 'admin');
+    }
+
+    /**
+     * Another class over the same table names the same rows, so it is let
+     * through — by the middleware and outside it.
+     */
+    public function test_another_model_over_the_same_accounts_table_is_accepted(): void
+    {
+        $this->rebuildWithoutForeignKey('integer');
+        $this->defineAdminGuard(SameTableAdmin::class);
+
+        $admin = SameTableAdmin::create(['uzair_id' => 'admin-2']);
+
+        app(EnsureTokenStorageMatchesProvider::class)->forGuard($admin, 'admin');
+        app(EnsureTokenStorageMatchesProvider::class)->forAccount($admin);
+
+        $this->expectException(ServiceUnavailableHttpException::class);
+
+        app(EnsureTokenStorageMatchesProvider::class)->forAccount(new OtherAccount);
+    }
+
+    /**
+     * Naming the configured guard on a route must not route around an
+     * application's own `problem()`.
+     */
+    public function test_a_route_naming_the_configured_guard_keeps_an_overridden_problem(): void
+    {
+        $this->instance(EnsureTokenStorageMatchesProvider::class, new class extends EnsureTokenStorageMatchesProvider
+        {
+            public function problem(): string
+            {
+                return 'The application refuses this storage.';
+            }
+        });
+
+        Log::shouldReceive('error')->once()->with('The application refuses this storage.');
+        $this->expectException(ServiceUnavailableHttpException::class);
+
+        app(EnsureTokenStorageMatchesProvider::class)->forGuard(TestUser::create(['uzair_id' => 'web-1']), 'web');
+    }
+
+    /**
+     * A native `uuid` column takes UUIDs only; integer keys were accepted and
+     * then refused by the database on the first sign-in.
+     */
+    public function test_a_uuid_column_only_fits_uuid_keys(): void
+    {
+        if (DB::getDriverName() !== 'pgsql') {
+            $this->markTestSkipped('Only PostgreSQL reports a native uuid column type.');
+        }
+
+        Schema::drop('oauth_tokens');
+        Schema::create('oauth_tokens', function (Blueprint $table): void {
+            $table->id();
+            $table->uuid('user_id');
+            $table->text('access_token');
+            $table->string('session_id')->nullable();
+            $table->unsignedBigInteger('personal_access_token_id')->nullable();
+            $table->string('sid')->nullable();
+            $table->text('id_token')->nullable();
+            $table->timestamps();
+        });
+
+        $this->assertStringContainsString('cannot hold the integer keys', (string) app(EnsureTokenStorageMatchesProvider::class)->problem());
+    }
+
+    /**
+     * @param  class-string<Model>  $model
+     */
+    private function defineAdminGuard(string $model): void
+    {
+        config([
+            'uzairports.storage_check_ttl' => 0,
+            'auth.providers.admins' => ['driver' => 'eloquent', 'model' => $model],
+            'auth.guards.admin' => ['driver' => 'session', 'provider' => 'admins'],
+        ]);
+    }
+
+    /**
      * The token table in the shape the create migration writes when it has
      * nothing to reference.
      */
@@ -257,6 +362,13 @@ class EnsureTokenStorageMatchesProviderTest extends TestCase
 class OtherAccount extends TestUser
 {
     protected $table = 'other_accounts';
+}
+
+class SameTableAdmin extends Authenticatable
+{
+    protected $table = 'users';
+
+    protected $guarded = [];
 }
 
 class StringKeyAccount extends TestUser

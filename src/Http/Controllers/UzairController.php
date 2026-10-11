@@ -146,7 +146,7 @@ abstract class UzairController
         $user = app(AuthFactory::class)->guard($this->guardName())->user();
 
         if ($user !== null) {
-            app(EnsureTokenStorageMatchesProvider::class)->forUser($user);
+            app(EnsureTokenStorageMatchesProvider::class)->forAccount($user);
         }
 
         return $user;

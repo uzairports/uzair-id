@@ -109,7 +109,7 @@ trait HasUzairToken
             return $this->resolvedCurrentToken;
         }
 
-        app(EnsureTokenStorageMatchesProvider::class)->forUser($this);
+        app(EnsureTokenStorageMatchesProvider::class)->forAccount($this);
 
         $token = $this->lookUpCurrentToken($sessionId, $accessTokenId);
 
