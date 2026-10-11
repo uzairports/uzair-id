@@ -452,7 +452,9 @@ class RefreshAccessToken
                 return false;
             }
 
-            $this->recordProviderFailure();
+            if ($this->providerFailed($e)) {
+                $this->recordProviderFailure();
+            }
 
             throw $this->temporarilyUnavailable();
         }
@@ -481,13 +483,22 @@ class RefreshAccessToken
                 : now()->addSeconds($expiresIn),
         ]);
 
-        // The exchange stays outside the transaction. Logout takes this same
-        // row lock before reading the grants it will delete and surrender.
+        // The exchange stays outside the transaction. Logout and a repeated
+        // sign-in take this same row lock before reading the grants they will
+        // replace, delete or surrender.
+        $superseding = null;
+
         try {
-            $saved = $token->getConnection()->transaction(function () use ($token): bool {
+            $saved = $token->getConnection()->transaction(function () use ($token, $refreshToken, &$superseding): bool {
                 $stored = $token->newQuery()->whereKey($token->getKey())->lockForUpdate()->first();
 
                 if ($stored === null) {
+                    return false;
+                }
+
+                if ($stored->readableRefreshToken() !== $refreshToken) {
+                    $superseding = $stored;
+
                     return false;
                 }
 
@@ -500,6 +511,10 @@ class RefreshAccessToken
             throw $exception;
         }
 
+        if ($superseding instanceof OauthToken) {
+            return $this->adoptSupersedingGrants($token, $superseding, $refreshed, $refreshToken);
+        }
+
         if (! $saved) {
             $this->surrenderIssuedGrants($refreshed, $refreshToken);
             UzairTokenRefreshFailed::dispatch($token);
@@ -510,6 +525,44 @@ class RefreshAccessToken
         UzairTokenRefreshed::dispatch($token);
 
         return true;
+    }
+
+    /**
+     * Give up this exchange's grants for the ones written while it was out.
+     *
+     * The row no longer holds the refresh token that was spent: the browser
+     * signed in again on the same session, and `RecordLogin` wrote that sign-in's
+     * grants and surrendered the spent ones. Saving over it would leave the new
+     * sign-in's grants with no row pointing at them, honored at the identity
+     * provider and never surrendered. The newer login stands instead.
+     */
+    private function adoptSupersedingGrants(OauthToken $token, OauthToken $stored, Token $refreshed, string $spentRefreshToken): bool
+    {
+        $this->surrenderIssuedGrants($refreshed, $spentRefreshToken);
+
+        $token->setRawAttributes($stored->getAttributes(), sync: true);
+
+        return true;
+    }
+
+    /**
+     * Whether a failed exchange counts toward the provider's cooldown.
+     *
+     * Only an answer that says the provider itself is in trouble does: no
+     * answer at all, a 5xx, or a 429. Any other 4xx is the provider answering
+     * about this one request — a malformed or legacy grant on one account —
+     * and five of those within a cooldown would otherwise stop every login in
+     * the application from renewing.
+     */
+    private function providerFailed(Throwable $exception): bool
+    {
+        if (! $exception instanceof BadResponseException) {
+            return true;
+        }
+
+        $statusCode = $exception->getResponse()->getStatusCode();
+
+        return $statusCode >= 500 || $statusCode === 429;
     }
 
     /**

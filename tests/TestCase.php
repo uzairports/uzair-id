@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Promise\Create;
 use GuzzleHttp\Promise\PromiseInterface;
 use GuzzleHttp\Psr7\Response;
@@ -11,11 +12,13 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\SocialiteServiceProvider;
 use Mockery;
 use Orchestra\Testbench\TestCase as Orchestra;
+use Psr\Http\Message\RequestInterface;
 use RuntimeException;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Concerns\HasUzairToken;
@@ -31,6 +34,8 @@ abstract class TestCase extends Orchestra
         parent::setUp();
 
         DB::connection()->setTablePrefix('');
+
+        Http::preventStrayRequests();
 
         EnsureTokenStorageMatchesProvider::flushVerified();
         OauthToken::flushAccessTokensTables();
@@ -101,6 +106,13 @@ abstract class TestCase extends Orchestra
         $app['config']->set('uzairports.client_id', 'test-client-id');
         $app['config']->set('uzairports.client_secret', 'test-client-secret');
         $app['config']->set('uzairports.redirect', 'https://app.test/auth/callback');
+
+        // The driver talks to the identity provider through its own Guzzle
+        // client, which `Http::preventStrayRequests()` does not reach. A test
+        // that means to answer replaces this handler with its own.
+        $app['config']->set('uzairports.guzzle', ['handler' => HandlerStack::create(
+            fn (RequestInterface $request) => throw new RuntimeException("A test sent an unfaked request to [{$request->getUri()}].")
+        )]);
     }
 
     /**

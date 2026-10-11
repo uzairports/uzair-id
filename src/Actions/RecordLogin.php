@@ -48,16 +48,16 @@ class RecordLogin
     }
 
     /**
-     * A listener refusing the write — `save()` answering false — means this
-     * login must not be recorded, so it fails the sign-in instead of signing a
-     * browser in against a row that does not exist.
+     * The row is read and overwritten under the same row lock a renewal takes
+     * before it persists, so a refresh in flight on this login either lands
+     * first and has its grants surrendered here, or sees grants it did not
+     * spend and gives up its own. The surrender itself waits for the commit:
+     * it is a round trip to the identity provider and holds no lock.
      *
-     * The device columns are written as null, not skipped, while
-     * `record_device` is off: the row may hold what an earlier sign-in stored.
-     *
-     * @param  Authenticatable&Model  $user
+     * @param Authenticatable&Model $user
      *
      * @throws RuntimeException when a model listener refused the write
+     * @throws Throwable
      */
     private function write(
         Request $request,
@@ -66,7 +66,36 @@ class RecordLogin
         ?string $sessionId,
         int|string|null $accessTokenId,
     ): OauthToken {
-        $query = OauthToken::query()->where('user_id', $user->getKey());
+        [$token, $replacedAccessToken, $replacedRefreshToken] = (new OauthToken)->getConnection()->transaction(
+            fn (): array => $this->store($request, $uzairUser, $user, $sessionId, $accessTokenId)
+        );
+
+        $this->surrenderReplacedGrants($uzairUser, $replacedAccessToken, $replacedRefreshToken);
+
+        return $token;
+    }
+
+    /**
+     * A listener refusing the write — `save()` answering false — means this
+     * login must not be recorded, so it fails the sign-in instead of signing a
+     * browser in against a row that does not exist.
+     *
+     * The device columns are written as null, not skipped, while
+     * `record_device` is off: the row may hold what an earlier sign-in stored.
+     *
+     * @param  Authenticatable&Model  $user
+     * @return array{OauthToken, ?string, ?string}
+     *
+     * @throws RuntimeException when a model listener refused the write
+     */
+    private function store(
+        Request $request,
+        SocialiteUser $uzairUser,
+        Authenticatable $user,
+        ?string $sessionId,
+        int|string|null $accessTokenId,
+    ): array {
+        $query = OauthToken::query()->where('user_id', $user->getKey())->lockForUpdate();
 
         if ($accessTokenId !== null) {
             $token = $query->firstOrNew(['user_id' => $user->getKey(), 'personal_access_token_id' => $accessTokenId]);
@@ -107,9 +136,7 @@ class RecordLogin
             throw new RuntimeException('The UzAirports login was refused by a model listener and not recorded.');
         }
 
-        $this->surrenderReplacedGrants($uzairUser, $replacedAccessToken, $replacedRefreshToken);
-
-        return $token;
+        return [$token, $replacedAccessToken, $replacedRefreshToken];
     }
 
     /**

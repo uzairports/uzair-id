@@ -848,6 +848,67 @@ class RefreshAccessTokenTest extends TestCase
     }
 
     /**
+     * A 4xx that is not a refused grant is still the provider answering about
+     * one request. Counting it would let a single account with a malformed
+     * grant stop every login in the application from renewing.
+     */
+    public function test_a_request_the_provider_answered_as_malformed_does_not_leave_the_provider_alone(): void
+    {
+        $this->tripOnTheFirstFailure();
+
+        $first = $this->expiredToken('malformed-first');
+        $second = $this->expiredToken('malformed-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')
+            ->twice()
+            ->andThrow(new BadResponseException(
+                'Malformed request',
+                new Request('POST', 'https://sso.test/oauth/token'),
+                new Response(400, [], '{"error":"invalid_request"}'),
+            ));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($first));
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($second));
+
+        $this->assertModelExists($first);
+        $this->assertModelExists($second);
+    }
+
+    /**
+     * The browser signed in again on the same session while the exchange was
+     * out, and the row now holds that sign-in's grants. Saving over them would
+     * leave them honored with nothing pointing at them.
+     */
+    public function test_a_refresh_finishing_after_a_new_sign_in_keeps_the_new_sign_in(): void
+    {
+        $token = $this->expiredToken('signed-in-during-refresh');
+
+        Event::fake([UzairTokenRefreshed::class, UzairTokenRefreshFailed::class]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->with('old_refresh')->once()->andReturnUsing(function () use ($token): Token {
+            $this->winnerStores($token, 'signed_in_access', 'signed_in_refresh');
+
+            return new Token('new_access', 'new_refresh', 3600, []);
+        });
+        $provider->shouldReceive('logoutAsync')->with('new_access')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('new_refresh')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertTrue((new RefreshAccessToken)($token));
+
+        $stored = OauthToken::query()->findOrFail($token->id);
+        $this->assertSame('signed_in_access', $stored->readableAccessToken());
+        $this->assertSame('signed_in_refresh', $stored->readableRefreshToken());
+        $this->assertSame('signed_in_access', $token->readableAccessToken());
+        Event::assertNotDispatched(UzairTokenRefreshed::class);
+    }
+
+    /**
      * The cooldown answers from the row, so a login renewed just before the
      * outage is adopted rather than refused.
      */

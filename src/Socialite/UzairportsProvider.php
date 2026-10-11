@@ -48,14 +48,36 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      *
      * It is read from the configuration on each call so that the host can be
      * pointed at a staging instance without rebuilding the driver.
+     *
+     * @throws RuntimeException when the host is not HTTPS outside local and testing
      */
     public function getHost(): string
     {
         if (is_string($this->host) && $this->host !== '') {
-            return rtrim($this->host, '/');
+            return $this->secure(rtrim($this->host, '/'));
         }
 
-        return Uzair::host();
+        return $this->secure(Uzair::host());
+    }
+
+    /**
+     * Refuse an address the provider would be reached at in plain text.
+     *
+     * Every call carries a credential — the client secret, a grant, a bearer
+     * token — and the signing keys come back the same way, so whoever sits
+     * on a plain-text connection could read the secrets and forge ID and
+     * logout tokens. Plain HTTP is let through only in the `local` and
+     * `testing` environments, for an identity provider run on a laptop.
+     *
+     * @throws RuntimeException when the address is not HTTPS
+     */
+    private function secure(string $url): string
+    {
+        if (str_starts_with(strtolower($url), 'https://') || app()->environment(['local', 'testing'])) {
+            return $url;
+        }
+
+        throw new RuntimeException("UzAirports ID must be reached over HTTPS; [{$url}] is refused outside the local and testing environments.");
     }
 
     protected function getAuthUrl($state): string
@@ -67,14 +89,120 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      * @param  string|null  $state
      * @return array<string, mixed>
      */
-    protected function getCodeFields($state = null)
+    protected function getCodeFields($state = null): array
     {
         $fields = parent::getCodeFields($state);
 
-        if (Uzair::oidcEnabled() && ! $this->isStateless() && $this->request->hasSession()) {
-            $nonce = Str::random(40);
-            $this->request->session()->put('uzairid.nonce', $nonce);
-            $fields['nonce'] = $nonce;
+        if (! $this->isStateless() && $this->request->hasSession()) {
+            $session = $this->request->session();
+
+            if (is_string($state) && $state !== '') {
+                /** @var array<string, true> $states */
+                $states = (array) $session->get('uzairid.states', []);
+                $states[$state] = true;
+                if (count($states) > 10) {
+                    $states = array_slice($states, -10, null, true);
+                }
+                $session->put('uzairid.states', $states);
+
+                if ($this->usesPKCE()) {
+                    $verifier = $session->get('code_verifier');
+                    if (is_string($verifier) && $verifier !== '') {
+                        /** @var array<string, string> $verifiers */
+                        $verifiers = (array) $session->get('uzairid.code_verifiers', []);
+                        $verifiers[$state] = $verifier;
+                        if (count($verifiers) > 10) {
+                            $verifiers = array_slice($verifiers, -10, null, true);
+                        }
+                        $session->put('uzairid.code_verifiers', $verifiers);
+                    }
+                }
+            }
+
+            if (Uzair::oidcEnabled()) {
+                $nonce = Str::random(40);
+                $session->put('uzairid.nonce', $nonce);
+
+                /** @var array<string, string> $nonces */
+                $nonces = (array) $session->get('uzairid.nonces', []);
+                if (is_string($state) && $state !== '') {
+                    $nonces[$state] = $nonce;
+                } else {
+                    $nonces[] = $nonce;
+                }
+
+                if (count($nonces) > 10) {
+                    $nonces = array_slice($nonces, -10, null, true);
+                }
+
+                $session->put('uzairid.nonces', $nonces);
+                $fields['nonce'] = $nonce;
+            }
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Determine if the current request / session has a mismatching "state".
+     *
+     * Supports multiple concurrent handshake tabs by verifying against
+     * the active states pool as well as the primary session state.
+     */
+    protected function hasInvalidState()
+    {
+        if ($this->isStateless()) {
+            return false;
+        }
+
+        $session = $this->request->session();
+        $rawState = $this->request->input('state');
+        $currentState = is_string($rawState) ? $rawState : '';
+        if ($currentState === '') {
+            return true;
+        }
+
+        $legacyState = $session->pull('state');
+        if (is_string($legacyState) && hash_equals($legacyState, $currentState)) {
+            return false;
+        }
+
+        /** @var array<string, true> $states */
+        $states = (array) $session->get('uzairid.states', []);
+        if (isset($states[$currentState])) {
+            unset($states[$currentState]);
+            $session->put('uzairid.states', $states);
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Get the POST fields for the token request.
+     *
+     * Matches the code verifier to the handshake's state when multiple
+     * sign-in tabs are in flight.
+     *
+     * @param  string  $code
+     * @return array<string, array<array-key, mixed>|bool|float|int|string|null>
+     */
+    protected function getTokenFields($code): array
+    {
+        $fields = parent::getTokenFields($code);
+
+        if ($this->usesPKCE() && ! $this->isStateless() && $this->request->hasSession()) {
+            $rawState = $this->request->input('state');
+            $state = is_string($rawState) ? $rawState : '';
+            $session = $this->request->session();
+            /** @var array<string, string> $verifiers */
+            $verifiers = (array) $session->get('uzairid.code_verifiers', []);
+            if ($state !== '' && isset($verifiers[$state])) {
+                $fields['code_verifier'] = $verifiers[$state];
+                unset($verifiers[$state]);
+                $session->put('uzairid.code_verifiers', $verifiers);
+            }
         }
 
         return $fields;
@@ -248,11 +376,37 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         }
 
         if (! $this->isStateless() && $this->request->hasSession()) {
-            $expectedNonce = $this->request->session()->pull('uzairid.nonce');
-            $claimNonce = $claims['nonce'] ?? null;
+            $session = $this->request->session();
+            $legacyNonce = $session->pull('uzairid.nonce');
 
-            if (! is_string($expectedNonce) || $expectedNonce === '' || ! is_string($claimNonce) || ! hash_equals($expectedNonce, $claimNonce)) {
+            /** @var array<string, string> $nonces */
+            $nonces = (array) $session->get('uzairid.nonces', []);
+            $claimNonce = $claims['nonce'] ?? null;
+            $state = $this->request->input('state');
+            $matchedKey = null;
+
+            if (is_string($claimNonce) && $claimNonce !== '') {
+                if (is_string($state) && isset($nonces[$state]) && hash_equals($nonces[$state], $claimNonce)) {
+                    $matchedKey = $state;
+                } else {
+                    foreach ($nonces as $key => $storedNonce) {
+                        if (hash_equals($storedNonce, $claimNonce)) {
+                            $matchedKey = $key;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            $matched = $matchedKey !== null || (is_string($legacyNonce) && is_string($claimNonce) && hash_equals($legacyNonce, $claimNonce));
+
+            if (! $matched) {
                 throw new RuntimeException('The UzAirports ID token nonce is missing or does not match the session nonce.');
+            }
+
+            if ($matchedKey !== null) {
+                unset($nonces[$matchedKey]);
+                $session->put('uzairid.nonces', $nonces);
             }
         }
 
@@ -263,6 +417,18 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
             'sid' => is_string($sid) && $sid !== '' ? $sid : null,
             'id_token' => $idToken,
         ]);
+    }
+
+    /**
+     * Where the profile behind an access token is read.
+     *
+     * @throws RuntimeException when the address is not HTTPS outside local and testing
+     */
+    public function userUrl(): string
+    {
+        $endpoint = config('uzairports.user_endpoint', '/api/user');
+
+        return $this->absoluteUrl(is_string($endpoint) && $endpoint !== '' ? $endpoint : '/api/user');
     }
 
     /**
@@ -431,13 +597,8 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     protected function getUserByToken($token): array
     {
-        $endpoint = config('uzairports.user_endpoint', '/api/user');
-        $url = is_string($endpoint) && $endpoint !== ''
-            ? $this->absoluteUrl($endpoint)
-            : $this->getHost().'/api/user';
-
         $response = $this->getHttpClient()->get(
-            $url, $this->getRequestOptions((string) $token)
+            $this->userUrl(), $this->getRequestOptions((string) $token)
         );
 
         if ($response->getStatusCode() < 200 || $response->getStatusCode() >= 300) {
@@ -572,15 +733,17 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
 
     /**
      * Resolve a configured endpoint, which may be a full URL or a path on the host.
+     *
+     * @throws RuntimeException when the address is not HTTPS outside local and testing
      */
     private function absoluteUrl(string $endpoint): string
     {
         if ($this->host === null) {
-            return Uzair::url($endpoint);
+            return $this->secure(Uzair::url($endpoint));
         }
 
         if (str_starts_with($endpoint, 'http://') || str_starts_with($endpoint, 'https://')) {
-            return $endpoint;
+            return $this->secure($endpoint);
         }
 
         return $this->getHost().'/'.ltrim($endpoint, '/');
