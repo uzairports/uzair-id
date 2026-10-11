@@ -225,11 +225,15 @@ class VerifyIdentityToken
     }
 
     /**
-     * Say once per process which algorithms `oidc.algorithms` names in vain.
+     * Say once an hour which algorithms `oidc.algorithms` names in vain.
      *
      * This runs on every verification, and the setting does not change
      * between them; a line per sign-in and per back-channel logout said
-     * nothing the first one had not. A different set is reported on its own.
+     * nothing the first one had not. A process-wide register alone did not
+     * stop that: PHP-FPM starts every request afresh, and Octane flushes the
+     * register after each one. So the shared cache holds the hour, and the
+     * register only spares this process the cache read. A cache that cannot
+     * answer lets the line through. A different set is reported on its own.
      *
      * @param  list<string>  $refused
      */
@@ -242,6 +246,14 @@ class VerifyIdentityToken
         }
 
         self::$reportedIgnoredAlgorithms[$key] = true;
+
+        try {
+            if (! Cache::store()->add('uzairid:ignored-algorithms:'.hash('sha256', $key), true, 3600)) {
+                return;
+            }
+        } catch (Throwable) {
+            // Without the cache the line goes out, as it would have before.
+        }
 
         Log::warning('UzAirports ID tokens are only verified with asymmetric algorithms; the rest of oidc.algorithms is ignored.', [
             'ignored' => $refused,

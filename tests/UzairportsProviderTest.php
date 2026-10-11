@@ -8,6 +8,7 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
@@ -617,9 +618,15 @@ class UzairportsProviderTest extends TestCase
      * ones ignored is said once per process for each set — a line per sign-in
      * said nothing the first had not. Flushing the state says it again.
      */
+    /**
+     * Once per set and per hour across processes: an Octane worker flushes its
+     * register after every request and PHP-FPM never keeps one, so the shared
+     * cache is what stops a line per sign-in.
+     */
     public function test_ignored_algorithms_are_reported_once_per_set(): void
     {
         VerifyIdentityToken::flushAlgorithmWarnings();
+        Cache::flush();
 
         Log::shouldReceive('warning')
             ->with(Mockery::pattern('/asymmetric/'), ['ignored' => ['HS256']])
@@ -635,9 +642,16 @@ class UzairportsProviderTest extends TestCase
         config(['uzairports.oidc.algorithms' => ['HS512', 'RS256']]);
         VerifyIdentityToken::allowedAlgorithms();
 
+        // The next request on a worker that flushed its state: still quiet.
         Uzair::flushState();
 
         config(['uzairports.oidc.algorithms' => ['HS256', 'RS256']]);
+        VerifyIdentityToken::allowedAlgorithms();
+
+        // The hour lapsed: said again.
+        Uzair::flushState();
+        Cache::flush();
+
         VerifyIdentityToken::allowedAlgorithms();
     }
 
