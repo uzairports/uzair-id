@@ -229,6 +229,32 @@ class Uzair
         EnsureTokenStorageMatchesProvider::flushVerified();
     }
 
+    public const string DEFAULT_HOST = 'https://my.uzairports.com';
+
+    /**
+     * The configured identity provider host without a trailing slash.
+     */
+    public static function host(): string
+    {
+        $host = config('uzairports.host');
+
+        return rtrim(is_string($host) && $host !== '' ? $host : self::DEFAULT_HOST, '/');
+    }
+
+    /**
+     * Resolve an endpoint on the identity provider.
+     *
+     * Accepts a full URL or a path on the configured host.
+     */
+    public static function url(string $endpoint): string
+    {
+        if (str_starts_with($endpoint, 'http://') || str_starts_with($endpoint, 'https://')) {
+            return $endpoint;
+        }
+
+        return self::host().'/'.ltrim($endpoint, '/');
+    }
+
     /**
      * Where a browser is sent to sign in through UzAirports ID.
      *

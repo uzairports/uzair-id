@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Prunable;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Events\ModelsPruned;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
@@ -174,8 +175,9 @@ class OauthToken extends Model
      * - A sessionless login goes only when it can no longer be spent or renewed:
      *   no refresh token and an expired or unknown access token. One holding a
      *   refresh token is ended deliberately, never on a timer.
-     * - A mobile login goes once its Sanctum token is gone. The subquery assumes
-     *   both tables live on the same connection.
+     * - A mobile login goes once its Sanctum token is gone or expired, by its
+     *   own expiry or Sanctum's global age limit. The subquery assumes both
+     *   tables live on the same connection.
      *
      * The measures form one bracketed group because callers narrow the query
      * further (`deleteForPruning()` adds `whereKey()`); do not flatten it. Rows
@@ -219,24 +221,39 @@ class OauthToken extends Model
                         )
                 )
                 ->when($accessToken, fn (Builder $query, Model $accessToken) => $query->orWhere(
-                    fn (Builder $orphaned) => $this->withoutItsAccessToken($orphaned, $accessToken)
+                    fn (Builder $orphaned) => $this->withoutUsableAccessToken($orphaned, $accessToken)
                 ))
         );
     }
 
     /**
-     * Narrow to the logins whose Sanctum token is no longer there.
+     * Narrow to logins whose Sanctum token is missing or past either expiry.
+     * A token without an individual expiry still has Sanctum's global age
+     * limit, when configured. These comparisons follow Sanctum's guard.
      *
      * @param  Builder<covariant OauthToken>  $query
      */
-    private function withoutItsAccessToken(Builder $query, Model $accessToken): void
+    private function withoutUsableAccessToken(Builder $query, Model $accessToken): void
     {
+        $now = now();
+        $minutes = config('sanctum.expiration');
+        $createdAfter = is_numeric($minutes) && (int) $minutes > 0
+            ? $now->copy()->subMinutes((int) $minutes)
+            : null;
+
         $query
             ->whereNotNull('personal_access_token_id')
             ->whereNotExists(
-                fn ($tokens) => $tokens
+                fn (QueryBuilder $tokens) => $tokens
                     ->from($accessToken->getTable())
                     ->whereColumn($accessToken->getQualifiedKeyName(), $this->qualifyColumn('personal_access_token_id'))
+                    ->where(fn (QueryBuilder $unexpired) => $unexpired
+                        ->whereNull($accessToken->qualifyColumn('expires_at'))
+                        ->orWhere($accessToken->qualifyColumn('expires_at'), '>=', $now)
+                    )
+                    ->when($createdAfter !== null, fn (QueryBuilder $recent) => $recent
+                        ->where($accessToken->qualifyColumn('created_at'), '>', $createdAfter)
+                    )
             );
     }
 

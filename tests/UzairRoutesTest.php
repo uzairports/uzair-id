@@ -165,6 +165,25 @@ class UzairRoutesTest extends TestCase
         $this->assertNull($this->findRoute('sso/logout-all'));
     }
 
+    public function test_host_falls_back_to_default_and_trims_trailing_slash(): void
+    {
+        config(['uzairports.host' => null]);
+        $this->assertSame('https://my.uzairports.com', Uzair::host());
+
+        config(['uzairports.host' => 'https://staging.uzairports.com/']);
+        $this->assertSame('https://staging.uzairports.com', Uzair::host());
+    }
+
+    public function test_url_resolves_relative_and_absolute_endpoints(): void
+    {
+        config(['uzairports.host' => 'https://my.uzairports.com']);
+
+        $this->assertSame('https://my.uzairports.com/api/user', Uzair::url('/api/user'));
+        $this->assertSame('https://my.uzairports.com/api/user', Uzair::url('api/user'));
+        $this->assertSame('https://other.domain.com/user', Uzair::url('https://other.domain.com/user'));
+        $this->assertSame('http://insecure.domain.com/user', Uzair::url('http://insecure.domain.com/user'));
+    }
+
     private function routeFor(string $uri): RegisteredRoute
     {
         return $this->findRoute($uri) ?? $this->fail("No route is registered for [{$uri}].");

@@ -72,8 +72,8 @@ UZAIR_API_REDIRECT_URIS=uzapp://auth/callback
 
 | Метод | URI | Имя | Ответ |
 | --- | --- | --- | --- |
-| `POST` | `/api/auth/token` | `uzair.api.token` | `200 {token, token_type, expires_at}`, `422` при неверных полях, `401` если вход не удался |
-| `POST` | `/api/auth/refresh` | `uzair.api.refresh` | `200 {token, token_type, expires_at}` — новый токен Sanctum взамен присланного, `401` если вход завершён или его больше нечем продлить, `503` если UzAirports ID временно недоступен |
+| `POST` | `/api/auth/token` | `uzair.api.token` | `200 {token, token_type, expires_at}`, `422` при неверных полях, `401` при отказе авторизации, `503` при сбое провайдера или сервера |
+| `POST` | `/api/auth/refresh` | `uzair.api.refresh` | `200 {token, token_type, expires_at}` — новый токен Sanctum взамен присланного, `401` если вход завершён или его больше нечем продлить, `503` при сбое провайдера или сервера |
 | `POST` | `/api/auth/logout` | `uzair.api.logout` | `204` — завершает вход этого устройства |
 | `POST` | `/api/auth/logout-device/{token}` | `uzair.api.logoutDevice` | `204` — завершает один вход аккаунта по `id` строки |
 
@@ -82,6 +82,13 @@ SSO истекает в пределах `refresh_leeway`, пакет снача
 новый токен Sanctum. Старый токен при этом удаляется, поэтому клиент должен сразу заменить
 его тем, что пришёл в ответе. Необязательное поле `device_name` задаёт имя нового токена.
 Без него имя угадывается по user-agent входа.
+
+Если сохранение нового токена, его связи со входом или удаление старого токена не удалось, ротация откатывается:
+старый токен остаётся, сервер отвечает `503`, и клиент может повторить `refresh`.
+
+`expires_at` в ответах `token` и `refresh` учитывает оба ограничения: срок конкретного
+токена (`uzairports.api.token_expiration`) и общий срок Sanctum (`sanctum.expiration`).
+Если заданы оба, возвращается более ранний момент истечения; если ни один — `null`.
 
 Отправляйте `Accept: application/json` — так ошибки валидации приходят как JSON. Маршруты
 стоят за тем же лимитером `uzairid`, что и браузерные. Параметры `Uzair::apiRoutes()` те же,
@@ -94,9 +101,11 @@ SSO истекает в пределах `refresh_leeway`, пакет снача
 - Завершение входа любым путём — выход, `logoutDevice` из браузера, `single_session`,
   уборка — удаляет и токен Sanctum. Иначе приложение продолжало бы проходить маршруты без
   `uzair.token`.
-- Если токен Sanctum удалён в обход пакета (истёк по `sanctum.expiration`,
-  `sanctum:prune-expired`, `$user->tokens()->delete()`), строку входа заберёт `uzair:prune` и
-  отдаст её грант SSO.
+- Если токен Sanctum истёк по своему `expires_at` или общему `sanctum.expiration`,
+  `uzair:prune` удалит и токен, и строку входа и отдаст её гранты SSO. Предварительный
+  запуск `sanctum:prune-expired` для этого не нужен.
+- Если токен Sanctum удалён в обход пакета (`sanctum:prune-expired`,
+  `$user->tokens()->delete()`), строку входа также заберёт `uzair:prune` и отдаст её гранты SSO.
 
 Токены Sanctum, которые приложение выдаёт само (например, вход по паролю), строки
 `oauth_tokens` не имеют. Для них остаётся правило `Uzair::treatRequestsAsLocalWhen()` — см.

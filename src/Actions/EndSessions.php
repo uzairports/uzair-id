@@ -224,12 +224,15 @@ class EndSessions
      * Delete the Sanctum tokens the ended logins were issued under.
      *
      * Deleted by key in one statement through the application's Sanctum token
-     * model; a no-op without Sanctum. Failures are reported, never raised, so
-     * revocation is not skipped.
+     * model; a no-op without Sanctum. By default failures are reported so
+     * remote revocation is not skipped. Rotation asks for failures to raise
+     * instead, so issuing a replacement cannot commit with the old token live.
      *
      * @param  array<array-key, mixed>  $accessTokenIds
+     *
+     * @throws Throwable when deletion fails and $throwOnFailure is true
      */
-    public function dropAccessTokens(array $accessTokenIds): void
+    public function dropAccessTokens(array $accessTokenIds, bool $throwOnFailure = false): void
     {
         $accessTokenIds = array_values(array_unique(array_filter(
             $accessTokenIds,
@@ -245,6 +248,10 @@ class EndSessions
         try {
             $model::query()->whereKey($accessTokenIds)->delete();
         } catch (Throwable $e) {
+            if ($throwOnFailure) {
+                throw $e;
+            }
+
             Log::warning('Failed to delete the Sanctum token of an ended UzAirports login.', [
                 'exception_class' => $e::class,
             ]);

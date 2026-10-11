@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid\Http\Controllers;
 
 use Carbon\CarbonInterface;
+use GuzzleHttp\Exception\BadResponseException;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
@@ -106,7 +107,11 @@ class UzairApiAuthController extends UzairController
                 'exception_class' => $e::class,
             ]);
 
-            return new JsonResponse(['message' => __('uzairid::messages.authentication_failed')], 401);
+            if ($this->authenticationWasRefused($e)) {
+                return new JsonResponse(['message' => __('uzairid::messages.authentication_failed')], 401);
+            }
+
+            return new JsonResponse(['message' => __('uzairid::messages.temporarily_unavailable')], 503);
         }
 
         return new JsonResponse([
@@ -184,13 +189,19 @@ class UzairApiAuthController extends UzairController
 
                     $newKey = $newAccessToken->accessToken->getKey();
 
-                    $lockedLogin->forceFill(['personal_access_token_id' => $newKey])->save();
+                    if (! is_int($newKey) && ! is_string($newKey)) {
+                        throw new RuntimeException('The issued Sanctum token has no key a login can be filed under.');
+                    }
 
-                    $endSessions->dropAccessTokens([$accessTokenId]);
+                    if (! $lockedLogin->forceFill(['personal_access_token_id' => $newKey])->save()) {
+                        throw new RuntimeException('The UzAirports login rotation was refused by a model listener and not recorded.');
+                    }
+
+                    $endSessions->dropAccessTokens([$accessTokenId], throwOnFailure: true);
 
                     return [
                         'plainTextToken' => $newAccessToken->plainTextToken,
-                        'expiresAt' => $expiresAt ?? $this->globalExpiry($newAccessToken),
+                        'expiresAt' => $this->effectiveExpiry($newAccessToken),
                     ];
                 });
         } catch (AuthenticationException $e) {
@@ -208,6 +219,37 @@ class UzairApiAuthController extends UzairController
             'token_type' => 'Bearer',
             'expires_at' => $newExpiresAt?->toIso8601String(),
         ]);
+    }
+
+    /**
+     * Distinguish a refused identity or grant from an outage or a broken client
+     * registration. Only an explicit refusal is answered as unauthenticated.
+     */
+    private function authenticationWasRefused(Throwable $exception): bool
+    {
+        if ($exception instanceof AuthenticationException) {
+            return true;
+        }
+
+        if (! $exception instanceof BadResponseException) {
+            return false;
+        }
+
+        $response = $exception->getResponse();
+        $status = $response->getStatusCode();
+
+        if (! in_array($status, [400, 401, 403], true)) {
+            return false;
+        }
+
+        $body = json_decode((string) $response->getBody(), true);
+        $error = is_array($body) ? ($body['error'] ?? null) : null;
+
+        if ($error === null) {
+            return $status === 401 || $status === 403;
+        }
+
+        return in_array($error, ['invalid_grant', 'invalid_token', 'access_denied'], true);
     }
 
     /**
@@ -309,7 +351,7 @@ class UzairApiAuthController extends UzairController
             return [
                 'login' => $login,
                 'plainTextToken' => $accessToken->plainTextToken,
-                'expiresAt' => $expiresAt ?? $this->globalExpiry($accessToken),
+                'expiresAt' => $this->effectiveExpiry($accessToken),
             ];
         });
     }
@@ -342,18 +384,22 @@ class UzairApiAuthController extends UzairController
     }
 
     /**
-     * When `sanctum.expiration` retires a token issued without its own expiry,
-     * so the client is told either way. Null where nothing retires it.
+     * When Sanctum stops accepting the token: the earlier of its own expiry
+     * and the global age limit. Null where neither retires it.
      */
-    private function globalExpiry(NewAccessToken $accessToken): ?CarbonInterface
+    private function effectiveExpiry(NewAccessToken $accessToken): ?CarbonInterface
     {
+        $expiresAt = $accessToken->accessToken->getAttribute('expires_at');
+        $expiresAt = $expiresAt instanceof CarbonInterface ? $expiresAt : null;
         $minutes = config('sanctum.expiration');
         $createdAt = $accessToken->accessToken->getAttribute('created_at');
 
         if (! is_numeric($minutes) || (int) $minutes <= 0 || ! $createdAt instanceof CarbonInterface) {
-            return null;
+            return $expiresAt;
         }
 
-        return $createdAt->copy()->addMinutes((int) $minutes);
+        $globalExpiry = $createdAt->copy()->addMinutes((int) $minutes);
+
+        return $expiresAt === null || $globalExpiry->lessThan($expiresAt) ? $globalExpiry : $expiresAt;
     }
 }

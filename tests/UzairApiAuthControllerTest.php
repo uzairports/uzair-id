@@ -3,11 +3,19 @@
 namespace Uzairports\Uzairid\Tests;
 
 use Carbon\CarbonInterface;
+use GuzzleHttp\Exception\BadResponseException;
+use GuzzleHttp\Exception\ConnectException;
+use GuzzleHttp\Psr7\Request as PsrRequest;
+use GuzzleHttp\Psr7\Response as PsrResponse;
+use Illuminate\Auth\AuthenticationException;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Router;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\TestResponse;
 use Laravel\Sanctum\HasApiTokens;
 use Laravel\Sanctum\PersonalAccessToken;
@@ -16,6 +24,7 @@ use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use Mockery;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
 use Uzairports\Uzairid\Actions\EndSessions;
@@ -133,6 +142,31 @@ class UzairApiAuthControllerTest extends TestCase
             ->assertJsonPath('expires_at', now()->addMinutes(30)->toIso8601String());
     }
 
+    #[DataProvider('competingExpirations')]
+    public function test_the_issued_token_reports_the_earlier_of_its_own_and_sanctums_expiration(int $tokenMinutes, int $sanctumMinutes): void
+    {
+        $this->freezeSecond();
+        config(['uzairports.api.token_expiration' => $tokenMinutes, 'sanctum.expiration' => $sanctumMinutes]);
+        $this->fakeExchange(['id' => '7030']);
+
+        $response = $this->postJson(route('uzair.api.token'), $this->exchange());
+
+        $response->assertOk()->assertJsonPath('expires_at', now()->addMinutes(30)->toIso8601String());
+        $this->assertNotNull(PersonalAccessToken::findToken($this->issuedToken($response)));
+        $this->assertSame(1, OauthToken::query()->count());
+    }
+
+    /**
+     * @return array<string, array{int, int}>
+     */
+    public static function competingExpirations(): array
+    {
+        return [
+            'Sanctum expires first' => [60, 30],
+            'the token expires first' => [30, 60],
+        ];
+    }
+
     public function test_a_verifier_is_not_demanded_of_a_client_where_api_pkce_is_off(): void
     {
         config(['uzairports.pkce' => true, 'uzairports.api.pkce' => false]);
@@ -185,7 +219,9 @@ class UzairApiAuthControllerTest extends TestCase
 
         OauthToken::creating(fn (): bool => false);
 
-        $this->postJson(route('uzair.api.token'), $this->exchange())->assertUnauthorized();
+        $this->postJson(route('uzair.api.token'), $this->exchange())
+            ->assertServiceUnavailable()
+            ->assertExactJson(['message' => __('uzairid::messages.temporarily_unavailable')]);
 
         $this->assertSame(0, PersonalAccessToken::query()->count());
         $this->assertSame(0, OauthToken::query()->count());
@@ -201,8 +237,99 @@ class UzairApiAuthControllerTest extends TestCase
             throw new RuntimeException('A listener of the application failed.');
         });
 
-        $this->postJson(route('uzair.api.token'), $this->exchange())->assertUnauthorized();
+        $this->postJson(route('uzair.api.token'), $this->exchange())
+            ->assertServiceUnavailable()
+            ->assertExactJson(['message' => __('uzairid::messages.temporarily_unavailable')]);
 
+        $this->assertSame(0, PersonalAccessToken::query()->count());
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    #[DataProvider('providerFailures')]
+    public function test_the_exchange_distinguishes_an_unauthorized_grant_from_an_unavailable_provider(int $providerStatus, ?string $oauthError, int $expectedStatus): void
+    {
+        Event::fake([UzairAuthenticated::class]);
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('userFromCode')->once()->andThrow(new BadResponseException(
+            'The provider refused the exchange.',
+            new PsrRequest('POST', 'https://sso.test/oauth/token'),
+            new PsrResponse($providerStatus, [], json_encode(['error' => $oauthError], JSON_THROW_ON_ERROR)),
+        ));
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $response = $this->postJson(route('uzair.api.token'), $this->exchange());
+
+        $response->assertStatus($expectedStatus)->assertExactJson([
+            'message' => $expectedStatus === 401
+                ? __('uzairid::messages.authentication_failed')
+                : __('uzairid::messages.temporarily_unavailable'),
+        ]);
+        $this->assertSame(0, SanctumUser::query()->count());
+        $this->assertSame(0, PersonalAccessToken::query()->count());
+        $this->assertSame(0, OauthToken::query()->count());
+        Event::assertNotDispatched(UzairAuthenticated::class);
+    }
+
+    /**
+     * @return array<string, array{int, string|null, int}>
+     */
+    public static function providerFailures(): array
+    {
+        return [
+            'invalid grant returns 401' => [400, 'invalid_grant', 401],
+            'invalid token returns 401' => [401, 'invalid_token', 401],
+            'access denied returns 401' => [403, 'access_denied', 401],
+            'unauthorized without an OAuth error returns 401' => [401, null, 401],
+            'invalid client returns 503' => [401, 'invalid_client', 503],
+            'unauthorized client returns 503' => [400, 'unauthorized_client', 503],
+            'invalid request returns 503' => [400, 'invalid_request', 503],
+            'rate limited returns 503' => [429, null, 503],
+            'provider outage returns 503' => [503, null, 503],
+            'server failure with a grant error returns 503' => [500, 'invalid_grant', 503],
+        ];
+    }
+
+    public function test_a_provider_timeout_returns_503_without_creating_a_login(): void
+    {
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('userFromCode')->once()->andThrow(new ConnectException(
+            'The connection timed out.', new PsrRequest('POST', 'https://sso.test/oauth/token'),
+        ));
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $response = $this->postJson(route('uzair.api.token'), $this->exchange());
+
+        $response->assertServiceUnavailable()->assertExactJson(['message' => __('uzairid::messages.temporarily_unavailable')]);
+        $this->assertSame(0, PersonalAccessToken::query()->count());
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    public function test_a_refused_account_write_returns_503_and_surrenders_the_issued_grants(): void
+    {
+        Schema::table('users', function (Blueprint $table): void {
+            $table->string('required_by_application');
+        });
+        $provider = $this->fakeExchange(['id' => '7031', 'token' => 'sso-access', 'refreshToken' => 'sso-refresh']);
+        $provider->shouldReceive('logoutAsync')->with('sso-access')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('sso-refresh')->once()->andReturn($this->revoked());
+
+        $response = $this->postJson(route('uzair.api.token'), $this->exchange());
+
+        $response->assertServiceUnavailable()->assertExactJson(['message' => __('uzairid::messages.temporarily_unavailable')]);
+        $this->assertSame(0, SanctumUser::query()->count());
+        $this->assertSame(0, PersonalAccessToken::query()->count());
+        $this->assertSame(0, OauthToken::query()->count());
+    }
+
+    public function test_an_explicit_authentication_refusal_returns_401_without_creating_a_login(): void
+    {
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('userFromCode')->once()->andThrow(new AuthenticationException);
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $response = $this->postJson(route('uzair.api.token'), $this->exchange());
+
+        $response->assertUnauthorized()->assertExactJson(['message' => __('uzairid::messages.authentication_failed')]);
         $this->assertSame(0, PersonalAccessToken::query()->count());
         $this->assertSame(0, OauthToken::query()->count());
     }
@@ -302,6 +429,109 @@ class UzairApiAuthControllerTest extends TestCase
         $this->assertModelExists($kept);
     }
 
+    #[DataProvider('expiredSanctumTokens')]
+    public function test_pruning_an_expired_sanctum_token_removes_its_login_and_surrenders_its_grants(?int $expiresInMinutes, ?int $globalMinutes, int $ageMinutes): void
+    {
+        $this->freezeSecond();
+        config(['sanctum.expiration' => $globalMinutes]);
+        $user = SanctumUser::query()->create(['uzair_id' => 'expired-mobile']);
+        [, $expired] = $this->phoneLogin($user, 'expired', 'expired-access');
+        [, $kept] = $this->phoneLogin($user, 'kept', 'kept-access');
+        PersonalAccessToken::query()->whereKey($expired->personal_access_token_id)->update([
+            'created_at' => now()->subMinutes($ageMinutes),
+            'expires_at' => $expiresInMinutes === null ? null : now()->addMinutes($expiresInMinutes),
+        ]);
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->with('expired-access')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('sso-refresh')->once()->andReturn($this->revoked());
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertSame(1, (new OauthToken)->pruneAll());
+
+        $this->assertModelMissing($expired);
+        $this->assertDatabaseMissing('personal_access_tokens', ['id' => $expired->personal_access_token_id]);
+        $this->assertModelExists($kept);
+        $this->assertDatabaseHas('personal_access_tokens', ['id' => $kept->personal_access_token_id]);
+    }
+
+    /**
+     * @return array<string, array{int|null, int|null, int}>
+     */
+    public static function expiredSanctumTokens(): array
+    {
+        return [
+            'individual expiry' => [-1, null, 1],
+            'global expiry despite later individual expiry' => [30, 60, 61],
+            'exact global age limit without individual expiry' => [null, 60, 60],
+            'individual expiry before global expiry' => [-1, 60, 1],
+        ];
+    }
+
+    #[DataProvider('liveSanctumTokens')]
+    public function test_pruning_preserves_a_mobile_login_whose_sanctum_token_has_not_expired(?int $expiresInMinutes, ?int $globalMinutes, int $ageMinutes): void
+    {
+        $this->freezeSecond();
+        config(['sanctum.expiration' => $globalMinutes]);
+        Socialite::shouldReceive('driver')->never();
+        $user = SanctumUser::query()->create(['uzair_id' => 'live-mobile']);
+        [, $login] = $this->phoneLogin($user, 'phone');
+        PersonalAccessToken::query()->whereKey($login->personal_access_token_id)->update([
+            'created_at' => now()->subMinutes($ageMinutes),
+            'expires_at' => $expiresInMinutes === null ? null : now()->addMinutes($expiresInMinutes),
+        ]);
+
+        $this->assertSame(0, (new OauthToken)->pruneAll());
+
+        $this->assertModelExists($login);
+        $this->assertDatabaseHas('personal_access_tokens', ['id' => $login->personal_access_token_id]);
+    }
+
+    /**
+     * @return array<string, array{int|null, int|null, int}>
+     */
+    public static function liveSanctumTokens(): array
+    {
+        return [
+            'no expiration limits' => [null, null, 1440],
+            'global expiration disabled' => [null, 0, 1440],
+            'future individual expiry' => [30, null, 1440],
+            'individual expiry is not past yet' => [0, null, 1],
+            'global age limit not reached' => [null, 60, 59],
+        ];
+    }
+
+    public function test_pruning_preserves_a_mobile_login_rotated_after_its_chunk_was_read(): void
+    {
+        $this->freezeSecond();
+        Socialite::shouldReceive('driver')->never();
+        $user = SanctumUser::query()->create(['uzair_id' => 'rotated-during-pruning']);
+        [, $login] = $this->phoneLogin($user, 'phone');
+        PersonalAccessToken::query()->whereKey($login->personal_access_token_id)->update(['expires_at' => now()->subMinute()]);
+        $newToken = $user->createToken('renewed-phone');
+        $rotated = false;
+
+        OauthToken::retrieved(function (OauthToken $snapshot) use (&$rotated, $login, $newToken): void {
+            if ($rotated || $snapshot->id !== $login->id) {
+                return;
+            }
+
+            $rotated = true;
+            OauthToken::query()->whereKey($login->id)->update(['personal_access_token_id' => $newToken->accessToken->getKey()]);
+            PersonalAccessToken::query()->whereKey($login->personal_access_token_id)->delete();
+        });
+
+        try {
+            $this->assertSame(0, (new OauthToken)->pruneAll());
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertTrue($rotated);
+        $this->assertDatabaseHas('oauth_tokens', ['id' => $login->id, 'personal_access_token_id' => $newToken->accessToken->getKey()]);
+        $this->assertModelExists($newToken->accessToken);
+    }
+
     public function test_the_sanctum_token_and_the_session_tokens_relation_do_not_collide(): void
     {
         $user = SanctumUser::query()->create(['uzair_id' => '7007']);
@@ -334,6 +564,68 @@ class UzairApiAuthControllerTest extends TestCase
     public function test_refresh_endpoint_requires_authentication(): void
     {
         $this->postJson(route('uzair.api.refresh'))->assertUnauthorized();
+    }
+
+    public function test_refresh_returns_503_and_keeps_the_previous_token_when_a_listener_refuses_the_login_write(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7032']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+        OauthToken::saving(fn (): bool => false);
+
+        $response = $this->withToken($plainTextToken)->postJson(route('uzair.api.refresh'));
+
+        $response->assertServiceUnavailable()->assertExactJson(['message' => __('uzairid::messages.temporarily_unavailable')]);
+        $this->assertDatabaseHas('oauth_tokens', ['id' => $login->id, 'personal_access_token_id' => $login->personal_access_token_id]);
+        $this->assertNotNull(PersonalAccessToken::findToken($plainTextToken));
+        $this->assertSame(1, PersonalAccessToken::query()->count());
+    }
+
+    public function test_refresh_returns_503_and_keeps_the_previous_token_when_a_listener_refuses_the_sanctum_token(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7033']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+        PersonalAccessToken::creating(fn (): bool => false);
+
+        $response = $this->withToken($plainTextToken)->postJson(route('uzair.api.refresh'));
+
+        $response->assertServiceUnavailable()->assertExactJson(['message' => __('uzairid::messages.temporarily_unavailable')]);
+        $this->assertDatabaseHas('oauth_tokens', ['id' => $login->id, 'personal_access_token_id' => $login->personal_access_token_id]);
+        $this->assertNotNull(PersonalAccessToken::findToken($plainTextToken));
+        $this->assertSame(1, PersonalAccessToken::query()->count());
+    }
+
+    public function test_refresh_returns_503_and_rolls_back_when_the_old_sanctum_token_cannot_be_deleted(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => 'failed-token-deletion']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+        Schema::create('token_references', function (Blueprint $table): void {
+            $table->foreignId('personal_access_token_id')->constrained('personal_access_tokens')->restrictOnDelete();
+        });
+        DB::table('token_references')->insert(['personal_access_token_id' => $login->personal_access_token_id]);
+
+        $response = $this->withToken($plainTextToken)->postJson(route('uzair.api.refresh'));
+
+        $response->assertServiceUnavailable()->assertExactJson(['message' => __('uzairid::messages.temporarily_unavailable')]);
+        $this->assertDatabaseHas('oauth_tokens', ['id' => $login->id, 'personal_access_token_id' => $login->personal_access_token_id]);
+        $this->assertNotNull(PersonalAccessToken::findToken($plainTextToken));
+        $this->assertDatabaseCount('personal_access_tokens', 1);
+    }
+
+    #[DataProvider('competingExpirations')]
+    public function test_refresh_reports_the_earlier_of_the_new_token_and_sanctums_expiration(int $tokenMinutes, int $sanctumMinutes): void
+    {
+        $this->freezeSecond();
+        config(['uzairports.api.token_expiration' => $tokenMinutes, 'sanctum.expiration' => $sanctumMinutes]);
+        $user = SanctumUser::query()->create(['uzair_id' => '7034']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+
+        $response = $this->withToken($plainTextToken)->postJson(route('uzair.api.refresh'));
+
+        $response->assertOk()->assertJsonPath('expires_at', now()->addMinutes(30)->toIso8601String());
+        $accessToken = PersonalAccessToken::findToken($this->issuedToken($response));
+        $this->assertNotNull($accessToken);
+        $this->assertSame($accessToken->getKey(), $login->fresh()?->personal_access_token_id);
+        $this->assertNull(PersonalAccessToken::findToken($plainTextToken));
     }
 
     public function test_mobile_login_with_expired_access_and_no_refresh_is_not_pruned_while_sanctum_token_exists(): void

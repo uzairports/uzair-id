@@ -23,8 +23,6 @@ use Uzairports\Uzairid\Uzair;
 
 class UzairportsProvider extends AbstractProvider implements ProviderInterface
 {
-    private const string DEFAULT_HOST = 'https://my.uzairports.com';
-
     /** @var array<array-key, string> */
     protected $scopes = [];
 
@@ -57,9 +55,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
             return rtrim($this->host, '/');
         }
 
-        $host = config('uzairports.host');
-
-        return rtrim(is_string($host) && $host !== '' ? $host : self::DEFAULT_HOST, '/');
+        return Uzair::host();
     }
 
     protected function getAuthUrl($state): string
@@ -579,6 +575,10 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      */
     private function absoluteUrl(string $endpoint): string
     {
+        if ($this->host === null) {
+            return Uzair::url($endpoint);
+        }
+
         if (str_starts_with($endpoint, 'http://') || str_starts_with($endpoint, 'https://')) {
             return $endpoint;
         }
