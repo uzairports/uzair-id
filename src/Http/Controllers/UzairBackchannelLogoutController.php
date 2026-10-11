@@ -46,6 +46,17 @@ class UzairBackchannelLogoutController
     private const int MAX_AGE = 300;
 
     /**
+     * The `typ` a logout token may declare. The specification recommends
+     * `logout+jwt`; `JWT` is what most libraries write by default and is
+     * accepted beside it, because the `events` claim and the absent `nonce`
+     * already tell a logout token from an ID token. Anything else — an access
+     * token signed by the same keys, say — is refused.
+     *
+     * @var list<string>
+     */
+    private const array TOKEN_TYPES = ['logout+jwt', 'JWT'];
+
+    /**
      * @throws Throwable
      */
     public function __invoke(Request $request, VerifyIdentityToken $verify, EndSessions $endSessions): JsonResponse
@@ -65,7 +76,7 @@ class UzairBackchannelLogoutController
         }
 
         try {
-            $claims = $verify($logoutToken, $this->provider(), requireExpiry: false);
+            $claims = $verify($logoutToken, $this->provider(), types: self::TOKEN_TYPES);
 
             $this->ensureIsALogoutToken($claims);
         } catch (UnexpectedValueException|DomainException|InvalidArgumentException $exception) {

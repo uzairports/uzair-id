@@ -42,7 +42,7 @@ class ResolveUserFromSocialite
         $reportedEmail = $uzairUser->getEmail() ?: null;
 
         $user = $this->query()->firstWhere('uzair_id', $uzairId)
-            ?? $this->claimUnlinkedUserByEmail($reportedEmail, $uzairId)
+            ?? $this->claimUnlinkedUserByEmail($this->verifiedEmail($uzairUser), $uzairId)
             ?? $this->newUser();
 
         $name = $uzairUser->getName();
@@ -119,11 +119,30 @@ class ResolveUserFromSocialite
     }
 
     /**
+     * The reported address, only where the provider says it verified it.
+     *
+     * Claiming an account by an address nobody confirmed hands it to whoever
+     * typed that address into their profile. `email_verified` (OpenID Connect)
+     * or a filled `email_verified_at` (a Laravel profile) is the only evidence
+     * the profile carries, and without either nothing is linked.
+     */
+    private function verifiedEmail(SocialiteUser $uzairUser): ?string
+    {
+        $profile = $uzairUser->getRaw();
+        $flag = $profile['email_verified'] ?? null;
+        $verifiedAt = $profile['email_verified_at'] ?? null;
+
+        $verified = $flag === true || $flag === 'true' || (is_string($verifiedAt) && $verifiedAt !== '');
+
+        return $verified ? ($uzairUser->getEmail() ?: null) : null;
+    }
+
+    /**
      * Find an account created before the package was installed.
      *
-     * Requires `link_by_email` (off by default, since the provider does not
-     * guarantee verified addresses), a non-empty e-mail, and exactly one
-     * unlinked match; `users.email` is not unique, so duplicates are ambiguous.
+     * Requires `link_by_email` (off by default), an e-mail the provider says
+     * it verified, and exactly one unlinked match; `users.email` is not
+     * unique, so duplicates are ambiguous.
      */
     private function findUnlinkedUserByEmail(?string $email): ?Model
     {

@@ -9,7 +9,6 @@ use Illuminate\Routing\Route as RegisteredRoute;
 use Illuminate\Routing\RouteRegistrar;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
-use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
@@ -673,60 +672,5 @@ class Uzair
         $action = $route->getAction('controller');
 
         return is_string($action) && $action === $controller.'@redirect';
-    }
-
-    /**
-     * Fake an authenticated UzAirports ID user for testing.
-     *
-     * @param  array<string, mixed>  $attributes
-     */
-    public static function fakeUser(array $attributes = []): Model
-    {
-        $model = self::userModel();
-        $user = new $model;
-
-        $rawId = $attributes['uzair_id'] ?? $attributes['id'] ?? null;
-        $uzairId = is_scalar($rawId) || $rawId instanceof \Stringable ? (string) $rawId : 'fake-uzair-'.Str::random(8);
-
-        $name = isset($attributes['name']) && (is_scalar($attributes['name']) || $attributes['name'] instanceof \Stringable)
-            ? (string) $attributes['name']
-            : 'Fake User';
-
-        $email = isset($attributes['email']) && (is_scalar($attributes['email']) || $attributes['email'] instanceof \Stringable)
-            ? (string) $attributes['email']
-            : $uzairId.'@example.com';
-
-        $user->forceFill([
-            'uzair_id' => $uzairId,
-            'name' => $name,
-            'email' => $email,
-            ...array_diff_key($attributes, ['id' => true, 'uzair_id' => true, 'name' => true, 'email' => true]),
-        ])->save();
-
-        return $user;
-    }
-
-    /**
-     * Attach a fake OAuth token to the user for testing.
-     */
-    public static function fakeLogin(Model $user, ?string $sessionId = null): OauthToken
-    {
-        $request = request();
-        $sessionId ??= $request->hasSession() ? $request->session()->getId() : 'fake-session-'.Str::random(16);
-
-        $token = OauthToken::query()
-            ->where('user_id', $user->getKey())
-            ->where('session_id', $sessionId)
-            ->first() ?? new OauthToken;
-
-        $token->forceFill([
-            'user_id' => $user->getKey(),
-            'session_id' => $sessionId,
-            'access_token' => 'fake-access-token',
-            'refresh_token' => 'fake-refresh-token',
-            'expires_at' => now()->addHour(),
-        ])->save();
-
-        return $token;
     }
 }

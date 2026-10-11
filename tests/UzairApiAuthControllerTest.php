@@ -167,13 +167,20 @@ class UzairApiAuthControllerTest extends TestCase
         ];
     }
 
-    public function test_a_verifier_is_not_demanded_of_a_client_where_api_pkce_is_off(): void
+    /**
+     * A mobile client is public: the server redeems its code with the client
+     * secret, so the verifier is all that ties the code to the app that asked
+     * for it. Turning PKCE off for the browser must not turn it off here.
+     */
+    public function test_a_verifier_is_demanded_of_a_client_even_where_browser_pkce_is_off(): void
     {
-        config(['uzairports.pkce' => true, 'uzairports.api.pkce' => false]);
+        config(['uzairports.pkce' => false]);
 
-        $this->fakeExchange(['id' => '7015']);
+        Socialite::shouldReceive('driver')->never();
 
-        $this->postJson(route('uzair.api.token'), $this->exchange(['code_verifier' => null]))->assertOk();
+        $this->postJson(route('uzair.api.token'), $this->exchange(['code_verifier' => null]))
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('code_verifier');
     }
 
     public function test_single_session_ends_the_other_logins_but_spares_the_one_just_issued(): void
@@ -202,7 +209,7 @@ class UzairApiAuthControllerTest extends TestCase
             ->assertJsonValidationErrors('redirect_uri');
     }
 
-    public function test_a_code_without_its_verifier_is_refused_while_pkce_is_on(): void
+    public function test_a_code_without_its_verifier_is_refused(): void
     {
         Socialite::shouldReceive('driver')->never();
 

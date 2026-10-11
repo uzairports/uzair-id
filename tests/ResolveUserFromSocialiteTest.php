@@ -72,11 +72,36 @@ class ResolveUserFromSocialiteTest extends TestCase
             'id' => '2011',
             'name' => 'Legacy',
             'email' => 'legacy@uzairports.com',
+            'email_verified' => true,
         ]));
 
         $this->assertSame($legacy->getKey(), $resolved->getKey());
         $this->assertSame('2011', $legacy->refresh()->uzair_id);
         $this->assertSame(1, TestUser::query()->count());
+    }
+
+    /**
+     * An address nobody confirmed is whatever somebody typed into a profile;
+     * claiming by it would hand the account to them.
+     */
+    public function test_an_address_the_provider_did_not_verify_claims_nothing(): void
+    {
+        config(['uzairports.link_by_email' => true]);
+
+        $legacy = TestUser::create(['uzair_id' => null, 'name' => 'Legacy', 'email' => 'legacy@uzairports.com']);
+
+        foreach ([['email_verified' => false], ['email_verified_at' => null], []] as $index => $evidence) {
+            $resolved = (new ResolveUserFromSocialite)(SocialiteUser::fake([
+                'id' => "2020{$index}",
+                'name' => 'Somebody',
+                'email' => 'legacy@uzairports.com',
+                ...$evidence,
+            ]));
+
+            $this->assertNotSame($legacy->getKey(), $resolved->getKey());
+        }
+
+        $this->assertNull($legacy->refresh()->uzair_id);
     }
 
     /**
@@ -115,6 +140,7 @@ class ResolveUserFromSocialiteTest extends TestCase
                 'id' => '2013',
                 'name' => 'Late',
                 'email' => 'legacy@uzairports.com',
+                'email_verified' => true,
             ]));
         } finally {
             TestUser::flushEventListeners();
@@ -138,6 +164,7 @@ class ResolveUserFromSocialiteTest extends TestCase
             'id' => '2012',
             'name' => 'Ambiguous',
             'email' => 'shared@uzairports.com',
+            'email_verified' => true,
         ]));
 
         $this->assertNull($first->refresh()->uzair_id);

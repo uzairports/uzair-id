@@ -101,14 +101,17 @@ php artisan vendor:publish --tag=uzairid-lang
 Для тестов, которым нужен вошедший через SSO пользователь, есть два хелпера:
 
 ```php
-use Uzairports\Uzairid\Uzair;
+use Uzairports\Uzairid\Testing\UzairFake;
 
-$user = Uzair::fakeUser(['name' => 'Test User']); // создаёт аккаунт с uzair_id
-$login = Uzair::fakeLogin($user, 'session-id');   // строка oauth_tokens для этой сессии
+$user = UzairFake::user(['name' => 'Test User']); // создаёт аккаунт с uzair_id
+$login = UzairFake::login($user, 'session-id');   // строка oauth_tokens для этой сессии
 ```
 
-`fakeUser()` принимает любые атрибуты модели. `uzair_id`, `name` и `email` заполняются сами,
-если их не передать. `fakeLogin()` записывает вход с фиктивными токенами, которые истекают
+Хелперы работают только в окружении `testing` и вне его бросают `RuntimeException`: такая
+строка — действующий вход для любого аккаунта.
+
+`user()` принимает любые атрибуты модели. `uzair_id`, `name` и `email` заполняются сами,
+если их не передать. `login()` записывает вход с фиктивными токенами, которые истекают
 через час, под переданным id сессии. Без второго аргумента берётся id сессии текущего
 запроса, а если сессии нет — случайный. Такую строку `uzair.token` найдёт, только если id
 совпадёт с id сессии запроса, который проходит через этот middleware.

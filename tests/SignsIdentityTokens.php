@@ -37,9 +37,9 @@ trait SignsIdentityTokens
     /**
      * @param  array<string, mixed>  $claims
      */
-    protected function signed(array $claims, string $key = 'identity-provider', string $kid = 'key-1'): string
+    protected function signed(array $claims, string $key = 'identity-provider', string $kid = 'key-1', ?string $type = null): string
     {
-        return JWT::encode($claims, $this->privateKey($key), 'RS256', $kid);
+        return JWT::encode($claims, $this->privateKey($key), 'RS256', $kid, $type === null ? null : ['typ' => $type]);
     }
 
     private function privateKey(string $key): string

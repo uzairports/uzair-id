@@ -1287,12 +1287,35 @@ class UzairAuthControllerTest extends TestCase
         $this->get(route('login'))->assertStatus(302);
 
         $this->fromTheBrowser($browser);
-        $response = $this->from('https://example.com/welcome')
+        $response = $this->from(url('/welcome'))
             ->get(route('login'));
 
-        $response->assertRedirect('https://example.com/welcome');
+        $response->assertRedirect(url('/welcome'));
         $response->assertSessionHasErrors(['oauth' => __('uzairid::messages.rate_limited')]);
         $response->assertHeader('Retry-After');
+    }
+
+    /**
+     * The callback is arrived at from the identity provider, so its Referer
+     * names another site; going back there would show the refusal nowhere.
+     */
+    public function test_rate_limited_web_request_from_another_site_is_answered_here(): void
+    {
+        config(['uzairports.routes.throttle' => '1,1']);
+
+        $browser = Str::random(40);
+        $this->fromTheBrowser($browser);
+
+        $this->get(route('login'))->assertStatus(302);
+
+        foreach (['https://evil.test/welcome', url('/').'.evil.test/welcome'] as $referer) {
+            $this->fromTheBrowser($browser);
+
+            $this->from($referer)
+                ->get(route('login'))
+                ->assertStatus(429)
+                ->assertHeader('Retry-After');
+        }
     }
 
     /**

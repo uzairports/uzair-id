@@ -166,7 +166,28 @@ class UzairBackchannelLogoutTest extends TestCase
             'naming nobody' => [[], 'identity-provider'],
             'issued too long ago' => [['sid' => 'idp-session', 'iat' => time() - 3600], 'identity-provider'],
             'issued in the future' => [['sid' => 'idp-session', 'iat' => time() + 3600], 'identity-provider'],
+            'without an expiry' => [['sid' => 'idp-session', 'exp' => null], 'identity-provider'],
         ];
+    }
+
+    /**
+     * An access token signed by the same keys must not pass for a logout
+     * token; the type a library writes by default must still pass.
+     */
+    public function test_a_token_declaring_another_type_is_refused(): void
+    {
+        $this->acceptRevocations();
+
+        $user = TestUser::query()->create(['uzair_id' => '9010']);
+        $login = $this->login($user, 'idp-session');
+
+        $this->post(route('uzair.backchannelLogout'), ['logout_token' => $this->logoutToken(['sid' => 'idp-session'], type: 'at+jwt')])
+            ->assertStatus(400);
+        $this->assertModelExists($login);
+
+        $this->post(route('uzair.backchannelLogout'), ['logout_token' => $this->logoutToken(['sid' => 'idp-session'], type: 'application/logout+jwt')])
+            ->assertOk();
+        $this->assertModelMissing($login);
     }
 
     /**
@@ -284,16 +305,17 @@ class UzairBackchannelLogoutTest extends TestCase
     /**
      * @param  array<string, mixed>  $claims
      */
-    private function logoutToken(array $claims, string $key = 'identity-provider'): string
+    private function logoutToken(array $claims, string $key = 'identity-provider', ?string $type = null): string
     {
         return $this->signed(array_filter([
             'iss' => self::ISSUER,
             'aud' => 'test-client-id',
             'iat' => time(),
+            'exp' => time() + 120,
             'jti' => bin2hex(random_bytes(8)),
             'events' => ['http://schemas.openid.net/event/backchannel-logout' => new stdClass],
             ...$claims,
-        ], fn (mixed $value): bool => $value !== null), $key);
+        ], fn (mixed $value): bool => $value !== null), $key, type: $type);
     }
 
     private function acceptRevocations(): void

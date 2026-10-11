@@ -58,8 +58,9 @@ class UzairApiAuthController extends UzairController
         $validated = $request->validate([
             'code' => ['required', 'string', 'max:2048'],
             'redirect_uri' => ['required', 'string', Rule::in(Uzair::apiRedirectUris())],
+            // Always required: a public client's code is otherwise anybody's.
             'code_verifier' => [
-                config('uzairports.api.pkce', true) ? 'required' : 'nullable',
+                'required',
                 'string',
                 'min:43',
                 'max:128',

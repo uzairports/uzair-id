@@ -8,6 +8,7 @@ use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Middleware;
 use GuzzleHttp\Psr7\Response;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -15,6 +16,7 @@ use Psr\Http\Message\RequestInterface;
 use RuntimeException;
 use TypeError;
 use UnexpectedValueException;
+use Uzairports\Uzairid\Actions\VerifyIdentityToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class UzairportsProviderTest extends TestCase
@@ -587,6 +589,35 @@ class UzairportsProviderTest extends TestCase
 
         $this->expectException(UnexpectedValueException::class);
         $provider->user();
+    }
+
+    /**
+     * The keys come from a public endpoint, so an HMAC algorithm would verify
+     * against a secret anyone can download.
+     */
+    public function test_an_hmac_algorithm_cannot_be_allowed(): void
+    {
+        Log::shouldReceive('warning')
+            ->with(Mockery::pattern('/asymmetric/'), ['ignored' => ['HS256']])
+            ->twice();
+
+        config(['uzairports.oidc.algorithms' => ['HS256', 'RS256']]);
+        $this->assertSame(['RS256'], VerifyIdentityToken::allowedAlgorithms());
+
+        config(['uzairports.oidc.algorithms' => ['HS256']]);
+        $this->assertSame(['RS256'], VerifyIdentityToken::allowedAlgorithms());
+    }
+
+    public function test_a_key_naming_no_algorithm_is_read_by_its_type(): void
+    {
+        config(['uzairports.oidc.enabled' => true, 'uzairports.oidc.algorithms' => ['ES256', 'RS256']]);
+
+        $jwks = $this->keySet();
+        unset($jwks['keys'][0]['alg']);
+
+        $provider = $this->providerIssuing($this->signed($this->idTokenClaims()), keySet: $jwks)->stateless();
+
+        $this->assertSame('42', $provider->user()->getId());
     }
 
     public function test_redirect_includes_nonce_when_oidc_is_enabled(): void

@@ -30,7 +30,7 @@ php artisan vendor:publish --tag=uzairid-config
 | `oidc.jwks_endpoint` | `UZAIR_JWKS_ENDPOINT` | `/oauth/jwks` | Где провайдер публикует ключи подписи |
 | `oidc.jwks_cache_ttl` | `UZAIR_JWKS_CACHE_TTL` | `3600` | Сколько секунд кешировать ключи |
 | `oidc.leeway` | `UZAIR_OIDC_LEEWAY` | `60` | Допуск расхождения часов при проверке `iat`/`exp` (сек) |
-| `oidc.algorithms` | `UZAIR_OIDC_ALGORITHMS` | `RS256` | Разрешённые алгоритмы подписи ID- и logout-токенов, через запятую |
+| `oidc.algorithms` | `UZAIR_OIDC_ALGORITHMS` | `RS256` | Разрешённые алгоритмы подписи ID- и logout-токенов, через запятую. Только асимметричные (`RS256`/`RS384`/`RS512`, `PS256`, `ES256`/`ES384`, `ES256K`, `EdDSA`); HMAC и прочие игнорируются с предупреждением в логе |
 | `end_session_endpoint` | `UZAIR_END_SESSION_ENDPOINT` | — | Куда отправить браузер после выхода, чтобы завершить сессию и на UzAirports ID (`/oauth/logout`) |
 | `revoke_on_backchannel_logout` | `UZAIR_REVOKE_ON_BACKCHANNEL_LOGOUT` | `true` | Отзывать ли гранты входов, завершённых back-channel logout |
 | `logout_endpoint` | `UZAIR_LOGOUT_ENDPOINT` | `/api/oauth/logout` | Эндпоинт для отзыва access-токена при logout |
@@ -54,7 +54,6 @@ php artisan vendor:publish --tag=uzairid-config
 | `api.prefix` | `UZAIR_API_ROUTE_PREFIX` | `auth` | Префикс маршрутов `Uzair::apiRoutes()` (внутри `routes/api.php`) |
 | `api.guard` | `UZAIR_API_GUARD` | `sanctum` | Guard, которым аутентифицируются токены мобильных клиентов |
 | `api.redirect_uris` | `UZAIR_API_REDIRECT_URIS` | — | Redirect URI мобильных клиентов через запятую; пусто — обмен кода отклоняется |
-| `api.pkce` | `UZAIR_API_PKCE` | как `pkce` | Требовать ли от мобильного клиента `code_verifier` |
 | `api.token_abilities` | `UZAIR_API_TOKEN_ABILITIES` | `*` | Abilities выдаваемого токена Sanctum через запятую |
 | `api.token_expiration` | `UZAIR_API_TOKEN_EXPIRATION` | — | Срок токена Sanctum в минутах; пусто — по `sanctum.expiration`. Если заданы оба срока, действует более короткий |
 | `routes.ip_throttle` | `UZAIR_ROUTE_IP_THROTTLE` | `120,1` | Потолок запросов на адрес (`попыток,минут`) для защиты от ротации cookie |

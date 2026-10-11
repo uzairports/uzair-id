@@ -234,10 +234,15 @@ class UzairServiceProvider extends ServiceProvider
                     return response()->json(['message' => $message], 429, $headers);
                 }
 
+                // Only a page of this origin is gone back to: the callback is
+                // arrived at from the identity provider, and a Referer naming
+                // any other site would send the browser there instead of
+                // showing the refusal. The trailing slash keeps
+                // `https://app.test.evil.com` from passing for `https://app.test`.
                 if ($request->hasSession() && $request->headers->has('referer')) {
                     $referer = (string) $request->headers->get('referer');
 
-                    if ($referer !== $request->fullUrl()) {
+                    if ($referer !== $request->fullUrl() && str_starts_with($referer, $request->getSchemeAndHttpHost().'/')) {
                         return back()->withErrors(['oauth' => $message])->withHeaders($headers);
                     }
                 }

@@ -89,6 +89,11 @@ return [
     | `exp` and `iat`. Signing keys are cached for `jwks_cache_ttl` seconds and
     | fetched again as soon as a token names a key that is not among them.
     |
+    | `algorithms` narrows the signature algorithms accepted, and can only
+    | name asymmetric ones (RS256/384/512, PS256, ES256/384, ES256K, EdDSA):
+    | the keys are public, so an HMAC algorithm would verify against a secret
+    | anyone can download. Anything else is ignored and reported in the log.
+    |
     */
 
     'oidc' => [
@@ -374,9 +379,10 @@ return [
     | `guard` is the guard that authenticates those tokens, and the one the
     | endpoints read the account off.
     |
-    | `pkce` says whether a client must post the verifier its code is bound
-    | to. It follows the browser's `pkce` unless set, and should stay on: a
-    | code intercepted on its way into the app is otherwise anybody's.
+    | A client always has to post the PKCE verifier its code is bound to,
+    | whatever the browser's `pkce` says: the code is redeemed here with the
+    | client secret, so one intercepted on its way into the app would
+    | otherwise be anybody's.
     |
     | `token_abilities` are the Sanctum abilities each issued token carries (a
     | comma-separated list, `*` for all). `token_expiration` is its lifetime in
@@ -396,8 +402,6 @@ return [
             'trim',
             explode(',', (string) env('UZAIR_API_REDIRECT_URIS', '')),
         ))),
-
-        'pkce' => (bool) env('UZAIR_API_PKCE', env('UZAIR_PKCE', true)),
 
         'token_abilities' => array_values(array_filter(array_map(
             'trim',
@@ -460,6 +464,8 @@ return [
     | claimed by email on first SSO login. It is off by default: the identity
     | provider does not promise the address it reports was ever verified, so
     | turn it on only for a one-off migration you are willing to stand behind.
+    | Even then, only an address the profile marks as verified links anything
+    | (`email_verified` true, or a filled `email_verified_at`).
     |
     */
 
