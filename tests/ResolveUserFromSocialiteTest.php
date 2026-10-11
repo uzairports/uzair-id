@@ -2,9 +2,12 @@
 
 namespace Uzairports\Uzairid\Tests;
 
+use Closure;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Two\User as SocialiteUser;
+use ReflectionProperty;
 use RuntimeException;
+use UnexpectedValueException;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Uzair;
 
@@ -326,5 +329,87 @@ class ResolveUserFromSocialiteTest extends TestCase
         } finally {
             Uzair::updateUserAttributesUsing(null);
         }
+    }
+
+    /**
+     * Null is "no opinion": the identity is linked or created as usual.
+     */
+    public function test_a_resolver_answering_null_falls_through_to_the_default_resolution(): void
+    {
+        Uzair::resolveUserUsing(fn (): null => null);
+
+        try {
+            $user = (new ResolveUserFromSocialite)(SocialiteUser::fake(['id' => '2101', 'name' => 'Fell Through']));
+
+            $this->assertTrue($user->exists);
+            $this->assertSame('2101', $user->getAttribute('uzair_id'));
+        } finally {
+            Uzair::resolveUserUsing(null);
+        }
+    }
+
+    /**
+     * A resolver answering `false` to deny used to have an account created
+     * for the identity it meant to turn away.
+     */
+    public function test_a_resolver_answering_neither_a_model_nor_null_is_refused(): void
+    {
+        $this->registerAgainstItsType('userResolver', fn (): bool => false);
+
+        try {
+            (new ResolveUserFromSocialite)(SocialiteUser::fake(['id' => '2102']));
+            $this->fail('A resolver answering false was ignored.');
+        } catch (UnexpectedValueException $exception) {
+            $this->assertStringContainsString('[bool]', $exception->getMessage());
+        } finally {
+            Uzair::resolveUserUsing(null);
+        }
+
+        $this->assertSame(0, TestUser::query()->where('uzair_id', '2102')->count());
+    }
+
+    /**
+     * Throwing is how a resolver refuses an identity; the exception reaches
+     * the caller untouched and nothing is written.
+     */
+    public function test_a_resolver_refuses_an_identity_by_throwing(): void
+    {
+        $refusal = new RuntimeException('This identity may not sign in here.');
+
+        Uzair::resolveUserUsing(fn () => throw $refusal);
+
+        try {
+            (new ResolveUserFromSocialite)(SocialiteUser::fake(['id' => '2103']));
+            $this->fail('The refusal was swallowed.');
+        } catch (RuntimeException $exception) {
+            $this->assertSame($refusal, $exception);
+        } finally {
+            Uzair::resolveUserUsing(null);
+        }
+
+        $this->assertSame(0, TestUser::query()->where('uzair_id', '2103')->count());
+    }
+
+    public function test_an_attributes_updater_must_return_an_array(): void
+    {
+        $this->registerAgainstItsType('userAttributesUpdater', fn (): string => 'not attributes');
+
+        try {
+            (new ResolveUserFromSocialite)(SocialiteUser::fake(['id' => '2104']));
+            $this->fail('An updater answering a string was ignored.');
+        } catch (UnexpectedValueException $exception) {
+            $this->assertStringContainsString('[string]', $exception->getMessage());
+        } finally {
+            Uzair::updateUserAttributesUsing(null);
+        }
+    }
+
+    /**
+     * Register a callback the way a host application without static analysis
+     * may: PHP does not hold a closure to the type its registration documents.
+     */
+    private function registerAgainstItsType(string $property, Closure $callback): void
+    {
+        (new ReflectionProperty(Uzair::class, $property))->setValue(null, $callback);
     }
 }

@@ -18,9 +18,9 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
+use Uzairports\Uzairid\Support\DeviceLabel;
 use Uzairports\Uzairid\Uzair;
 
 /**
@@ -46,6 +46,28 @@ use Uzairports\Uzairid\Uzair;
 class OauthToken extends Model
 {
     use Prunable;
+
+    /**
+     * Sanctum token tables found to exist in this process, by connection and table.
+     *
+     * @var array<string, true>
+     */
+    private static array $accessTokensTables = [];
+
+    /**
+     * Sanctum token tables found missing during the sweep running now; null
+     * outside a sweep.
+     *
+     * @var array<string, true>|null
+     */
+    private static ?array $accessTokensTablesMissingThisSweep = null;
+
+    /**
+     * Login cache warnings already logged in this process.
+     *
+     * @var array<string, true>
+     */
+    private static array $reportedAboutTheLoginCache = [];
 
     protected $fillable = [
         'access_token',
@@ -257,32 +279,25 @@ class OauthToken extends Model
             );
     }
 
-    protected static ?EndSessions $pruner = null;
-
     /**
-     * Flush the cached pruner instance between sweeps, requests, or tests.
+     * Formerly flushed a cached `EndSessions` instance; nothing is cached any
+     * more, since the container resolves the action cheaply.
      *
-     * Called through `Uzair::flushState()` so a long-lived worker never reuses
-     * an action built from a container that has since been rebound.
+     * @deprecated nothing to flush; kept so existing callers keep working
      */
     public static function flushPruner(): void
     {
-        static::$pruner = null;
+        //
     }
-
-    /**
-     * Sanctum token tables found to exist in this process, by connection and table.
-     *
-     * @var array<string, true>
-     */
-    private static array $accessTokensTables = [];
 
     /**
      * Whether Sanctum's token table exists, so pruning can ask about it.
      *
      * Sanctum may be installed for an SPA's cookie authentication alone, with
-     * its token table never migrated; pruning must not fail on that. Only a
-     * table found is remembered, since `prunable()` runs once per pruned row.
+     * its token table never migrated; pruning must not fail on that. A table
+     * found is remembered for the process. A table missing is remembered only
+     * for the sweep running now (`prunable()` runs once per pruned row), so a
+     * migration run meanwhile is noticed by the next one.
      */
     private static function accessTokensTableExists(Model $accessToken): bool
     {
@@ -292,7 +307,15 @@ class OauthToken extends Model
             return true;
         }
 
+        if (self::$accessTokensTablesMissingThisSweep !== null && isset(self::$accessTokensTablesMissingThisSweep[$key])) {
+            return false;
+        }
+
         if (! $accessToken->getConnection()->getSchemaBuilder()->hasTable($accessToken->getTable())) {
+            if (self::$accessTokensTablesMissingThisSweep !== null) {
+                self::$accessTokensTablesMissingThisSweep[$key] = true;
+            }
+
             return false;
         }
 
@@ -305,6 +328,7 @@ class OauthToken extends Model
     public static function flushAccessTokensTables(): void
     {
         self::$accessTokensTables = [];
+        self::$accessTokensTablesMissingThisSweep = null;
     }
 
     /**
@@ -314,19 +338,26 @@ class OauthToken extends Model
      * once per row. Rows are still rechecked and deleted one apiece under a row
      * lock, so model events fire; `pruning()` is not called, or grants would be
      * revoked twice. Grants are surrendered after commit. A row that fails to
-     * delete is reported and the sweep continues.
+     * delete is reported and the sweep continues. A Sanctum token table found
+     * missing is asked about once per sweep, not once per row.
      *
      * @throws Throwable
      */
     public function pruneAll(int $chunkSize = 1000): int
     {
         $total = 0;
+        $outerSweep = self::$accessTokensTablesMissingThisSweep;
+        self::$accessTokensTablesMissingThisSweep ??= [];
 
-        $this->prunable()->chunkById($chunkSize, function (Collection $tokens) use (&$total): void {
-            $total += $this->pruneChunk($tokens);
+        try {
+            $this->prunable()->chunkById($chunkSize, function (Collection $tokens) use (&$total): void {
+                $total += $this->pruneChunk($tokens);
 
-            Event::dispatch(new ModelsPruned(static::class, $total));
-        });
+                Event::dispatch(new ModelsPruned(static::class, $total));
+            });
+        } finally {
+            self::$accessTokensTablesMissingThisSweep = $outerSweep;
+        }
 
         return $total;
     }
@@ -382,10 +413,10 @@ class OauthToken extends Model
         } finally {
             try {
                 static::forgetLogins(array_keys($sessionIds));
-                (static::$pruner ??= app(EndSessions::class))->dropAccessTokens($accessTokenIds);
+                app(EndSessions::class)->dropAccessTokens($accessTokenIds);
             } finally {
                 if ($pruned !== [] && config('uzairports.revoke_on_prune', true)) {
-                    (static::$pruner ??= app(EndSessions::class))->surrenderAll($pruned);
+                    app(EndSessions::class)->surrenderAll($pruned);
                 }
             }
         }
@@ -410,11 +441,11 @@ class OauthToken extends Model
             static::forgetLogin($this->session_id);
 
             if ($this->personal_access_token_id !== null) {
-                (static::$pruner ??= app(EndSessions::class))->dropAccessTokens([$this->personal_access_token_id]);
+                app(EndSessions::class)->dropAccessTokens([$this->personal_access_token_id]);
             }
         } finally {
             if (config('uzairports.revoke_on_prune', true)) {
-                (static::$pruner ??= app(EndSessions::class))->surrender($this);
+                app(EndSessions::class)->surrender($this);
             }
         }
 
@@ -552,13 +583,6 @@ class OauthToken extends Model
 
         return $repository;
     }
-
-    /**
-     * Login cache warnings already logged in this process.
-     *
-     * @var array<string, true>
-     */
-    private static array $reportedAboutTheLoginCache = [];
 
     /**
      * Let the warnings be logged again; called through `Uzair::flushState()`.
@@ -760,63 +784,11 @@ class OauthToken extends Model
     /**
      * A short name for the device this login is running on.
      *
-     * A guess from the user agent, for display only; never decide anything on it.
+     * A guess from the user agent, for display only; never decide anything on
+     * it. See `DeviceLabel`.
      */
     public function deviceLabel(): string
     {
-        $agent = (string) $this->user_agent;
-
-        if ($agent === '') {
-            return __('uzairid::messages.unknown_device');
-        }
-
-        $browsers = [
-            'Vivaldi' => 'Vivaldi',
-            'Brave' => 'Brave',
-            'Edg' => 'Edge',
-            'OPR' => 'Opera',
-            'YaBrowser' => 'Yandex',
-            'SamsungBrowser' => 'Samsung Internet',
-            'DuckDuckGo' => 'DuckDuckGo',
-            'MiuiBrowser' => 'Miui Browser',
-            'UCBrowser' => 'UC Browser',
-            '; wv' => 'WebView',
-            'WebView' => 'WebView',
-            'Firefox' => 'Firefox',
-            'Chrome' => 'Chrome',
-            'Safari' => 'Safari',
-        ];
-        $platforms = [
-            'Android' => 'Android',
-            'iPhone' => 'iPhone',
-            'iPad' => 'iPad',
-            'Windows' => 'Windows',
-            'Macintosh' => 'macOS',
-            'CrOS' => 'ChromeOS',
-            'Linux' => 'Linux',
-        ];
-
-        $browser = $this->firstMatch($agent, $browsers);
-        $platform = $this->firstMatch($agent, $platforms);
-
-        if ($browser === null && $platform === null) {
-            return Str::limit($agent, 40);
-        }
-
-        return trim(($browser ?? '').' — '.($platform ?? ''), ' —');
-    }
-
-    /**
-     * @param  array<string, string>  $needles
-     */
-    private function firstMatch(string $agent, array $needles): ?string
-    {
-        foreach ($needles as $needle => $label) {
-            if (str_contains($agent, $needle)) {
-                return $label;
-            }
-        }
-
-        return null;
+        return DeviceLabel::for($this->user_agent);
     }
 }

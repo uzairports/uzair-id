@@ -2,6 +2,7 @@
 
 namespace Uzairports\Uzairid\Actions;
 
+use Generator;
 use GuzzleHttp\Exception\BadResponseException;
 use GuzzleHttp\Promise\Each;
 use GuzzleHttp\Promise\PromiseInterface;
@@ -100,10 +101,12 @@ class EndSessions
         }
 
         $tokens = $query->getModel()->getConnection()->transaction(function () use ($query): SupportCollection {
-            $locked = $query
+            // Whole rows, so `deleting`/`deleted` observers see what `endAll()`
+            // hands them; the caller's builder is left as it was given.
+            $locked = (clone $query)
                 ->orderBy('id')
                 ->lockForUpdate()
-                ->get(['id', 'user_id', 'session_id', 'personal_access_token_id', 'access_token', 'refresh_token']);
+                ->get();
 
             // One delete per row so model events fire; only deleted rows are revoked.
             return $locked
@@ -350,78 +353,76 @@ class EndSessions
             return;
         }
 
-        /** @var list<array{token: OauthToken, access: string|null, refresh: string|null}> $requests */
-        $requests = [];
-
-        foreach ($grants as $grant) {
-            if ($grant['access'] !== null) {
-                $requests[] = ['token' => $grant['token'], 'access' => $grant['access'], 'refresh' => null];
-            }
-
-            if ($grant['refresh'] !== null) {
-                $requests[] = ['token' => $grant['token'], 'access' => null, 'refresh' => $grant['refresh']];
-            }
-        }
-
-        foreach (array_chunk($requests, $this->revocationConcurrency()) as $chunk) {
-            $this->settle($provider, $chunk);
-        }
+        $this->settle($provider, $grants);
     }
 
     /**
-     * Send one batch of revocations and settle them together.
+     * Send the revocations through a sliding window and settle them all.
+     *
+     * Each call is started only when one of `revocation_concurrency` slots
+     * frees up, so the wait is bounded by the calls actually in flight, not by
+     * the sum of the slowest call of each fixed batch.
      *
      * One failure neither hides nor cancels the rest. A 401 on an access token
      * means it is already invalid and is not logged; a 401 on a refresh token
      * is, because that endpoint answers 200 for already-retired tokens.
+     * Nothing is raised.
      *
      * @param  list<array{token: OauthToken, access: string|null, refresh: string|null}>  $grants
      */
     private function settle(UzairportsProvider $provider, array $grants): void
     {
-        /** @var list<PromiseInterface> $promises */
-        $promises = [];
-
-        /** @var list<array{token: OauthToken, spareUnauthorized: bool}> $sent */
+        /** @var array<int, array{token: OauthToken, spareUnauthorized: bool}> $sent */
         $sent = [];
 
-        foreach ($grants as $grant) {
-            if ($grant['access'] !== null) {
-                $promise = $this->send(fn (): ?PromiseInterface => $provider->logoutAsync($grant['access']), $grant['token']);
+        $promises = (function () use ($provider, $grants, &$sent): Generator {
+            foreach ($grants as $grant) {
+                $calls = [];
 
-                if ($promise !== null) {
-                    $promises[] = $promise;
-                    $sent[] = ['token' => $grant['token'], 'spareUnauthorized' => true];
+                if ($grant['access'] !== null) {
+                    $accessToken = $grant['access'];
+                    $calls[] = [fn (): ?PromiseInterface => $provider->logoutAsync($accessToken), true];
+                }
+
+                if ($grant['refresh'] !== null) {
+                    $refreshToken = $grant['refresh'];
+                    $calls[] = [fn (): ?PromiseInterface => $provider->revokeRefreshTokenAsync($refreshToken), false];
+                }
+
+                foreach ($calls as [$start, $spareUnauthorized]) {
+                    $promise = $this->send($start, $grant['token']);
+
+                    if ($promise === null) {
+                        continue;
+                    }
+
+                    $index = count($sent);
+                    $sent[$index] = ['token' => $grant['token'], 'spareUnauthorized' => $spareUnauthorized];
+
+                    yield $index => $promise;
                 }
             }
+        })();
 
-            if ($grant['refresh'] !== null) {
-                $promise = $this->send(fn (): ?PromiseInterface => $provider->revokeRefreshTokenAsync($grant['refresh']), $grant['token']);
-
-                if ($promise !== null) {
-                    $promises[] = $promise;
-                    $sent[] = ['token' => $grant['token'], 'spareUnauthorized' => false];
+        try {
+            Each::ofLimit($promises, $this->revocationConcurrency(), null, function (mixed $reason, int $index) use (&$sent): void {
+                if (! $reason instanceof Throwable || ! isset($sent[$index])) {
+                    return;
                 }
-            }
+
+                $unauthorized = $reason instanceof BadResponseException && $reason->getResponse()->getStatusCode() === 401;
+
+                if ($sent[$index]['spareUnauthorized'] && $unauthorized) {
+                    return;
+                }
+
+                $this->reportFailedRevocation($sent[$index]['token'], $reason);
+            })->wait();
+        } catch (Throwable $exception) {
+            Log::warning('Failed to settle the revocation of UzAirports tokens.', [
+                'exception_class' => $exception::class,
+            ]);
         }
-
-        if ($promises === []) {
-            return;
-        }
-
-        Each::of($promises, null, function (mixed $reason, int $index) use ($sent): void {
-            if (! $reason instanceof Throwable || ! isset($sent[$index])) {
-                return;
-            }
-
-            $unauthorized = $reason instanceof BadResponseException && $reason->getResponse()->getStatusCode() === 401;
-
-            if ($sent[$index]['spareUnauthorized'] && $unauthorized) {
-                return;
-            }
-
-            $this->reportFailedRevocation($sent[$index]['token'], $reason);
-        })->wait();
     }
 
     /**

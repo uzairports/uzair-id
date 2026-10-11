@@ -9,15 +9,12 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use InvalidArgumentException;
-use Laravel\Socialite\Facades\Socialite;
-use RuntimeException;
 use Throwable;
 use UnexpectedValueException;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\VerifyIdentityToken;
 use Uzairports\Uzairid\Events\UzairBackchannelLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
-use Uzairports\Uzairid\Socialite\UzairportsProvider;
 use Uzairports\Uzairid\Uzair;
 
 /**
@@ -76,7 +73,7 @@ class UzairBackchannelLogoutController
         }
 
         try {
-            $claims = $verify($logoutToken, $this->provider(), types: self::TOKEN_TYPES);
+            $claims = $verify($logoutToken, Uzair::driver(), types: self::TOKEN_TYPES);
 
             $this->ensureIsALogoutToken($claims);
         } catch (UnexpectedValueException|DomainException|InvalidArgumentException $exception) {
@@ -237,20 +234,6 @@ class UzairBackchannelLogoutController
         $value = $claims[$name] ?? null;
 
         return is_string($value) && $value !== '' ? $value : null;
-    }
-
-    /**
-     * @throws RuntimeException when the `uzairports` driver is not this package's
-     */
-    private function provider(): UzairportsProvider
-    {
-        $provider = Socialite::driver('uzairports');
-
-        if (! $provider instanceof UzairportsProvider) {
-            throw new RuntimeException('The [uzairports] Socialite driver is not '.UzairportsProvider::class.'.');
-        }
-
-        return $provider;
     }
 
     private function acknowledge(): JsonResponse

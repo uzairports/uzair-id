@@ -5,6 +5,7 @@ namespace Uzairports\Uzairid\Tests;
 use Exception;
 use Illuminate\Auth\Events\Login;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Events\TransactionRolledBack;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Request;
@@ -28,6 +29,7 @@ use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
 use Uzairports\Uzairid\Events\UzairDeviceLoggedOut;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
+use Uzairports\Uzairid\Exceptions\IdentityNonceMismatch;
 use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
@@ -531,7 +533,7 @@ class UzairAuthControllerTest extends TestCase
     public function test_a_handshake_with_mismatched_session_nonce_is_reported_as_handshake_lost(): void
     {
         $provider = Mockery::mock(UzairportsProvider::class);
-        $provider->shouldReceive('user')->once()->andThrow(new RuntimeException('The UzAirports ID token nonce is missing or does not match the session nonce.'));
+        $provider->shouldReceive('user')->once()->andThrow(IdentityNonceMismatch::make());
 
         Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
 
@@ -541,6 +543,56 @@ class UzairAuthControllerTest extends TestCase
         $response->assertSessionHasErrors(['oauth' => __('uzairid::messages.handshake_lost')]);
 
         $this->assertGuest();
+    }
+
+    /**
+     * The nonce failure is told apart by its type. A failure that merely says
+     * "session nonce" — a listener's, a database's — is an ordinary failed
+     * sign-in, not a lost handshake to be started again in a single tab.
+     */
+    public function test_a_failure_only_mentioning_the_session_nonce_is_not_a_lost_handshake(): void
+    {
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andThrow(new RuntimeException('Something about the session nonce.'));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->get(route('uzair.callback'))
+            ->assertRedirect(url('/'))
+            ->assertSessionHasErrors(['oauth' => __('uzairid::messages.authentication_failed')]);
+    }
+
+    /**
+     * A `UzairAuthenticated` listener runs inside the handshake, as on the API:
+     * one that fails fails the sign-in. It used to run after it, so the
+     * browser got a 500 while staying signed in on a login whose listener
+     * never finished.
+     */
+    public function test_a_sign_in_whose_authenticated_listener_fails_is_undone(): void
+    {
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andReturn(SocialiteUser::fake([
+            'id' => '5040',
+            'name' => 'Listened',
+            'token' => 'the_issued_access_token',
+            'refreshToken' => 'the_issued_refresh_token',
+        ]));
+        $provider->shouldReceive('logoutAsync')->with('the_issued_access_token')->once()->andReturn($this->revoked());
+        $provider->shouldReceive('revokeRefreshTokenAsync')->with('the_issued_refresh_token')->once()->andReturn($this->revoked());
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        Event::listen(UzairAuthenticated::class, function (): void {
+            throw new RuntimeException('The welcome mail could not be queued.');
+        });
+
+        $this->get(route('uzair.callback'))
+            ->assertRedirect(url('/'))
+            ->assertSessionHasErrors(['oauth' => __('uzairid::messages.authentication_failed')]);
+
+        $this->assertGuest();
+        $this->assertSame(0, OauthToken::query()->count());
+        $this->assertNotNull(TestUser::query()->where('uzair_id', '5040')->first());
     }
 
     /**
@@ -1517,11 +1569,17 @@ class ResolverLosingTheFirstRace extends ResolveUserFromSocialite
         if (! $this->raced) {
             $this->raced = true;
 
-            TestUser::create([
-                'uzair_id' => (string) $uzairUser->getId(),
-                'name' => $uzairUser->getName(),
-                'email' => $uzairUser->getEmail(),
-            ]);
+            // The winner's account is committed by the other callback, so it is
+            // still there once this attempt's transaction has been rolled back.
+            Event::listen(TransactionRolledBack::class, function () use ($uzairUser): void {
+                if (TestUser::query()->where('uzair_id', (string) $uzairUser->getId())->doesntExist()) {
+                    TestUser::create([
+                        'uzair_id' => (string) $uzairUser->getId(),
+                        'name' => $uzairUser->getName(),
+                        'email' => $uzairUser->getEmail(),
+                    ]);
+                }
+            });
 
             throw new UniqueConstraintViolationException(
                 'testing',

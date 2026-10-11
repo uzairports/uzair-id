@@ -58,7 +58,7 @@ class EnsureAccessTokenIsFresh
 
         app(EnsureTokenStorageMatchesProvider::class)->forUser($user);
 
-        $leeway = $this->leewayInSeconds();
+        $leeway = Uzair::refreshLeeway();
         $accessTokenId = Uzair::accessTokenId($user);
 
         // The cache is keyed by session; a Sanctum-token caller must not pass on
@@ -205,12 +205,9 @@ class EnsureAccessTokenIsFresh
     }
 
     /**
-     * Leave nothing of the current session behind.
+     * Leave nothing of the current session behind (`Uzair::endBrowserSession()`).
      *
-     * The cached login is forgotten before invalidation, which regenerates the
-     * session id the entry is keyed by; `forgetLogin()` does not throw, so the
-     * session is always invalidated. Only stateful guards are logged out, since
-     * token guards have no `logout()`.
+     * Only stateful guards are logged out, since token guards have no `logout()`.
      *
      * `UzairLoggedOut` is dispatched here too, so listeners also hear about
      * logins ended elsewhere or no longer renewable.
@@ -220,29 +217,8 @@ class EnsureAccessTokenIsFresh
         // The contract, not the facade: the guard may not be stateful.
         $authenticator = app(AuthFactory::class)->guard($guard);
 
-        if ($authenticator instanceof StatefulGuard) {
-            $authenticator->logout();
-        }
-
-        if ($request->hasSession()) {
-            OauthToken::forgetLogin($request->session()->getId());
-
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
-        }
+        Uzair::endBrowserSession($request, $authenticator instanceof StatefulGuard ? $authenticator : null);
 
         UzairLoggedOut::dispatch($user instanceof Model ? $user : null);
-    }
-
-    /**
-     * How long before the actual expiry the token should be renewed.
-     *
-     * A non-numeric value falls back to the default rather than casting to zero.
-     */
-    private function leewayInSeconds(): int
-    {
-        $leeway = config('uzairports.refresh_leeway', 60);
-
-        return is_numeric($leeway) ? (int) $leeway : 60;
     }
 }

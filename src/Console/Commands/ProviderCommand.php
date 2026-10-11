@@ -4,6 +4,7 @@ namespace Uzairports\Uzairid\Console\Commands;
 
 use Illuminate\Console\Command;
 use Illuminate\Database\Eloquent\Collection;
+use Illuminate\Database\Schema\Builder;
 use Illuminate\Support\Str;
 use RuntimeException;
 use Throwable;
@@ -117,26 +118,43 @@ class ProviderCommand extends Command
         $backup = 'uzair_tokens_backup_'.$suffix;
         $staged = 'uzair_tokens_next_'.$suffix;
         $migration->table = $staged;
-        $create();
-
-        if ($this->tokenRowsExist()) {
-            $schema->drop($staged);
-            throw new RuntimeException('A writer added tokens during preparation. Stop all writers and retry under the old provider.');
-        }
-
-        $schema->rename($table, $backup);
 
         try {
+            $create();
+
+            if ($this->tokenRowsExist()) {
+                throw new RuntimeException('A writer added tokens during preparation. Stop all writers and retry under the old provider.');
+            }
+
+            $schema->rename($table, $backup);
             $schema->rename($staged, $table);
         } catch (Throwable $exception) {
-            if (! $schema->hasTable($table)) {
-                $schema->rename($backup, $table);
-            }
+            $this->undoRebuild($schema, $table, $backup, $staged);
 
             throw $exception;
         }
 
         $this->info("Token table recreated. The previous empty table is preserved as [{$backup}].");
+    }
+
+    /**
+     * Put the original table back and drop whatever was staged beside it.
+     *
+     * Runs on every failed rebuild — a migration that stopped partway, either
+     * rename refused — so no `uzair_tokens_next_*` table is left behind. Never
+     * raises: the caller is reporting the failure that brought it here.
+     */
+    private function undoRebuild(Builder $schema, string $table, string $backup, string $staged): void
+    {
+        try {
+            if (! $schema->hasTable($table) && $schema->hasTable($backup)) {
+                $schema->rename($backup, $table);
+            }
+
+            $schema->dropIfExists($staged);
+        } catch (Throwable $exception) {
+            $this->warn("The failed rebuild could not be fully undone ({$exception->getMessage()}). Check for [{$staged}] and [{$backup}] beside [{$table}].");
+        }
     }
 
     /** @phpstan-impure */

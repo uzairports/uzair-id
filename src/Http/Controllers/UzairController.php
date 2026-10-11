@@ -12,7 +12,6 @@ use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
-use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
@@ -21,7 +20,6 @@ use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
 use Uzairports\Uzairid\Events\UzairDeviceLoggedOut;
 use Uzairports\Uzairid\Events\UzairLoggedOut;
 use Uzairports\Uzairid\Models\OauthToken;
-use Uzairports\Uzairid\Socialite\UzairportsProvider;
 use Uzairports\Uzairid\Uzair;
 
 /**
@@ -238,10 +236,7 @@ abstract class UzairController
      */
     private function finishLogout(Request $request, bool $signedOut, ?string $idTokenHint): JsonResponse|RedirectResponse
     {
-        if ($request->hasSession()) {
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
-        }
+        Uzair::endBrowserSession($request);
 
         if ($request->wantsJson()) {
             return new JsonResponse([], 204);
@@ -270,13 +265,10 @@ abstract class UzairController
             return null;
         }
 
-        // A driver that cannot be built, or an endpoint refused as plain HTTP.
+        // A driver that cannot be built or is not this package's, or an
+        // endpoint refused as plain HTTP.
         try {
-            $provider = Socialite::driver('uzairports');
-
-            return $provider instanceof UzairportsProvider
-                ? $provider->endSessionUrl($postLogoutRedirectUri, $idTokenHint)
-                : null;
+            return Uzair::driver()->endSessionUrl($postLogoutRedirectUri, $idTokenHint);
         } catch (Throwable $exception) {
             Log::warning('The UzAirports session could not be ended at the identity provider.', [
                 'exception_class' => $exception::class,

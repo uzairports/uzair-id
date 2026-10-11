@@ -101,24 +101,25 @@ class UzairServiceProvider extends ServiceProvider
      * The manager must not be resolved during boot, or it is built on every
      * request. `callAfterResolving()` registers the driver when the manager is
      * built, including one built before this provider booted.
+     *
+     * `uzairports.guzzle` reaches the client as it is configured. The timeouts
+     * are not settled here: every request the driver sends carries its own
+     * (`UzairportsProvider::requestTimeout()` and its siblings), which is
+     * where `guzzle.timeout`, `timeout` and their defaults are read.
      */
     private function registerSocialiteDriver(): void
     {
         // Socialite rebinds the closure to the manager, so helpers are captured
         // as callables rather than reached through `$this`.
         $configureProvider = $this->configureProvider(...);
-        $seconds = $this->seconds(...);
 
-        $this->callAfterResolving(Factory::class, function (SocialiteManager $socialite) use ($configureProvider, $seconds): void {
-            $socialite->extend('uzairports', function ($app) use ($socialite, $configureProvider, $seconds) {
+        $this->callAfterResolving(Factory::class, function (SocialiteManager $socialite) use ($configureProvider): void {
+            $socialite->extend('uzairports', function ($app) use ($socialite, $configureProvider) {
                 /** @var array<string, mixed> $config */
                 $config = $app['config']['uzairports'] ?? [];
 
-                $guzzle = (array) ($config['guzzle'] ?? []);
-                $config['guzzle'] = array_merge($guzzle, [
-                    'timeout' => $seconds($guzzle['timeout'] ?? $config['timeout'] ?? null, 10),
-                    'connect_timeout' => $seconds($guzzle['connect_timeout'] ?? $config['connect_timeout'] ?? null, 5),
-                ]);
+                // Socialite hands the value to an `array` parameter as it is.
+                $config['guzzle'] = (array) ($config['guzzle'] ?? []);
 
                 /** @var UzairportsProvider $provider */
                 $provider = $socialite->buildProvider(
@@ -299,17 +300,6 @@ class UzairServiceProvider extends ServiceProvider
         return $request->hasSession() && is_string($sessionCookie) && $request->cookies->has($sessionCookie)
             ? 'session:'.hash('sha256', $request->session()->getId())
             : 'ip:'.$request->ip();
-    }
-
-    /**
-     * Read a configured number of seconds, falling back where there is none.
-     *
-     * A non-numeric or non-positive value uses the default, since Guzzle reads
-     * zero as "wait forever".
-     */
-    private function seconds(mixed $value, int $default): int
-    {
-        return is_numeric($value) && (float) $value > 0 ? (int) ceil((float) $value) : $default;
     }
 
     private function configPath(): string

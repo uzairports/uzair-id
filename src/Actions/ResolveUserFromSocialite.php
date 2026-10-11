@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Log;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
+use UnexpectedValueException;
 use Uzairports\Uzairid\Uzair;
 
 class ResolveUserFromSocialite
@@ -21,16 +22,24 @@ class ResolveUserFromSocialite
      * A name or e-mail the provider omits keeps the stored value. `forceFill()`
      * avoids requiring the host model to make these columns mass assignable.
      *
+     * A resolver registered through `Uzair::resolveUserUsing()` is asked first:
+     * a `Model` it returns is the account, and null means "no opinion" — the
+     * identity is then linked or created as usual. Null therefore cannot deny
+     * a sign-in; a resolver that refuses an identity throws, and the exception
+     * fails the handshake (the callback surrenders the issued grants and
+     * answers with its failure page). Anything else it returns is a bug and is
+     * refused rather than silently ignored.
+     *
      * @throws RuntimeException when the identity provider omits the user id
+     * @throws UnexpectedValueException when the resolver or the attributes
+     *                                  updater answers with something it may not
      */
     public function __invoke(SocialiteUser $uzairUser): Model
     {
-        $resolver = Uzair::getUserResolver();
-        if ($resolver !== null) {
-            $resolved = $resolver($uzairUser);
-            if ($resolved instanceof Model) {
-                return $resolved;
-            }
+        $resolved = $this->fromResolver($uzairUser);
+
+        if ($resolved !== null) {
+            return $resolved;
         }
 
         $uzairId = (string) $uzairUser->getId();
@@ -52,11 +61,7 @@ class ResolveUserFromSocialite
 
         $email = $reportedEmail ?? $user->getAttribute('email');
 
-        $extraAttributes = [];
-        $updater = Uzair::getUserAttributesUpdater();
-        if ($updater !== null) {
-            $extraAttributes = $updater($user, $uzairUser);
-        }
+        $extraAttributes = $this->extraAttributes($user, $uzairUser);
 
         $saved = $user->forceFill([
             'uzair_id' => $uzairId,
@@ -70,6 +75,77 @@ class ResolveUserFromSocialite
         }
 
         return $user;
+    }
+
+    /**
+     * The account the registered resolver chose, or null to resolve as usual.
+     *
+     * @throws UnexpectedValueException when it returns neither a model nor null
+     */
+    private function fromResolver(SocialiteUser $uzairUser): ?Model
+    {
+        $resolver = Uzair::getUserResolver();
+
+        if ($resolver === null) {
+            return null;
+        }
+
+        $resolved = $this->call($resolver, $uzairUser);
+
+        if ($resolved === null || $resolved instanceof Model) {
+            return $resolved;
+        }
+
+        throw new UnexpectedValueException(sprintf(
+            'The UzAirports user resolver must return an Eloquent model or null, [%s] returned. Throw from the resolver to refuse a sign-in.',
+            get_debug_type($resolved),
+        ));
+    }
+
+    /**
+     * The attributes the registered updater maps onto the account.
+     *
+     * @return array<string, mixed>
+     *
+     * @throws UnexpectedValueException when the updater does not return an array
+     */
+    private function extraAttributes(Model $user, SocialiteUser $uzairUser): array
+    {
+        $updater = Uzair::getUserAttributesUpdater();
+
+        if ($updater === null) {
+            return [];
+        }
+
+        $attributes = $this->call($updater, $user, $uzairUser);
+
+        if (! is_array($attributes)) {
+            throw new UnexpectedValueException(sprintf(
+                'The UzAirports user attributes updater must return an array of attributes, [%s] returned.',
+                get_debug_type($attributes),
+            ));
+        }
+
+        $named = [];
+
+        foreach ($attributes as $column => $value) {
+            if (! is_string($column)) {
+                throw new UnexpectedValueException('The UzAirports user attributes updater must key its attributes by column name.');
+            }
+
+            $named[$column] = $value;
+        }
+
+        return $named;
+    }
+
+    /**
+     * Call a host callback for what it actually answered: PHP does not hold
+     * a closure to the type its registration documents.
+     */
+    private function call(callable $callback, mixed ...$arguments): mixed
+    {
+        return $callback(...$arguments);
     }
 
     /**

@@ -11,6 +11,8 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Laravel\Socialite\Facades\Socialite;
+use PHPUnit\Framework\Attributes\DataProvider;
+use RuntimeException;
 use Uzairports\Uzairid\Models\OauthToken;
 
 class ProviderCommandTest extends TestCase
@@ -171,6 +173,54 @@ class ProviderCommandTest extends TestCase
         $this->assertTrue($login->user?->is($other));
         $other->delete();
         $this->assertModelMissing($login);
+    }
+
+    /**
+     * A rebuild that fails anywhere — the staged table only half created, or
+     * either rename refused — puts the original table back and drops the
+     * staged one. Only the creator's own refusal used to drop it, so every
+     * other failure left an `uzair_tokens_next_*` table behind for good.
+     */
+    #[DataProvider('rebuildFailures')]
+    public function test_a_failed_rebuild_leaves_no_staged_table_behind(string $failingStatement): void
+    {
+        $this->maintenance();
+
+        DB::connection()->beforeExecuting(function (string $query) use ($failingStatement): void {
+            $query = strtolower(ltrim($query));
+
+            if (! str_contains($query, 'uzair_tokens_next_')) {
+                return;
+            }
+
+            $fails = $failingStatement === 'rename'
+                ? str_contains($query, 'rename')
+                : (str_starts_with($query, 'create') || str_starts_with($query, 'alter')) && ! str_starts_with($query, 'create table');
+
+            if ($fails) {
+                throw new RuntimeException("The {$failingStatement} was refused.");
+            }
+        });
+
+        $this->assertSame(1, Artisan::call('uzair:provider', ['--rebuild-empty' => true]));
+        $this->assertStringContainsString("The {$failingStatement} was refused.", Artisan::output());
+
+        $this->assertTrue(Schema::hasTable('oauth_tokens'));
+        $this->assertSame([], array_values(array_filter(
+            Schema::getTableListing(schemaQualified: false),
+            fn (string $table): bool => str_starts_with($table, 'uzair_tokens_'),
+        )));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function rebuildFailures(): array
+    {
+        return [
+            'the staged table is only half created' => ['index'],
+            'the staged table cannot take the name' => ['rename'],
+        ];
     }
 
     public function test_ending_logins_refuses_the_wrong_provider_and_observer_vetoes(): void

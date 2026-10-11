@@ -728,6 +728,76 @@ class EndSessionsTest extends TestCase
     }
 
     /**
+     * A freed slot is filled at once: the next revocation does not wait for
+     * the slowest call of a fixed batch to settle.
+     */
+    public function test_a_revocation_starts_as_soon_as_a_slot_frees_up(): void
+    {
+        config(['uzairports.revocation_concurrency' => 2]);
+
+        $user = TestUser::create(['uzair_id' => '7031']);
+        $this->login($user, 'first-session', 'first_token');
+        $this->login($user, 'second-session', 'second_token');
+        $this->login($user, 'third-session', 'third_token');
+
+        $events = [];
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('logoutAsync')->times(3)->andReturnUsing(
+            function (string $token) use (&$events): PromiseInterface {
+                return $this->recordedRevocation($token, $events);
+            }
+        );
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        (new EndSessions)($user->id);
+
+        // Fixed batches would wait on the second before sending the third.
+        $this->assertSame([
+            'sent:first_token',
+            'sent:second_token',
+            'waited:first_token',
+            'sent:third_token',
+            'waited:second_token',
+            'waited:third_token',
+        ], $events);
+    }
+
+    /**
+     * Observers of the revoking path see whole rows, as `endAll()` hands them,
+     * and the builder a caller passed in is left as it was given.
+     */
+    public function test_ending_by_query_hands_observers_whole_rows_and_leaves_the_query_alone(): void
+    {
+        $user = TestUser::create(['uzair_id' => '7032']);
+        $this->login($user, 'phone-session', 'phone_token');
+
+        /** @var list<array<string, mixed>> $observed */
+        $observed = [];
+
+        OauthToken::deleted(function (OauthToken $token) use (&$observed): void {
+            $observed[] = $token->getAttributes();
+        });
+
+        $this->acceptsRevocations();
+
+        $query = OauthToken::query()->where('user_id', $user->id);
+        $sql = $query->toSql();
+
+        try {
+            $this->assertSame(1, (new EndSessions)->endWhere($query));
+        } finally {
+            OauthToken::flushEventListeners();
+        }
+
+        $this->assertSame($sql, $query->toSql());
+        $this->assertCount(1, $observed);
+        $this->assertArrayHasKey('created_at', $observed[0]);
+        $this->assertArrayHasKey('expires_at', $observed[0]);
+    }
+
+    /**
      * A 401 on an access token is the provider saying it no longer honors what
      * it was being asked to stop honoring, which is the outcome asked for. The
      * refresh endpoint answers 200 to a token it has already retired, so a 401

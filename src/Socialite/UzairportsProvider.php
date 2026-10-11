@@ -19,6 +19,7 @@ use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\VerifyIdentityToken;
+use Uzairports\Uzairid\Exceptions\IdentityNonceMismatch;
 use Uzairports\Uzairid\Uzair;
 
 class UzairportsProvider extends AbstractProvider implements ProviderInterface
@@ -359,6 +360,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
      *
      * @param  array<array-key, mixed>  $response
      *
+     * @throws IdentityNonceMismatch when the token answers no handshake this session started
      * @throws Throwable when there is no ID token or it cannot be trusted
      */
     private function attachIdentity(User $user, array $response): void
@@ -401,7 +403,7 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
             $matched = $matchedKey !== null || (is_string($legacyNonce) && is_string($claimNonce) && hash_equals($legacyNonce, $claimNonce));
 
             if (! $matched) {
-                throw new RuntimeException('The UzAirports ID token nonce is missing or does not match the session nonce.');
+                throw IdentityNonceMismatch::make();
             }
 
             if ($matchedKey !== null) {
@@ -782,6 +784,12 @@ class UzairportsProvider extends AbstractProvider implements ProviderInterface
         return self::seconds(config('uzairports.revocation_timeout', 3), 3);
     }
 
+    /**
+     * Read a configured number of seconds, falling back where there is none.
+     *
+     * A non-numeric or non-positive value uses the default, since Guzzle reads
+     * zero as "wait forever"; a fraction is rounded up.
+     */
     private static function seconds(mixed $value, int $default): int
     {
         return is_numeric($value) && (float) $value > 0 ? (int) ceil((float) $value) : $default;

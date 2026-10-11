@@ -3,6 +3,7 @@
 namespace Uzairports\Uzairid;
 
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Contracts\Auth\StatefulGuard;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Http\Request;
 use Illuminate\Routing\Route as RegisteredRoute;
@@ -10,6 +11,7 @@ use Illuminate\Routing\RouteRegistrar;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Route;
 use Laravel\Sanctum\Sanctum;
+use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
@@ -19,6 +21,7 @@ use Uzairports\Uzairid\Http\Controllers\UzairAuthController;
 use Uzairports\Uzairid\Http\Controllers\UzairBackchannelLogoutController;
 use Uzairports\Uzairid\Http\Middleware\TreatRequestAsJson;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class Uzair
 {
@@ -27,6 +30,10 @@ class Uzair
 
     /**
      * Register a custom callback to resolve or update the local user model from the SSO identity.
+     *
+     * Return the account to sign in, or null to fall through to the default
+     * linking and creation. To refuse the sign-in, throw: the handshake fails
+     * and the issued grants are handed back. Any other return value throws.
      *
      * @param  (callable(SocialiteUser): ?Model)|null  $callback
      */
@@ -220,7 +227,6 @@ class Uzair
      */
     public static function flushState(): void
     {
-        OauthToken::flushPruner();
         OauthToken::flushAccessTokensTables();
         OauthToken::flushLoginCacheWarnings();
         RefreshAccessToken::flushLockStoreWarnings();
@@ -252,6 +258,65 @@ class Uzair
         }
 
         return self::host().'/'.ltrim($endpoint, '/');
+    }
+
+    /**
+     * The `uzairports` Socialite driver, checked rather than annotated.
+     *
+     * Resolved on call, never at boot: the Socialite manager is deferred and
+     * must stay unbuilt on requests that never reach an OAuth endpoint. What
+     * a caller answers when the driver is not this package's is its own
+     * decision; this only refuses to hand it over.
+     *
+     * @throws RuntimeException when the `uzairports` driver is not this package's
+     */
+    public static function driver(): UzairportsProvider
+    {
+        $provider = Socialite::driver('uzairports');
+
+        if (! $provider instanceof UzairportsProvider) {
+            throw new RuntimeException('The [uzairports] Socialite driver is not '.UzairportsProvider::class.'.');
+        }
+
+        return $provider;
+    }
+
+    /**
+     * How long before its expiry an access token is renewed, in seconds
+     * (`uzairports.refresh_leeway`).
+     *
+     * A non-numeric value falls back to the default rather than casting to zero.
+     */
+    public static function refreshLeeway(): int
+    {
+        $leeway = config('uzairports.refresh_leeway', 60);
+
+        return is_numeric($leeway) ? (int) $leeway : 60;
+    }
+
+    /**
+     * Leave nothing of a browser's session behind: sign it out of the guard,
+     * when one is given, drop the login cached for the session, invalidate the
+     * session and hand it a new CSRF token.
+     *
+     * The cached login is forgotten before invalidation, which changes the id
+     * the entry is keyed by; `forgetLogin()` does not raise, so the session is
+     * always invalidated.
+     *
+     * @internal
+     */
+    public static function endBrowserSession(Request $request, ?StatefulGuard $guard = null): void
+    {
+        $guard?->logout();
+
+        if (! $request->hasSession()) {
+            return;
+        }
+
+        OauthToken::forgetLogin($request->session()->getId());
+
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
     }
 
     /**

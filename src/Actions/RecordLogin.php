@@ -2,7 +2,6 @@
 
 namespace Uzairports\Uzairid\Actions;
 
-use Carbon\CarbonInterface;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -12,6 +11,7 @@ use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Throwable;
 use Uzairports\Uzairid\Models\OauthToken;
+use Uzairports\Uzairid\Support\TokenExpiry;
 use Uzairports\Uzairid\Uzair;
 
 /**
@@ -127,7 +127,7 @@ class RecordLogin
             'personal_access_token_id' => $accessTokenId,
             'access_token' => $uzairUser->token,
             'refresh_token' => $uzairUser->refreshToken,
-            'expires_at' => $this->expiresAt($uzairUser),
+            'expires_at' => TokenExpiry::fromExpiresIn($uzairUser->expiresIn),
             'ip_address' => $records ? $ip : null,
             'user_agent' => $records ? Str::limit((string) $request->userAgent(), 500, '') : null,
         ])->save();
@@ -153,24 +153,5 @@ class RecordLogin
             $accessToken !== $uzairUser->token ? $accessToken : null,
             $refreshToken !== $uzairUser->refreshToken ? $refreshToken : null,
         );
-    }
-
-    /**
-     * When the issued access token stops being accepted.
-     *
-     * A provider that sends no `expires_in` — or zero — gets
-     * `default_token_ttl`, the value a renewal would arrive at anyway; null
-     * only when that is not a positive number either.
-     */
-    private function expiresAt(SocialiteUser $uzairUser): ?CarbonInterface
-    {
-        $expiresIn = (int) $uzairUser->expiresIn;
-
-        if ($expiresIn <= 0) {
-            $fallback = config('uzairports.default_token_ttl', 3600);
-            $expiresIn = is_numeric($fallback) && (int) $fallback > 0 ? (int) $fallback : 0;
-        }
-
-        return $expiresIn <= 0 ? null : now()->addSeconds($expiresIn);
     }
 }

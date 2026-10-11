@@ -15,6 +15,7 @@ use Illuminate\Http\Request;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Testing\TestResponse;
 use Laravel\Sanctum\HasApiTokens;
@@ -28,6 +29,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use RuntimeException;
 use Symfony\Component\HttpFoundation\Response;
 use Uzairports\Uzairid\Actions\EndSessions;
+use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Concerns\HasUzairToken;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
 use Uzairports\Uzairid\Models\OauthToken;
@@ -663,6 +665,29 @@ class UzairApiAuthControllerTest extends TestCase
         PersonalAccessToken::query()->whereKey($phoneLogin->personal_access_token_id)->delete();
 
         $this->assertSame(1, (new OauthToken)->prunable()->count());
+    }
+
+    /**
+     * A grant the identity provider refused is dead whatever ending its row
+     * costs. Ending it used to sit in the same `try` as the rotation, so a
+     * failure there answered 503 and the client retried a dead grant forever.
+     */
+    public function test_refresh_answers_401_for_a_refused_grant_even_when_its_login_cannot_be_ended(): void
+    {
+        $user = SanctumUser::query()->create(['uzair_id' => '7024']);
+        [$plainTextToken, $login] = $this->phoneLogin($user, 'phone');
+        $login->forceFill(['expires_at' => now()->subMinute()])->save();
+
+        $this->mock(RefreshAccessToken::class)->shouldReceive('__invoke')->once()->andReturnFalse();
+        $this->mock(EndSessions::class)->shouldReceive('end')->once()->andThrow(new RuntimeException('The database went away.'));
+        Log::shouldReceive('warning')
+            ->with('Failed to end an UzAirports login whose grant could no longer be renewed.', ['exception_class' => RuntimeException::class])
+            ->once();
+
+        $this->withToken($plainTextToken)
+            ->postJson(route('uzair.api.refresh'))
+            ->assertUnauthorized()
+            ->assertExactJson(['message' => __('uzairid::messages.session_expired')]);
     }
 
     public function test_refresh_endpoint_returns_unauthorized_when_token_was_already_rotated(): void

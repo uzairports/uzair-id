@@ -13,7 +13,6 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\NewAccessToken;
-use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\User as SocialiteUser;
 use RuntimeException;
 use Throwable;
@@ -25,7 +24,6 @@ use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Actions\StoreAccount;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
 use Uzairports\Uzairid\Models\OauthToken;
-use Uzairports\Uzairid\Socialite\UzairportsProvider;
 use Uzairports\Uzairid\Uzair;
 
 /**
@@ -78,7 +76,7 @@ class UzairApiAuthController extends UzairController
 
             $this->ensureSanctumCanIssueTokens();
 
-            $uzairUser = $this->provider()->userFromCode(
+            $uzairUser = Uzair::driver()->userFromCode(
                 $validated['code'],
                 $validated['redirect_uri'],
                 $validated['code_verifier'] ?? null,
@@ -157,17 +155,10 @@ class UzairApiAuthController extends UzairController
         }
 
         try {
-            $refreshLeeway = config('uzairports.refresh_leeway', 60);
-            $leeway = is_numeric($refreshLeeway) ? (int) $refreshLeeway : 60;
+            $leeway = Uzair::refreshLeeway();
 
-            if ($login->hasExpired() || $login->expiresWithin($leeway)) {
-                $refreshed = $refreshAccessToken($login, $leeway);
-
-                if (! $refreshed) {
-                    $endSessions->end($login);
-
-                    return new JsonResponse(['message' => __('uzairid::messages.session_expired')], 401);
-                }
+            if (($login->hasExpired() || $login->expiresWithin($leeway)) && ! $refreshAccessToken($login, $leeway)) {
+                return $this->grantWasRefused($endSessions, $login);
             }
 
             $rawDeviceName = $validated['device_name'] ?? null;
@@ -188,19 +179,7 @@ class UzairApiAuthController extends UzairController
                         throw new AuthenticationException(__('uzairid::messages.session_ended'));
                     }
 
-                    $newAccessToken = method_exists($user, 'createToken')
-                        ? $user->createToken($deviceName, $this->tokenAbilities(), $expiresAt)
-                        : null;
-
-                    if (! $newAccessToken instanceof NewAccessToken) {
-                        throw new RuntimeException('The account model did not issue a Sanctum token.');
-                    }
-
-                    $newKey = $newAccessToken->accessToken->getKey();
-
-                    if (! is_int($newKey) && ! is_string($newKey)) {
-                        throw new RuntimeException('The issued Sanctum token has no key a login can be filed under.');
-                    }
+                    ['accessToken' => $newAccessToken, 'key' => $newKey] = $this->createSanctumToken($user, $deviceName, $expiresAt);
 
                     if (! $lockedLogin->forceFill(['personal_access_token_id' => $newKey])->save()) {
                         throw new RuntimeException('The UzAirports login rotation was refused by a model listener and not recorded.');
@@ -310,19 +289,50 @@ class UzairApiAuthController extends UzairController
     }
 
     /**
-     * The driver, checked rather than annotated.
+     * End a login whose grant the identity provider refused to renew, and say so.
      *
-     * @throws RuntimeException when the `uzairports` driver is not this package's
+     * Always 401, whatever ending the row costs: the grant is dead either way,
+     * and a 503 would have the client retry it forever. A failure to end it is
+     * reported; the row is left for the sweep.
      */
-    private function provider(): UzairportsProvider
+    private function grantWasRefused(EndSessions $endSessions, OauthToken $login): JsonResponse
     {
-        $provider = Socialite::driver('uzairports');
-
-        if (! $provider instanceof UzairportsProvider) {
-            throw new RuntimeException('The [uzairports] Socialite driver is not '.UzairportsProvider::class.'.');
+        try {
+            $endSessions->end($login);
+        } catch (Throwable $exception) {
+            Log::warning('Failed to end an UzAirports login whose grant could no longer be renewed.', [
+                'exception_class' => $exception::class,
+            ]);
         }
 
-        return $provider;
+        return new JsonResponse(['message' => __('uzairid::messages.session_expired')], 401);
+    }
+
+    /**
+     * Issue a Sanctum token to the account, refusing one a login could not be
+     * filed under.
+     *
+     * @return array{accessToken: NewAccessToken, key: int|string}
+     *
+     * @throws RuntimeException when the account issues no token, or one without a usable key
+     */
+    private function createSanctumToken(Authenticatable $user, string $deviceName, ?CarbonInterface $expiresAt): array
+    {
+        $accessToken = method_exists($user, 'createToken')
+            ? $user->createToken($deviceName, $this->tokenAbilities(), $expiresAt)
+            : null;
+
+        if (! $accessToken instanceof NewAccessToken) {
+            throw new RuntimeException('The account model did not issue a Sanctum token.');
+        }
+
+        $key = $accessToken->accessToken->getKey();
+
+        if (! is_int($key) && ! is_string($key)) {
+            throw new RuntimeException('The issued Sanctum token has no key a login can be filed under.');
+        }
+
+        return ['accessToken' => $accessToken, 'key' => $key];
     }
 
     /**
@@ -341,19 +351,7 @@ class UzairApiAuthController extends UzairController
         $expiresAt = $this->tokenExpiresAt();
 
         return OauthToken::query()->getConnection()->transaction(function () use ($request, $uzairUser, $user, $deviceName, $expiresAt): array {
-            $accessToken = method_exists($user, 'createToken')
-                ? $user->createToken($deviceName, $this->tokenAbilities(), $expiresAt)
-                : null;
-
-            if (! $accessToken instanceof NewAccessToken) {
-                throw new RuntimeException('The account model did not issue a Sanctum token.');
-            }
-
-            $accessTokenId = $accessToken->accessToken->getKey();
-
-            if (! is_int($accessTokenId) && ! is_string($accessTokenId)) {
-                throw new RuntimeException('The issued Sanctum token has no key a login can be filed under.');
-            }
+            ['accessToken' => $accessToken, 'key' => $accessTokenId] = $this->createSanctumToken($user, $deviceName, $expiresAt);
 
             $login = app(RecordLogin::class)($request, $uzairUser, $user, null, $accessTokenId);
 

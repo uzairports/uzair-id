@@ -20,6 +20,7 @@ use Uzairports\Uzairid\Actions\RecordLogin;
 use Uzairports\Uzairid\Actions\ResolveUserFromSocialite;
 use Uzairports\Uzairid\Actions\StoreAccount;
 use Uzairports\Uzairid\Events\UzairAuthenticated;
+use Uzairports\Uzairid\Exceptions\IdentityNonceMismatch;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Uzair;
 
@@ -40,9 +41,11 @@ class UzairAuthController extends UzairController
     /**
      * Complete the SSO handshake and open a session for the identity behind it.
      *
-     * Anything failing after the code exchange leaves the browser signed out:
-     * the session is invalidated, the issued grants are surrendered, and the
-     * browser is sent back with the reason.
+     * Anything failing after the code exchange — a `UzairAuthenticated`
+     * listener included, as on the API — leaves the browser signed out: the
+     * login is ended or the issued grants surrendered, the session is
+     * invalidated, and the browser is sent back with the reason. A nonce that
+     * names no handshake of this session is told as a lost handshake.
      *
      * Under `single_session` the account's other logins end once this one is
      * written. Two sign-ins finishing at once may end each other; that is left
@@ -61,6 +64,7 @@ class UzairAuthController extends UzairController
         }
 
         $uzairUser = null;
+        $token = null;
         $storeAccount = app(StoreAccount::class, ['resolveUser' => $resolveUser]);
 
         try {
@@ -72,33 +76,7 @@ class UzairAuthController extends UzairController
             $previousSessionIds = Uzair::loginSessionIds($request);
 
             ['user' => $user, 'token' => $token] = $this->storeIdentity($request, $uzairUser, $storeAccount);
-        } catch (InvalidStateException) {
-            $this->reportLostHandshake($request);
 
-            return $this->handshakeFailed(__('uzairid::messages.handshake_lost'));
-        } catch (Throwable $e) {
-            $this->surrenderIssuedGrants($endSessions, $uzairUser);
-
-            $this->signOut();
-            if ($request->hasSession()) {
-                $request->session()->invalidate();
-                $request->session()->regenerateToken();
-            }
-
-            if ($e instanceof RuntimeException && str_contains($e->getMessage(), 'session nonce')) {
-                $this->reportLostHandshake($request);
-
-                return $this->handshakeFailed(__('uzairid::messages.handshake_lost'));
-            }
-
-            Log::error('UzAirports OAuth callback failed.', [
-                'exception_class' => $e::class,
-            ]);
-
-            return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
-        }
-
-        try {
             $this->endPreviousLogin($endSessions, $token, $previousSessionIds);
 
             $this->noteTheBrowsersLogin($request);
@@ -110,13 +88,29 @@ class UzairAuthController extends UzairController
                     revoke: (bool) config('uzairports.revoke_on_single_session', true),
                 );
             }
+
+            // Inside the handshake: a listener that fails fails the sign-in.
+            UzairAuthenticated::dispatch($user, $uzairUser, $token);
+        } catch (InvalidStateException) {
+            // Nothing was exchanged, and a browser signed in before is left so.
+            $this->reportLostHandshake($request);
+
+            return $this->handshakeFailed(__('uzairid::messages.handshake_lost'));
         } catch (Throwable $e) {
-            $this->abandonLogin($request, $endSessions, $token, $e);
+            $this->abandon($request, $endSessions, $uzairUser, $token);
+
+            if ($e instanceof IdentityNonceMismatch) {
+                $this->reportLostHandshake($request);
+
+                return $this->handshakeFailed(__('uzairid::messages.handshake_lost'));
+            }
+
+            Log::error('UzAirports OAuth callback failed.', [
+                'exception_class' => $e::class,
+            ]);
 
             return $this->handshakeFailed(__('uzairid::messages.authentication_failed'));
         }
-
-        UzairAuthenticated::dispatch($user, $uzairUser, $token);
 
         return redirect()->intended($this->target(config('uzairports.redirect_to', 'dashboard')));
     }
@@ -146,34 +140,28 @@ class UzairAuthController extends UzairController
     }
 
     /**
-     * Undo a sign-in whose clean-up of earlier logins failed.
+     * Undo what a failed handshake left behind and sign the browser out.
      *
-     * The browser is already signed in and its login written, but the logins
-     * it was meant to replace — this browser's earlier ones, or under
-     * `single_session` every other — may still stand. Keeping it would break
-     * that promise and answer a 500 to a signed-in browser, so the new login
-     * is ended (grants surrendered) and the browser signed out instead.
+     * Once the login is written — and it may already stand while the logins it
+     * replaces do not, or a `UzairAuthenticated` listener refused it — it is
+     * ended, grants and all. Before that only the issued grants exist to
+     * surrender. Never raises: the caller still reports the original failure.
      */
-    private function abandonLogin(Request $request, EndSessions $endSessions, OauthToken $token, Throwable $exception): void
+    private function abandon(Request $request, EndSessions $endSessions, ?SocialiteUser $uzairUser, ?OauthToken $token): void
     {
-        try {
-            $endSessions->end($token);
-        } catch (Throwable $endFailure) {
-            Log::warning('Failed to end an UzAirports login whose sign-in could not be completed.', [
-                'exception_class' => $endFailure::class,
-            ]);
+        if ($token === null) {
+            $this->surrenderIssuedGrants($endSessions, $uzairUser);
+        } else {
+            try {
+                $endSessions->end($token);
+            } catch (Throwable $endFailure) {
+                Log::warning('Failed to end an UzAirports login whose sign-in could not be completed.', [
+                    'exception_class' => $endFailure::class,
+                ]);
+            }
         }
 
-        $this->signOut();
-
-        if ($request->hasSession()) {
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
-        }
-
-        Log::error('UzAirports OAuth callback failed.', [
-            'exception_class' => $exception::class,
-        ]);
+        Uzair::endBrowserSession($request, $this->sessionGuard());
     }
 
     /**

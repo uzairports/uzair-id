@@ -24,6 +24,26 @@ use Uzairports\Uzairid\Socialite\UzairportsProvider;
 class VerifyIdentityToken
 {
     /**
+     * The algorithms the provider may sign with, mapped to the key type each needs.
+     *
+     * Only asymmetric ones: the keys are read from a public endpoint, and an
+     * HMAC algorithm would verify against a key anyone can download — a token
+     * signed with the published key itself would pass.
+     *
+     * @var array<string, string>
+     */
+    private const array ASYMMETRIC_ALGORITHMS = [
+        'RS256' => 'RSA',
+        'RS384' => 'RSA',
+        'RS512' => 'RSA',
+        'PS256' => 'RSA',
+        'ES256' => 'EC',
+        'ES384' => 'EC',
+        'ES256K' => 'EC',
+        'EdDSA' => 'OKP',
+    ];
+
+    /**
      * `$types` names the JOSE `typ` values the caller accepts. A token that
      * declares another is refused — an access token (`at+jwt`) must not pass
      * for a logout token because it is signed by the same keys. A token that
@@ -97,44 +117,66 @@ class VerifyIdentityToken
     /**
      * Check the signature and the token's lifetime.
      *
-     * A key id the cached set does not hold is the provider rotating its keys,
-     * so the set is fetched once more — at most once a minute, or every forged
-     * token naming an unknown key would cost the provider a request.
+     * A key id (read from the token's own header) that the cached set does not
+     * hold is the provider rotating its keys, so the set is fetched once more —
+     * at most once a minute per key set URL, or every forged token naming an
+     * unknown key would cost the provider a request. A process that loses
+     * that race reads the cache again instead, where the winner is putting
+     * the set it fetched.
      *
      * @return array<array-key, mixed>
      */
     private function decode(string $jwt, UzairportsProvider $provider): array
     {
-        try {
-            return $this->decodeWith($jwt, $this->keys($provider, fresh: false));
-        } catch (UnexpectedValueException $exception) {
-            if (! str_contains($exception->getMessage(), '"kid"') || ! $this->mayFetchKeysAgain()) {
-                throw $exception;
-            }
+        $allowed = self::allowedAlgorithms();
+        $jwks = $this->keys($provider, fresh: false);
+        $keyId = $this->keyIdOf($jwt);
+
+        if ($keyId !== null && self::jwksCacheTtl() > 0 && ! $this->holdsKey($jwks, $keyId)) {
+            $jwks = $this->keys($provider, fresh: $this->mayFetchKeysAgain($provider));
         }
 
-        return $this->decodeWith($jwt, $this->keys($provider, fresh: true));
+        return $this->decodeWith($jwt, $jwks, $allowed);
     }
 
     /**
-     * The algorithms the provider may sign with, mapped to the key type each needs.
-     *
-     * Only asymmetric ones: the keys are read from a public endpoint, and an
-     * HMAC algorithm would verify against a key anyone can download — a token
-     * signed with the published key itself would pass.
-     *
-     * @var array<string, string>
+     * The `kid` the token's header names, or null when it names none or the
+     * header cannot be read (the signature check then refuses the token).
      */
-    private const array ASYMMETRIC_ALGORITHMS = [
-        'RS256' => 'RSA',
-        'RS384' => 'RSA',
-        'RS512' => 'RSA',
-        'PS256' => 'RSA',
-        'ES256' => 'EC',
-        'ES384' => 'EC',
-        'ES256K' => 'EC',
-        'EdDSA' => 'OKP',
-    ];
+    private function keyIdOf(string $jwt): ?string
+    {
+        try {
+            $header = json_decode(JWT::urlsafeB64Decode(explode('.', $jwt)[0]), true);
+        } catch (Throwable) {
+            return null;
+        }
+
+        $keyId = is_array($header) ? ($header['kid'] ?? null) : null;
+
+        return is_string($keyId) && $keyId !== '' ? $keyId : null;
+    }
+
+    /**
+     * Whether the set publishes a key under `$keyId`: by `kid`, or by position
+     * for a key without one, as `JWK::parseKeySet()` indexes them.
+     *
+     * Any key counts, usable or not. A key the set holds under a refused
+     * algorithm is not a rotation, and fetching the set again cannot help.
+     *
+     * @param  array<array-key, mixed>  $jwks
+     */
+    private function holdsKey(array $jwks, string $keyId): bool
+    {
+        foreach (is_array($jwks['keys'] ?? null) ? $jwks['keys'] : [] as $index => $key) {
+            $id = is_array($key) ? ($key['kid'] ?? $index) : null;
+
+            if ((is_string($id) || is_int($id)) && (string) $id === $keyId) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     /**
      * The algorithms allowed when verifying ID and logout tokens.
@@ -170,11 +212,12 @@ class VerifyIdentityToken
 
     /**
      * @param  array<array-key, mixed>  $jwks
+     * @param  list<string>  $allowed
      * @return array<array-key, mixed>
      */
-    private function decodeWith(string $jwt, array $jwks): array
+    private function decodeWith(string $jwt, array $jwks, array $allowed): array
     {
-        $usable = $this->usableKeys($jwks, self::allowedAlgorithms());
+        $usable = $this->usableKeys($jwks, $allowed);
 
         if ($usable['keys'] === []) {
             throw new UnexpectedValueException('The UzAirports signing keys include no keys with an allowed algorithm.');
@@ -247,8 +290,7 @@ class VerifyIdentityToken
      */
     private function keys(UzairportsProvider $provider, bool $fresh): array
     {
-        $ttl = config('uzairports.oidc.jwks_cache_ttl', 3600);
-        $ttl = is_numeric($ttl) ? (int) $ttl : 3600;
+        $ttl = self::jwksCacheTtl();
         $key = 'uzairid:jwks:'.hash('sha256', $provider->jwksUrl());
 
         if ($ttl <= 0) {
@@ -278,10 +320,26 @@ class VerifyIdentityToken
         return $jwks;
     }
 
-    private function mayFetchKeysAgain(): bool
+    /**
+     * Seconds the key set is cached; zero or less fetches it for every token.
+     */
+    private static function jwksCacheTtl(): int
+    {
+        $ttl = config('uzairports.oidc.jwks_cache_ttl', 3600);
+
+        return is_numeric($ttl) ? (int) $ttl : 3600;
+    }
+
+    /**
+     * Claim this minute's refetch of the key set at `$provider`'s URL.
+     *
+     * Throttled per URL, so one provider rotating its keys does not hold back
+     * another configured beside it.
+     */
+    private function mayFetchKeysAgain(UzairportsProvider $provider): bool
     {
         try {
-            return Cache::store()->add('uzairid:jwks-refetched', true, 60);
+            return Cache::store()->add('uzairid:jwks-refetched:'.hash('sha256', $provider->jwksUrl()), true, 60);
         } catch (Throwable) {
             return false;
         }

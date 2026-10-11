@@ -3,25 +3,60 @@
 namespace Uzairports\Uzairid\Actions;
 
 use GuzzleHttp\Exception\BadResponseException;
+use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Cache\ArrayStore;
 use Illuminate\Cache\Repository;
 use Illuminate\Contracts\Cache\Lock;
 use Illuminate\Contracts\Cache\LockProvider;
 use Illuminate\Contracts\Cache\LockTimeoutException;
-use Illuminate\Contracts\Cache\Repository as CacheRepository;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use JsonException;
 use Laravel\Socialite\Facades\Socialite;
 use Laravel\Socialite\Two\Token;
+use RuntimeException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Throwable;
 use Uzairports\Uzairid\Events\UzairTokenRefreshed;
 use Uzairports\Uzairid\Events\UzairTokenRefreshFailed;
 use Uzairports\Uzairid\Models\OauthToken;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
+use Uzairports\Uzairid\Support\ProviderCircuitBreaker;
+use Uzairports\Uzairid\Support\TokenExpiry;
 
 class RefreshAccessToken
 {
+    /**
+     * OAuth error codes that refer to the client, not the grant (RFC 6749 §5.2).
+     *
+     * They affect every login equally, so they must never be treated as a
+     * refused grant: returning false would end each login as it came due, and
+     * nobody could sign back in with the same broken credentials.
+     *
+     * @var list<string>
+     */
+    private const array CLIENT_ERRORS = ['invalid_client', 'unauthorized_client'];
+
+    /**
+     * Lock store warnings already logged in this process.
+     *
+     * @var array<string, true>
+     */
+    private static array $reportedAboutTheLockStore = [];
+
+    /**
+     * The `lock_store` store, resolved once and shared by the lock and the
+     * breaker.
+     *
+     * Typed `mixed` because a host may bind anything; `lockStore()` and the
+     * breaker check what they receive.
+     */
+    private mixed $configuredStore = null;
+
+    private bool $storeWasResolved = false;
+
+    private ?ProviderCircuitBreaker $breaker = null;
+
     /**
      * Exchange the stored refresh token for a fresh access token.
      *
@@ -31,16 +66,17 @@ class RefreshAccessToken
      * caller used to decide the token needed renewing.
      *
      * Returns false when the provider refuses the grant; the user must sign in
-     * again. The cooldown check (`providerIsUnreachable()`) runs before the lock
-     * so that requests do not hold workers waiting on a failing provider. A lock
-     * store failure is answered from the row, never by exchanging unguarded,
-     * while failures from the exchange itself propagate to the caller untouched.
+     * again. The cooldown check (`ProviderCircuitBreaker::isOpen()`) runs before
+     * the lock so that requests do not hold workers waiting on a failing
+     * provider. A lock store failure is answered from the row, never by
+     * exchanging unguarded, while failures from the exchange itself propagate
+     * to the caller untouched.
      *
      * @throws Throwable
      */
     public function __invoke(OauthToken $token, int $leeway = 0): bool
     {
-        if ($this->providerIsUnreachable()) {
+        if ($this->breaker()->isOpen()) {
             return $this->answerWithoutCalling($token, $leeway);
         }
 
@@ -71,7 +107,7 @@ class RefreshAccessToken
         try {
             // The holder this request waited for may have tripped the cooldown;
             // calling the provider again would hold this worker for a timeout too.
-            if ($this->providerIsUnreachable()) {
+            if ($this->breaker()->isOpen()) {
                 return $this->answerWithoutCalling($token, $leeway);
             }
 
@@ -79,6 +115,23 @@ class RefreshAccessToken
         } finally {
             $this->release($lock);
         }
+    }
+
+    /**
+     * End the cooldown immediately (for operators and tests).
+     */
+    public static function forgetProviderFailure(): void
+    {
+        (new self)->breaker()->reset();
+    }
+
+    /**
+     * Allow lock store warnings to be logged again; called from
+     * `Uzair::flushState()` and by tests.
+     */
+    public static function flushLockStoreWarnings(): void
+    {
+        self::$reportedAboutTheLockStore = [];
     }
 
     /**
@@ -148,149 +201,14 @@ class RefreshAccessToken
     }
 
     /**
-     * Cache key marking the provider as in cooldown.
+     * The cooldown kept for the identity provider, sharing the `lock_store`
+     * store with the lock. The store is resolved only when the breaker first
+     * reads it, inside its own `try`.
      */
-    private const string PROVIDER_FAILURE_KEY = 'uzairid:provider-unreachable';
-
-    /**
-     * Cache key counting consecutive provider failures below the threshold.
-     */
-    private const string PROVIDER_FAILURE_COUNT_KEY = 'uzairid:provider-failures';
-
-    /**
-     * Whether the provider is in cooldown after repeated failures.
-     *
-     * An unreachable provider would otherwise cost every request with an
-     * expiring token a full request timeout held in a worker, exhausting
-     * workers during a wave of expiries. After `provider_failure_threshold`
-     * failures, the exchange is skipped for `provider_cooldown` seconds and
-     * requests are answered from the row.
-     *
-     * A single failure never trips the breaker: blips (dropped connections,
-     * rate limits) are normal, and a successful exchange clears the count.
-     * There is no half-open probe; the entry lapses, so the cooldown should be
-     * several times the request timeout. A per-process store is acceptable
-     * here because the breaker only spares work.
-     *
-     * @phpstan-impure
-     */
-    private function providerIsUnreachable(): bool
+    private function breaker(): ProviderCircuitBreaker
     {
-        if (self::providerCooldown() === 0) {
-            return false;
-        }
-
-        try {
-            return $this->breakerCache()?->has(self::PROVIDER_FAILURE_KEY) === true;
-        } catch (Throwable) {
-            // Never refuse a renewal over the cache; treat it as no cooldown.
-            return false;
-        }
+        return $this->breaker ??= new ProviderCircuitBreaker(fn (): mixed => $this->configuredStore());
     }
-
-    /**
-     * Count a failure to answer and start the cooldown at the threshold.
-     *
-     * Refused grants are not counted; the provider answered. The count lives
-     * for one cooldown, and `add()` precedes `increment()` because incrementing
-     * a missing key creates it without a TTL on some stores.
-     */
-    private function recordProviderFailure(): void
-    {
-        $cooldown = self::providerCooldown();
-
-        if ($cooldown === 0) {
-            return;
-        }
-
-        try {
-            $cache = $this->breakerCache();
-
-            if ($cache === null) {
-                return;
-            }
-
-            $threshold = self::providerFailureThreshold();
-
-            if ($threshold > 1) {
-                $cache->add(self::PROVIDER_FAILURE_COUNT_KEY, 0, $cooldown);
-
-                if ((int) $cache->increment(self::PROVIDER_FAILURE_COUNT_KEY) < $threshold) {
-                    return;
-                }
-            }
-
-            $cache->put(self::PROVIDER_FAILURE_KEY, true, $cooldown);
-        } catch (Throwable) {
-            // Never fail a renewal over the breaker.
-        }
-    }
-
-    /**
-     * Clear the failure count after a successful exchange, so isolated
-     * failures never accumulate into a cooldown.
-     */
-    private function forgetProviderFailures(): void
-    {
-        if (self::providerCooldown() === 0) {
-            return;
-        }
-
-        try {
-            $cache = $this->breakerCache();
-
-            $cache?->forget(self::PROVIDER_FAILURE_COUNT_KEY);
-            $cache?->forget(self::PROVIDER_FAILURE_KEY);
-        } catch (Throwable) {
-            // An unreachable store holds nothing to clear.
-        }
-    }
-
-    /**
-     * Failures within one cooldown that start it (minimum 1).
-     */
-    private static function providerFailureThreshold(): int
-    {
-        $configured = config('uzairports.provider_failure_threshold', 5);
-
-        return max(is_numeric($configured) ? (int) $configured : 5, 1);
-    }
-
-    /**
-     * End the cooldown immediately (for operators and tests).
-     */
-    public static function forgetProviderFailure(): void
-    {
-        try {
-            $cache = (new self)->breakerCache();
-
-            $cache?->forget(self::PROVIDER_FAILURE_COUNT_KEY);
-            $cache?->forget(self::PROVIDER_FAILURE_KEY);
-        } catch (Throwable) {
-            // An unreachable store holds nothing to clear.
-        }
-    }
-
-    /**
-     * Cooldown length in seconds; zero disables the breaker.
-     */
-    private static function providerCooldown(): int
-    {
-        $configured = config('uzairports.provider_cooldown', 30);
-
-        return max(is_numeric($configured) ? (int) $configured : 30, 0);
-    }
-
-    /**
-     * The `lock_store` store, resolved once and shared by the lock and the
-     * breaker.
-     *
-     * Typed `mixed` because a host may bind anything; `lockStore()` and
-     * `breakerCache()` check what they receive.
-     */
-    private mixed $configuredStore = null;
-
-    private bool $storeWasResolved = false;
 
     private function configuredStore(): mixed
     {
@@ -305,17 +223,6 @@ class RefreshAccessToken
         }
 
         return $this->configuredStore;
-    }
-
-    /**
-     * The store holding the breaker entries, or null when `lock_store` is not
-     * a cache repository, in which case the breaker is disabled.
-     */
-    private function breakerCache(): ?CacheRepository
-    {
-        $repository = $this->configuredStore();
-
-        return $repository instanceof CacheRepository ? $repository : null;
     }
 
     /**
@@ -349,22 +256,6 @@ class RefreshAccessToken
         }
 
         return $store;
-    }
-
-    /**
-     * Lock store warnings already logged in this process.
-     *
-     * @var array<string, true>
-     */
-    private static array $reportedAboutTheLockStore = [];
-
-    /**
-     * Allow lock store warnings to be logged again; called from
-     * `Uzair::flushState()` and by tests.
-     */
-    public static function flushLockStoreWarnings(): void
-    {
-        self::$reportedAboutTheLockStore = [];
     }
 
     /**
@@ -408,6 +299,13 @@ class RefreshAccessToken
      * A refresh token that cannot be decrypted is treated as missing and
      * returns false, sending the user back through SSO instead of a 500.
      *
+     * Only a failure to reach or understand the provider — Guzzle's transport
+     * and HTTP errors, a body that is not JSON, the driver's `RuntimeException`
+     * over a malformed token response — is answered as a failed exchange. Any
+     * other exception is a programming error: it is announced through
+     * `UzairTokenRefreshFailed` and rethrown untouched, neither counted toward
+     * the cooldown nor dressed up as a 503.
+     *
      * @throws Throwable
      */
     private function exchange(OauthToken $token, int $leeway): bool
@@ -430,34 +328,15 @@ class RefreshAccessToken
 
         try {
             $refreshed = $provider->refreshToken($refreshToken);
+        } catch (GuzzleException|JsonException|RuntimeException $exception) {
+            return $this->answerFailedExchange($token, $exception);
+        } catch (Throwable $exception) {
+            UzairTokenRefreshFailed::dispatch($token, $exception);
 
-            $this->forgetProviderFailures();
-        } catch (Throwable $e) {
-            $oauthError = $this->oauthError($e);
-
-            Log::warning('Failed to refresh UzAirports access token.', [
-                'user_id' => $token->user_id,
-                'exception_class' => $e::class,
-                'http_status' => $e instanceof BadResponseException ? $e->getResponse()->getStatusCode() : null,
-                'oauth_error' => $oauthError,
-            ]);
-
-            UzairTokenRefreshFailed::dispatch($token, $e);
-
-            if (in_array($oauthError, self::CLIENT_ERRORS, true)) {
-                $this->refuseTheClient($token, $oauthError);
-            }
-
-            if ($this->grantWasRejected($e)) {
-                return false;
-            }
-
-            if ($this->providerFailed($e)) {
-                $this->recordProviderFailure();
-            }
-
-            throw $this->temporarilyUnavailable();
+            throw $exception;
         }
+
+        $this->breaker()->recordSuccess();
 
         if (blank($refreshed->token)) {
             Log::warning('UzAirports refresh token exchange returned empty access token', [
@@ -469,18 +348,10 @@ class RefreshAccessToken
             throw $this->temporarilyUnavailable();
         }
 
-        $expiresIn = $refreshed->expiresIn;
-        if ($expiresIn <= 0) {
-            $fallbackTtl = config('uzairports.default_token_ttl', 3600);
-            $expiresIn = is_numeric($fallbackTtl) && (int) $fallbackTtl > 0 ? (int) $fallbackTtl : 0;
-        }
-
         $token->forceFill([
             'access_token' => $refreshed->token,
             'refresh_token' => $refreshed->refreshToken ?: $refreshToken,
-            'expires_at' => $expiresIn <= 0
-                ? null
-                : now()->addSeconds($expiresIn),
+            'expires_at' => TokenExpiry::fromExpiresIn($refreshed->expiresIn),
         ]);
 
         // The exchange stays outside the transaction. Logout and a repeated
@@ -528,6 +399,45 @@ class RefreshAccessToken
     }
 
     /**
+     * Answer an exchange the provider failed or refused.
+     *
+     * Returns false for a refused grant, which ends the login. Everything else
+     * is a 503: `CLIENT_ERRORS` without touching the cooldown, an answer about
+     * the provider itself (no answer, 5xx, 429) after counting toward it.
+     *
+     * @throws ServiceUnavailableHttpException unless the grant was refused
+     */
+    private function answerFailedExchange(OauthToken $token, GuzzleException|JsonException|RuntimeException $exception): bool
+    {
+        $statusCode = $exception instanceof BadResponseException ? $exception->getResponse()->getStatusCode() : null;
+        $body = $exception instanceof BadResponseException ? $this->decodedBody($exception) : null;
+        $oauthError = $this->oauthError($body);
+
+        Log::warning('Failed to refresh UzAirports access token.', [
+            'user_id' => $token->user_id,
+            'exception_class' => $exception::class,
+            'http_status' => $statusCode,
+            'oauth_error' => $oauthError,
+        ]);
+
+        UzairTokenRefreshFailed::dispatch($token, $exception);
+
+        if ($oauthError !== null && in_array($oauthError, self::CLIENT_ERRORS, true)) {
+            $this->refuseTheClient($token, $oauthError);
+        }
+
+        if ($this->grantWasRejected($statusCode, $body)) {
+            return false;
+        }
+
+        if ($this->providerFailed($statusCode)) {
+            $this->breaker()->recordFailure();
+        }
+
+        throw $this->temporarilyUnavailable();
+    }
+
+    /**
      * Give up this exchange's grants for the ones written while it was out.
      *
      * The row no longer holds the refresh token that was spent: the browser
@@ -549,20 +459,14 @@ class RefreshAccessToken
      * Whether a failed exchange counts toward the provider's cooldown.
      *
      * Only an answer that says the provider itself is in trouble does: no
-     * answer at all, a 5xx, or a 429. Any other 4xx is the provider answering
-     * about this one request — a malformed or legacy grant on one account —
-     * and five of those within a cooldown would otherwise stop every login in
-     * the application from renewing.
+     * answer at all (no status), a 5xx, or a 429. Any other 4xx is the provider
+     * answering about this one request — a malformed or legacy grant on one
+     * account — and five of those within a cooldown would otherwise stop every
+     * login in the application from renewing.
      */
-    private function providerFailed(Throwable $exception): bool
+    private function providerFailed(?int $statusCode): bool
     {
-        if (! $exception instanceof BadResponseException) {
-            return true;
-        }
-
-        $statusCode = $exception->getResponse()->getStatusCode();
-
-        return $statusCode >= 500 || $statusCode === 429;
+        return $statusCode === null || $statusCode >= 500 || $statusCode === 429;
     }
 
     /**
@@ -649,41 +553,33 @@ class RefreshAccessToken
     }
 
     /**
+     * The JSON object a refused exchange answered with, read once for both
+     * `oauthError()` and `grantWasRejected()`; null when it is not one.
+     *
+     * @return array<array-key, mixed>|null
+     */
+    private function decodedBody(BadResponseException $exception): ?array
+    {
+        $body = json_decode((string) $exception->getResponse()->getBody(), true);
+
+        return is_array($body) ? $body : null;
+    }
+
+    /**
      * The RFC 6749 `error` code from a refused exchange, if any.
      *
      * A 400 can mean a dead grant or a misconfigured client; the code tells
      * them apart. `error_description` is deliberately not read, as it may echo
      * request data including credentials.
+     *
+     * @param  array<array-key, mixed>|null  $body
      */
-    private function oauthError(Throwable $exception): ?string
+    private function oauthError(?array $body): ?string
     {
-        if (! $exception instanceof BadResponseException) {
-            return null;
-        }
-
-        $response = $exception->getResponse();
-
-        $body = json_decode((string) $response->getBody(), true);
-
-        if (! is_array($body)) {
-            return null;
-        }
-
         $error = $body['error'] ?? null;
 
         return is_string($error) && $error !== '' ? $error : null;
     }
-
-    /**
-     * OAuth error codes that refer to the client, not the grant (RFC 6749 §5.2).
-     *
-     * They affect every login equally, so they must never be treated as a
-     * refused grant: returning false would end each login as it came due, and
-     * nobody could sign back in with the same broken credentials.
-     *
-     * @var list<string>
-     */
-    private const array CLIENT_ERRORS = ['invalid_client', 'unauthorized_client'];
 
     /**
      * Log an error that the client credentials were refused and answer 503.
@@ -709,24 +605,16 @@ class RefreshAccessToken
      *
      * Covers grant errors only; `CLIENT_ERRORS` are excluded. A 401 without a
      * readable OAuth error still counts as a refused grant.
+     *
+     * @param  array<array-key, mixed>|null  $body
      */
-    private function grantWasRejected(Throwable $exception): bool
+    private function grantWasRejected(?int $statusCode, ?array $body): bool
     {
-        if (! $exception instanceof BadResponseException) {
-            return false;
-        }
-
-        $response = $exception->getResponse();
-
-        $statusCode = $response->getStatusCode();
-
         if ($statusCode !== 400 && $statusCode !== 401) {
             return false;
         }
 
-        $body = json_decode((string) $response->getBody(), true);
-
-        if (! is_array($body)) {
+        if ($body === null) {
             return $statusCode === 401;
         }
 

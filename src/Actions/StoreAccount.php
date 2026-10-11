@@ -28,8 +28,11 @@ class StoreAccount
      * Resolve and write the account, retrying once if a concurrent sign-in won.
      *
      * Two first sign-ins of one identity both insert; the unique `uzair_id`
-     * refuses the loser, whose retry finds the winner's row. Any other refusal
-     * is logged with what about the accounts table caused it, then rethrown.
+     * refuses the loser, whose retry finds the winner's row. A unique violation
+     * is only read that way when an account with this `uzair_id` now exists:
+     * anything else (a unique `users.email` taken by another account) is a
+     * refusal a retry cannot get past. Every refusal is logged with what about
+     * the accounts table caused it, then rethrown.
      *
      * @return Authenticatable&Model
      *
@@ -39,7 +42,10 @@ class StoreAccount
     {
         try {
             return $this->write($uzairUser);
-        } catch (UniqueConstraintViolationException) {
+        } catch (UniqueConstraintViolationException $exception) {
+            if (! $this->identityWasWritten($uzairUser)) {
+                $this->refuse($exception);
+            }
             // The concurrent sign-in's row is committed now; the retry finds it.
         } catch (QueryException $exception) {
             $this->refuse($exception);
@@ -103,6 +109,26 @@ class StoreAccount
 
             return $user;
         });
+    }
+
+    /**
+     * Whether an account linked to this identity exists, which is what a
+     * concurrent first sign-in leaves behind. A lookup that fails answers no,
+     * so the original refusal is reported instead.
+     */
+    private function identityWasWritten(SocialiteUser $uzairUser): bool
+    {
+        $uzairId = (string) $uzairUser->getId();
+
+        if ($uzairId === '') {
+            return false;
+        }
+
+        try {
+            return $this->accounts()->newQuery()->where('uzair_id', $uzairId)->exists();
+        } catch (Throwable) {
+            return false;
+        }
     }
 
     private function ensureAccountMatchesGuard(Authenticatable $user): void

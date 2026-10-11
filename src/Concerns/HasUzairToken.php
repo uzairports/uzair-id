@@ -90,13 +90,16 @@ trait HasUzairToken
      * uses: a mobile client by its Sanctum token, a browser by its session, a
      * sessionless caller by a login naming neither.
      *
+     * When a browser's session finds nothing, a regenerated session is
+     * followed to its previous id (`Uzair::followRegeneratedSession()`) and
+     * looked up once more, as `uzair.token` does.
+     *
      * The answer, including "no login", is memoized per session and Sanctum
-     * token, so repeated calls in one request cost one query.
+     * token, so repeated calls in one request cost one query. A memoized
+     * answer also skips the token storage check the first resolution made.
      */
     public function currentToken(): ?OauthToken
     {
-        app(EnsureTokenStorageMatchesProvider::class)->forUser($this);
-
         $sessionId = $this->currentSessionId();
         $accessTokenId = Uzair::accessTokenId($this);
 
@@ -106,8 +109,16 @@ trait HasUzairToken
             return $this->resolvedCurrentToken;
         }
 
-        /** @var OauthToken|null $token */
-        $token = $this->uzairTokens()->heldBy($sessionId, $accessTokenId)->first();
+        app(EnsureTokenStorageMatchesProvider::class)->forUser($this);
+
+        $token = $this->lookUpCurrentToken($sessionId, $accessTokenId);
+
+        if ($token === null
+            && $sessionId !== null
+            && $accessTokenId === null
+            && Uzair::followRegeneratedSession(request(), $this->getKey())) {
+            $token = $this->lookUpCurrentToken($sessionId, null);
+        }
 
         $this->rememberCurrentToken($token, $sessionId, $accessTokenId);
 
@@ -147,6 +158,14 @@ trait HasUzairToken
     public function isUzairUser(): bool
     {
         return ! blank($this->getAttribute('uzair_id'));
+    }
+
+    private function lookUpCurrentToken(?string $sessionId, int|string|null $accessTokenId): ?OauthToken
+    {
+        /** @var OauthToken|null $token */
+        $token = $this->uzairTokens()->heldBy($sessionId, $accessTokenId)->first();
+
+        return $token;
     }
 
     private function currentSessionId(): ?string

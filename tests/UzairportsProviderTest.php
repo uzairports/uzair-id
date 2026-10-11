@@ -17,6 +17,7 @@ use RuntimeException;
 use TypeError;
 use UnexpectedValueException;
 use Uzairports\Uzairid\Actions\VerifyIdentityToken;
+use Uzairports\Uzairid\Exceptions\IdentityNonceMismatch;
 use Uzairports\Uzairid\Socialite\UzairportsProvider;
 
 class UzairportsProviderTest extends TestCase
@@ -658,8 +659,7 @@ class UzairportsProviderTest extends TestCase
         $provider = $this->providerIssuing($this->signed([...$this->idTokenClaims(), 'nonce' => 'wrong-nonce']));
         $provider->setRequest($request);
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('The UzAirports ID token nonce is missing or does not match the session nonce.');
+        $this->expectException(IdentityNonceMismatch::class);
 
         $provider->user();
     }
@@ -682,8 +682,7 @@ class UzairportsProviderTest extends TestCase
         $provider = $this->providerIssuing($this->signed([...$this->idTokenClaims(), 'nonce' => 'any-nonce']));
         $provider->setRequest($request);
 
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('The UzAirports ID token nonce is missing or does not match the session nonce.');
+        $this->expectException(IdentityNonceMismatch::class);
 
         $provider->user();
     }
@@ -746,8 +745,8 @@ class UzairportsProviderTest extends TestCase
         try {
             $replayProvider->user();
             $this->fail('Replaying consumed nonce should fail');
-        } catch (RuntimeException $e) {
-            $this->assertStringContainsString('session nonce', $e->getMessage());
+        } catch (IdentityNonceMismatch) {
+            $this->addToAssertionCount(1);
         }
     }
 

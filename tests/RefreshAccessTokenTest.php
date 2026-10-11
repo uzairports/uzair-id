@@ -26,6 +26,7 @@ use Mockery;
 use RuntimeException;
 use stdClass;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
+use TypeError;
 use Uzairports\Uzairid\Actions\EndSessions;
 use Uzairports\Uzairid\Actions\RefreshAccessToken;
 use Uzairports\Uzairid\Events\UzairTokenRefreshed;
@@ -1112,6 +1113,59 @@ class RefreshAccessTokenTest extends TestCase
         // swallowed — and the login is still there to try again.
         $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($token));
         $this->assertModelExists($token);
+    }
+
+    /**
+     * A programming error is not the provider failing: it must reach the
+     * caller as itself, not as a 503, and must not count toward the cooldown
+     * that would stop every other login from renewing.
+     */
+    public function test_a_programming_error_in_the_exchange_propagates_and_is_not_counted(): void
+    {
+        $this->tripOnTheFirstFailure();
+        Event::fake([UzairTokenRefreshFailed::class]);
+
+        $first = $this->expiredToken('programming-error-first');
+        $second = $this->expiredToken('programming-error-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow(new TypeError('A bug in the driver.'));
+        $provider->shouldReceive('refreshToken')->once()->andReturn(new Token('new_access', 'new_refresh', 3600, []));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        try {
+            (new RefreshAccessToken)($first);
+            $this->fail('The programming error was swallowed.');
+        } catch (TypeError $error) {
+            $this->assertSame('A bug in the driver.', $error->getMessage());
+        }
+
+        Event::assertDispatched(UzairTokenRefreshFailed::class);
+        $this->assertModelExists($first);
+
+        // The threshold is one, so a counted failure would refuse this call.
+        $this->assertTrue((new RefreshAccessToken)($second));
+    }
+
+    /**
+     * A malformed token response is still the provider failing, and is
+     * answered as one.
+     */
+    public function test_a_malformed_token_response_is_a_provider_failure(): void
+    {
+        $this->tripOnTheFirstFailure();
+
+        $first = $this->expiredToken('malformed-first');
+        $second = $this->expiredToken('malformed-second');
+
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('refreshToken')->once()->andThrow(new RuntimeException('UzAirports SSO returned an invalid token response.'));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($first));
+        $this->assertUnavailable(fn (): bool => (new RefreshAccessToken)($second));
     }
 
     /**

@@ -4,6 +4,7 @@ namespace Uzairports\Uzairid\Tests;
 
 use Exception;
 use GuzzleHttp\Promise\PromiseInterface;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -391,6 +392,38 @@ class OauthTokenTest extends TestCase
         $this->travel(5)->hours();
 
         $this->assertSame(1, (new OauthToken)->prunable()->count());
+    }
+
+    /**
+     * `prunable()` runs once per pruned row, so a missing token table asked
+     * about each time cost a sweep of thousands of rows as many schema queries.
+     */
+    public function test_a_missing_sanctum_table_is_asked_about_once_per_sweep(): void
+    {
+        Schema::drop('personal_access_tokens');
+        config(['uzairports.revoke_on_prune' => false]);
+
+        $user = TestUser::create(['uzair_id' => '1017']);
+
+        foreach (['first', 'second', 'third'] as $session) {
+            $user->tokens()->create([
+                'access_token' => "left_behind_{$session}",
+                'session_id' => "abandoned-{$session}",
+            ]);
+        }
+
+        $this->travel(5)->hours();
+
+        $schemaQueries = 0;
+
+        DB::listen(function (QueryExecuted $query) use (&$schemaQueries): void {
+            if (preg_match('/sqlite_master|information_schema|pg_class|pg_tables/i', $query->sql) === 1) {
+                $schemaQueries++;
+            }
+        });
+
+        $this->assertSame(3, (new OauthToken)->pruneAll());
+        $this->assertSame(1, $schemaQueries);
     }
 
     public function test_a_login_nothing_has_touched_is_pruned(): void
