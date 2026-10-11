@@ -528,6 +528,21 @@ class UzairAuthControllerTest extends TestCase
         $this->assertGuest();
     }
 
+    public function test_a_handshake_with_mismatched_session_nonce_is_reported_as_handshake_lost(): void
+    {
+        $provider = Mockery::mock(UzairportsProvider::class);
+        $provider->shouldReceive('user')->once()->andThrow(new RuntimeException('The UzAirports ID token nonce is missing or does not match the session nonce.'));
+
+        Socialite::shouldReceive('driver')->with('uzairports')->andReturn($provider);
+
+        $response = $this->get(route('uzair.callback'));
+
+        $response->assertRedirect(url('/'));
+        $response->assertSessionHasErrors(['oauth' => __('uzairid::messages.handshake_lost')]);
+
+        $this->assertGuest();
+    }
+
     /**
      * A browser that sent no session cookie never had one to send, which is a
      * host mismatch rather than a stale tab — and the log has to say which.
@@ -936,6 +951,26 @@ class UzairAuthControllerTest extends TestCase
         $this->onTheDeviceHolding($login)
             ->post(route('uzair.logout'))
             ->assertRedirect('https://my.uzairports.com/oauth/logout?client_id=test-client-id');
+
+        $this->assertGuest();
+    }
+
+    public function test_logout_still_signs_out_when_the_end_session_endpoint_is_refused_as_plain_http(): void
+    {
+        config(['uzairports.end_session_endpoint' => '/oauth/logout']);
+
+        $user = TestUser::create(['uzair_id' => '5015', 'name' => 'Leaving Over Plain HTTP']);
+        $this->fakeIdentity(['id' => '5015', 'token' => 'this_devices_token']);
+
+        $this->get(route('uzair.callback'))->assertRedirect(route('dashboard'));
+
+        $provider = Socialite::driver('uzairports');
+        $this->assertInstanceOf(MockInterface::class, $provider);
+        $provider->shouldReceive('endSessionUrl')->once()->andThrow(new RuntimeException('refused as plain HTTP'));
+
+        $this->onTheDeviceHolding($user->tokens()->firstOrFail())
+            ->post(route('uzair.logout'))
+            ->assertRedirect(url('/'));
 
         $this->assertGuest();
     }

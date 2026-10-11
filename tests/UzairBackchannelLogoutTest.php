@@ -5,6 +5,7 @@ namespace Uzairports\Uzairid\Tests;
 use Illuminate\Foundation\Application;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Testing\TestResponse;
 use Laravel\Socialite\Facades\Socialite;
 use Mockery;
@@ -164,6 +165,7 @@ class UzairBackchannelLogoutTest extends TestCase
             'carrying a nonce' => [['sid' => 'idp-session', 'nonce' => 'n'], 'identity-provider'],
             'naming nobody' => [[], 'identity-provider'],
             'issued too long ago' => [['sid' => 'idp-session', 'iat' => time() - 3600], 'identity-provider'],
+            'issued in the future' => [['sid' => 'idp-session', 'iat' => time() + 3600], 'identity-provider'],
         ];
     }
 
@@ -177,6 +179,25 @@ class UzairBackchannelLogoutTest extends TestCase
 
         $this->post(route('uzair.backchannelLogout'))->assertStatus(400);
         $this->post(route('uzair.backchannelLogout'))->assertStatus(400);
+    }
+
+    /**
+     * Without OpenID Connect nothing is filed under a `sid`; a 500 would have
+     * the provider retry a logout that can never succeed.
+     */
+    public function test_a_logout_is_refused_and_logged_when_openid_connect_is_off(): void
+    {
+        config(['uzairports.oidc.enabled' => false]);
+        Log::shouldReceive('error')->once()->with(Mockery::pattern('/uzairports\.oidc\.enabled/'));
+
+        $user = TestUser::query()->create(['uzair_id' => '9009']);
+        $login = $this->login($user, 'idp-session');
+
+        $this->logout(['sid' => 'idp-session'])
+            ->assertStatus(400)
+            ->assertExactJson(['error' => 'invalid_request']);
+
+        $this->assertModelExists($login);
     }
 
     public function test_a_request_without_a_logout_token_is_refused(): void

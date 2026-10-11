@@ -6,7 +6,9 @@ use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Database\QueryException;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
+use Mockery;
 use PDOException;
 use Symfony\Component\HttpKernel\Exception\ServiceUnavailableHttpException;
 use Uzairports\Uzairid\Actions\EnsureTokenStorageMatchesProvider;
@@ -113,6 +115,19 @@ class EnsureTokenStorageMatchesProviderTest extends TestCase
             $this->fail('A database failure must refuse the request.');
         } catch (ServiceUnavailableHttpException $exception) {
             $this->assertStringNotContainsString('secret', $exception->getMessage());
+        }
+    }
+
+    public function test_a_configuration_problem_is_logged_and_not_shown_to_the_client(): void
+    {
+        Log::shouldReceive('error')->once()->with(Mockery::pattern('/personal_access_token_id/'));
+        $this->dropTheSanctumTokenColumn();
+
+        try {
+            app(EnsureTokenStorageMatchesProvider::class)();
+            $this->fail('A table without the column must be refused.');
+        } catch (ServiceUnavailableHttpException $exception) {
+            $this->assertStringNotContainsString('personal_access_token_id', $exception->getMessage());
         }
     }
 

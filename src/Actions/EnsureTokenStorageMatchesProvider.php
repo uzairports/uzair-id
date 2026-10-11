@@ -26,7 +26,7 @@ class EnsureTokenStorageMatchesProvider
         $this();
 
         if (! Uzair::accountMatchesProvider($user)) {
-            throw new ServiceUnavailableHttpException(null, 'The route account does not belong to the UzAirports provider.');
+            $this->refuse('The route account does not belong to the UzAirports provider.');
         }
     }
 
@@ -66,7 +66,7 @@ class EnsureTokenStorageMatchesProvider
                 'message' => $exception->getMessage(),
             ]);
 
-            throw new ServiceUnavailableHttpException(null, 'The UzAirports token storage could not be checked.');
+            throw $this->unavailable();
         } catch (RuntimeException $exception) {
             $problem = $exception->getMessage();
         }
@@ -150,13 +150,23 @@ class EnsureTokenStorageMatchesProvider
     }
 
     /**
+     * Log what is wrong and answer 503.
+     *
+     * The problem names tables, models and artisan commands, and Laravel shows
+     * an HTTP exception's message even with debug off, so it stays in the log.
+     *
      * @throws ServiceUnavailableHttpException always
      */
     private function refuse(string $problem): never
     {
         Log::error($problem);
 
-        throw new ServiceUnavailableHttpException(null, $problem);
+        throw $this->unavailable();
+    }
+
+    private function unavailable(): ServiceUnavailableHttpException
+    {
+        return new ServiceUnavailableHttpException(null, __('uzairid::messages.temporarily_unavailable'));
     }
 
     /**
